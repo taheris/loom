@@ -387,9 +387,11 @@ integration-conflict replay.
 
 The Nix-produced profile-image manifest maps `(ProfileName, AgentRuntime)` to an
 image entry. Each entry carries the podman reference, immutable image source,
-source kind, required host-only raw launcher and immutable Wrix profile
-configuration paths, and an optional digest path. Loom parses the manifest once
-from `LOOM_PROFILES_MANIFEST` and has no implicit search fallback.
+source kind and immutable Wrix profile configuration path. The data-only
+manifest supplies no executable authority; host launchers come from caller
+context or explicit overrides. Optional legacy digest/runtime metadata remains
+readable without selecting a process. Loom parses the manifest once from
+`LOOM_PROFILES_MANIFEST` and has no implicit search fallback.
 
 Dispatch resolves the CLI profile override or bead `profile:X` label together
 with the phase backend, then looks up the pair. Missing profiles or runtimes are
@@ -404,8 +406,11 @@ additive builds use Wrix's private single-user container store, without a host
 Nix daemon socket or host-execution bridge. The Rust profile also supplies Cargo
 and rustc.
 
-Every manifest entry requires `launcher` and `profile_config`; older/custom
-manifests missing either field fail ingestion with regeneration guidance.
+Every entry requires `ref`, `source`, `source_kind`, and `profile_config`.
+Missing image data fails ingestion with regeneration guidance. Native probe
+availability is carried separately under `LOOM_NATIVE_PREFLIGHT_MANIFEST`, keyed
+by the exact immutable profile configuration. Provisioning must not replace a
+selected image or grant availability to another configuration.
 
 ### Concurrency & Locking
 
@@ -1176,9 +1181,10 @@ for worker feedback.
   patches before invoking Cargo.
   [test](configured_worker_wrapper_initializes_patches_before_cargo)
 
-- A declared legacy native profile is upgraded from the installed driver's
-  explicit pinned closure without introducing profiles or runtimes. Explicit
-  native overrides remain selected; readiness still grants no required coverage.
+- A declared legacy native profile can receive native availability from the
+  installed driver's closure only for the exact same immutable configuration,
+  without replacing image provenance or introducing profiles or runtimes.
+  Readiness still grants no required coverage.
   [test](installed_native_closure_repairs_legacy_metadata_without_changing_selection)
 
 - Installed native provisioning preserves an explicitly selected native image.
@@ -1201,12 +1207,22 @@ for worker feedback.
 - Native preflight exit after agent output remains an interruption.
   [test](native_preflight_exit_after_agent_output_is_interruption)
 
-- Profile manifest entries missing launcher or immutable profile configuration
-  fail ingestion with regeneration guidance.
-  [test](manifest_rejects_missing_launcher_or_profile_config)
+- Profile manifest entries missing required image data or immutable profile
+  configuration fail ingestion with regeneration guidance.
+  [test](manifest_rejects_missing_image_data_or_profile_config)
 
-- Interactive planning selects the manifest-provided raw launcher and profile
-  configuration without creating epics or changing Beads state.
+- Four-field manifests retain selected project provenance and attach native
+  availability only by exact immutable configuration.
+  [test](four_field_manifests_preserve_project_provenance_with_exact_native_capabilities)
+
+- Native provisioning cannot substitute a different project's configuration.
+  [test](native_provisioning_never_substitutes_a_different_configuration)
+
+- Legacy executable fields cannot select a host process.
+  [test](wrix_spawn_ignores_manifest_executable_and_uses_caller_pin)
+
+- Interactive planning uses a caller-selected raw launcher with the manifest's
+  immutable profile configuration without creating epics or changing Beads state.
   [test](plan_does_not_create_epic_or_touch_bd)
 
 ## Requirements

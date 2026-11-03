@@ -14,6 +14,6 @@ mod provision;
 
 pub use error::ProfileError;
 pub use manifest::{
-    ENV_VAR, ImageEntry, NativePreflight, PROVISIONED_ENV_VAR, ProfileImageManifest,
+    ENV_VAR, ImageEntry, NATIVE_ENV_VAR, NativePreflight, PROVISIONED_ENV_VAR, ProfileImageManifest,
 };
 pub use provision::{ProvisionError, bootstrap_loop};

@@ -7,6 +7,7 @@ manifest="${3:?fixed provisioned manifest is required}"
 bash_package="${4:?fixed builder package is required}"
 coreutils_package="${5:?fixed symlink tool package is required}"
 system="${6:?fixed host system is required}"
+native_capabilities="${7:?fixed native availability manifest is required}"
 if [[ "${LOOM_INSIDE:-0}" == 1 ]]; then
   printf 'profile bootstrap requires the trusted driver lane; worker coverage remains unverified\n' >&2
   exit 77
@@ -38,7 +39,7 @@ export BEADS_DOLT_SERVER_SOCKET="$fixture/absent-dolt.sock"
 export BD_NO_DAEMON=1
 export BD_DISABLE_METRICS=1
 unset GIT_SSH_COMMAND GIT_SSH
-unset LOOM_PROFILES_MANIFEST LOOM_PROVISIONED_PROFILES_MANIFEST
+unset LOOM_PROFILES_MANIFEST LOOM_PROVISIONED_PROFILES_MANIFEST LOOM_NATIVE_PREFLIGHT_MANIFEST
 unset WRIX_UNSAFE_PODMAN_SOCKET WRIX_NETWORK WRIX_NETWORK_ALLOWLIST
 unset WRIX_PI_AUTH_FILE ANTHROPIC_API_KEY OPENAI_API_KEY CLAUDE_CODE_OAUTH_TOKEN
 mkdir -p "$HOME" "$fixture/project/src"
@@ -82,12 +83,14 @@ cat > flake.nix <<EOF
     shell = retain "$bash_package";
     tools = retain "$coreutils_package";
     profiles = retain "$manifest";
+    native = retain "$native_capabilities";
   in {
     packages."$system".profile-images = builtins.derivation {
       name = "isolated-profile-bootstrap";
       system = "$system";
+      outputs = [ "out" "nativePreflight" ];
       builder = "\${shell}/bin/bash";
-      args = [ "-euc" ''"\${tools}/bin/ln" -s "\${profiles}" "\$out"'' ];
+      args = [ "-euc" ''"\${tools}/bin/ln" -s "\${profiles}" "\$out"; "\${tools}/bin/ln" -s "\${native}" "\$nativePreflight"'' ];
     };
   };
 }

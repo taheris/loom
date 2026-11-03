@@ -3,7 +3,7 @@ use std::path::Path;
 use super::util::{rel, verdict_from, workspace_root};
 use super::{Verdict, WalkInput};
 
-const RULE: &str = "pre_push_config_marker_wrapper_contract — pre-commit policy bindings must be complete, the first pre-push hook must be nix flake check, every pre-push hook must use bin/pre-push-checks with matching metadata, and nix commands must use skip-if-missing nix --";
+const RULE: &str = "pre_push_config_marker_wrapper_contract — pre-commit policy bindings must be complete, the first pre-push hook must be nix flake check, every pre-push hook must use bin/pre-push-checks with matching metadata, and required nix commands must run directly";
 
 const CLIPPY_FILES: &str =
     r"(\.rs$|(^|/)Cargo\.(toml|lock)$|^rust-toolchain\.toml$|^clippy\.toml$)";
@@ -219,13 +219,6 @@ fn validate_pre_push(path: &str, hooks: &[Hook], violations: &mut Vec<String>) {
         if let Some(message) = wrapper_violation(hook, entry) {
             violations.push(format!("{path}:{} {message}", hook.line));
         }
-        let command = wrapped_command(entry).unwrap_or_else(|| entry.trim().to_owned());
-        if command_runs_nix(&command) && !command.starts_with("skip-if-missing nix -- ") {
-            violations.push(format!(
-                "{path}:{} pre-push hook `{}` runs nix without `skip-if-missing nix --`: {command}",
-                hook.line, hook.id
-            ));
-        }
     }
 
     validate_pre_push_policy_fields(path, hooks, violations);
@@ -234,12 +227,7 @@ fn validate_pre_push(path: &str, hooks: &[Hook], violations: &mut Vec<String>) {
 fn validate_pre_push_policy_fields(path: &str, hooks: &[Hook], violations: &mut Vec<String>) {
     if let Some(hook) = unique_hook(hooks, "nix-flake-check") {
         validate_always_run(path, hook, violations);
-        validate_wrapped_command(
-            path,
-            hook,
-            "skip-if-missing nix -- nix flake check",
-            violations,
-        );
+        validate_wrapped_command(path, hook, "nix flake check", violations);
     }
     for (id, command) in [
         (
@@ -282,12 +270,7 @@ fn validate_pre_push_policy_fields(path: &str, hooks: &[Hook], violations: &mut 
     }
     if let Some(hook) = unique_hook(hooks, "full-test-suite") {
         validate_always_run(path, hook, violations);
-        validate_wrapped_command(
-            path,
-            hook,
-            "skip-if-missing nix -- nix run .#test-required",
-            violations,
-        );
+        validate_wrapped_command(path, hook, "nix run .#test-required", violations);
     }
 }
 
@@ -495,17 +478,8 @@ fn command_after_separator(words: &[String], separator: usize) -> Option<&[Strin
     (!command.is_empty()).then_some(command)
 }
 
-fn command_runs_nix(command: &str) -> bool {
-    let command = command.trim();
-    command.starts_with("nix ") || command.starts_with("skip-if-missing nix -- nix ")
-}
-
 fn command_runs_nix_flake_check(words: &[String]) -> bool {
     command_starts_with(words, &["nix", "flake", "check"])
-        || command_starts_with(
-            words,
-            &["skip-if-missing", "nix", "--", "nix", "flake", "check"],
-        )
 }
 
 fn command_starts_with(words: &[String], prefix: &[&str]) -> bool {
@@ -743,15 +717,15 @@ mod tests {
     }
 
     #[test]
-    fn rejects_nix_command_without_skip_if_missing_wrapper() {
+    fn rejects_successful_noop_instead_of_required_nix_command() {
         let config = valid_config().replace(
-            "--hook-entry 'skip-if-missing nix -- nix run .#test-required' -- skip-if-missing nix -- nix run .#test-required",
             "--hook-entry 'nix run .#test-required' -- nix run .#test-required",
+            "--hook-entry 'true' -- true",
         );
         let got = violations(".pre-commit-config.yaml", &config);
         assert!(
             got.iter()
-                .any(|line| line.contains("runs nix without `skip-if-missing nix --`")),
+                .any(|line| line.contains("must wrap `nix run .#test-required`")),
             "got: {got:?}"
         );
     }

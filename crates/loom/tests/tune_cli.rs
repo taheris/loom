@@ -231,6 +231,9 @@ fn run_loom_with_env(
         .env("PATH", new_path)
         .env("BD_STATE_DIR", state_dir)
         .env("XDG_STATE_HOME", state_dir.join("state-home"))
+        .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
+        .env_remove("LOOM_NATIVE_PREFLIGHT_MANIFEST")
+        .env_remove("LOOM_WRIX_SPAWN_BIN")
         .env_remove("LOOM_CONFIG")
         .env_remove("LOOM_INSIDE");
     for (key, value) in envs {
@@ -271,6 +274,7 @@ struct ReplayFixture {
     bin: PathBuf,
     state: PathBuf,
     manifest: PathBuf,
+    launcher: PathBuf,
     record: PathBuf,
     hang: bool,
     wall: u64,
@@ -341,6 +345,7 @@ max_changed_files = 2
             bin,
             state,
             manifest,
+            launcher: shim,
             record,
             hang: mode == "hang",
             wall,
@@ -374,6 +379,8 @@ max_changed_files = 2
             .env("BD_CREATE_ID", "lm-replay.1")
             .env("LOOM_PROFILES_MANIFEST", &self.manifest)
             .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
+            .env_remove("LOOM_NATIVE_PREFLIGHT_MANIFEST")
+            .env("LOOM_WRIX_SPAWN_BIN", &self.launcher)
             .env("XDG_STATE_HOME", self.state.join("state-home"))
             .env("LOOM_TEST_REPLAY_WORKSPACE", &self.workspace)
             .env("LOOM_TEST_REPLAY_HANG", self.hang.to_string())
@@ -805,8 +812,9 @@ contains = ["missing test from replay input"]
     );
     git(tmp.path(), &["add", "."]);
     git(tmp.path(), &["commit", "-q", "-m", "add tuning case"]);
-    let (_wrix, profile_manifest, replay_count) = install_tune_review_wrix(tmp.path());
+    let (wrix, profile_manifest, replay_count) = install_tune_review_wrix(tmp.path());
     let manifest_path = profile_manifest.to_string_lossy();
+    let launcher_path = wrix.to_string_lossy();
 
     let dry_args = [
         "tune",
@@ -822,7 +830,10 @@ contains = ["missing test from replay input"]
         &bin_dir,
         &state_dir,
         &dry_args,
-        &[("LOOM_PROFILES_MANIFEST", manifest_path.as_ref())],
+        &[
+            ("LOOM_PROFILES_MANIFEST", manifest_path.as_ref()),
+            ("LOOM_WRIX_SPAWN_BIN", launcher_path.as_ref()),
+        ],
     );
     assert_success(&dry, &dry_args);
     let dry_out = stdout(&dry);
@@ -859,6 +870,7 @@ contains = ["missing test from replay input"]
         &[
             ("BD_CREATE_ID", "lm-tune.2"),
             ("LOOM_PROFILES_MANIFEST", manifest_path.as_ref()),
+            ("LOOM_WRIX_SPAWN_BIN", launcher_path.as_ref()),
         ],
     );
 

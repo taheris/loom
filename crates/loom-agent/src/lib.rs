@@ -15,14 +15,8 @@ pub use claude::ClaudeBackend;
 pub use direct::DirectBackend;
 pub use pi::PiBackend;
 
-pub(crate) fn resolve_wrix_spawn_bin(config: &SpawnConfig) -> Result<OsString, ProtocolError> {
-    let launcher = config.wrix_launcher.as_deref().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "missing manifest Wrix launcher",
-        )
-    })?;
-    Ok(loom_driver::wrix::resolve_launcher(launcher, None).into_os_string())
+pub(crate) fn resolve_wrix_spawn_bin(config: &SpawnConfig) -> OsString {
+    loom_driver::wrix::resolve_launcher(config.wrix_launcher.as_deref()).into_os_string()
 }
 
 pub(crate) fn build_wrix_command(

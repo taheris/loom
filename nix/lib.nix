@@ -137,42 +137,48 @@ in
           let
             image = images.${profileName}.${runtime};
           in
-          entry.${runtime}
-          // {
-            inherit runtime;
-            # wrix's manifest helper serializes path strings for portability,
-            # but strips their Nix string context. Re-attach the concrete
-            # image source here so LOOM_PROFILES_MANIFEST keeps runtime inputs
-            # alive in the store after GC / on fresh machines.
+          {
+            inherit (entry.${runtime}) ref source_kind;
+            # Retain concrete image/config contexts through GC and remote realization.
             source = "${image.source or image}";
-          }
-          // {
-            # The host CLI receives the selected image configuration at dispatch.
-            launcher = "${wrixLib.rustPackage.wrix}/bin/wrix";
-          }
-          // {
-            # Image-backed launches require the immutable ProfileConfig; keep
-            # it as a real Nix reference, not just inert JSON text.
             profile_config = "${image.profileConfig}";
-          }
-          // optionalAttrs (profileName == "rust") {
-            native_preflight = "rust";
-          }
-          // optionalAttrs (image ? digest) {
-            digest = "${image.digest}";
           }
         ) profileManifest.passthru.manifest
       ) profileManifests;
+      nativeCapabilities = builtins.listToAttrs (
+        builtins.concatLists (
+          builtins.attrValues (
+            mapAttrs (
+              profile: byRuntime:
+              if profile == "rust" then
+                map (entry: {
+                  name = builtins.unsafeDiscardStringContext entry.profile_config;
+                  value = "rust";
+                }) (builtins.attrValues byRuntime)
+              else
+                [ ]
+            ) manifest
+          )
+        )
+      );
     in
-    pkgs.writeTextFile {
-      name = "profile-images.json";
-      text = builtins.toJSON manifest;
-      passthru = {
-        inherit manifest sandboxes;
-        profiles = attrNames profiles;
-        runtimes = attrNames runtimes;
-      };
-    };
+    pkgs.runCommand "profile-images.json"
+      {
+        outputs = [
+          "out"
+          "nativePreflight"
+        ];
+        passthru = {
+          inherit manifest sandboxes nativeCapabilities;
+          profiles = attrNames profiles;
+          runtimes = attrNames runtimes;
+        };
+      }
+      ''
+        set -euo pipefail
+        cp ${pkgs.writeText "images.json" (builtins.toJSON manifest)} "$out"
+        cp ${pkgs.writeText "native-preflight.json" (builtins.toJSON nativeCapabilities)} "$nativePreflight"
+      '';
 
   # Wrap the raw loom binary with the matching sandbox launcher defaults, so a
   # consumer only needs the wrapped binary on PATH to run loom end-to-end.
@@ -209,6 +215,9 @@ in
           --prefix PATH : ${wrixLauncher}/bin:${launcherRuntimePath} \
           --set-default LOOM_WRIX_BIN ${wrixLauncher}/bin/wrix \
           --set LOOM_PROVISIONED_PROFILES_MANIFEST ${profileManifest} \
+          --set LOOM_NATIVE_PREFLIGHT_MANIFEST ${
+            profileManifest.nativePreflight or (pkgs.writeText "native-preflight.json" "{}")
+          } \
           --set-default LOOM_PROFILES_MANIFEST ${profileManifest}
       '';
 }

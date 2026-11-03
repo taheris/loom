@@ -329,9 +329,6 @@ pub(super) fn dispatch_worker(
     spawn: &mut crate::agent::SpawnConfig,
 ) -> Result<(), Error> {
     dispatch_unknown(directory, record)?;
-    let Some(manifest_launcher) = &spawn.wrix_launcher else {
-        return Ok(());
-    };
     let Some(profile) = &spawn.profile_config else {
         return Ok(());
     };
@@ -340,9 +337,9 @@ pub(super) fn dispatch_worker(
     if profile["features"]["execution_tickets"] != true {
         return Ok(());
     }
-    let issuer = crate::wrix::resolve_launcher(manifest_launcher, None);
+    let issuer = crate::wrix::resolve_launcher(spawn.wrix_launcher.as_deref());
     let result = (|| {
-        let issuer = std::fs::canonicalize(&issuer)?;
+        let issuer = crate::wrix::executable(&issuer)?;
         let issuer_identity = issuer_identity(&issuer, &record.source)?;
         let output = bounded(
             &issuer,

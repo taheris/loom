@@ -169,7 +169,39 @@
             --message-format libtest-json-plus
         '';
       };
+      consumerSource = checked.resource {
+        root = ../..;
+        name = "loom-consumer-source";
+        filter =
+          path: type:
+          let
+            relative = pkgs.lib.removePrefix "${toString ../..}/" path;
+            extraOrigins = map (source: source.origin) (
+              builtins.filter (source: source.origin != ".") loom.testResources
+            );
+          in
+          type == "directory"
+          || builtins.pathExists "${loom.workspaceSource.path}/${relative}"
+          || builtins.any (
+            origin: relative == origin || pkgs.lib.hasPrefix "${origin}/" relative
+          ) extraOrigins;
+      };
       checks = {
+        loom-consumer-api = checked.check {
+          resources = [
+            consumerSource
+            (resource "tests/verify/consumer-api.py")
+          ];
+          evaluation = evaluation ++ [ (resource "tests/verify/consumer-api.nix") ];
+          build =
+            paths:
+            import ../../tests/verify/consumer-api.nix {
+              inherit pkgs;
+              inherit (inputs) crane;
+              src = builtins.head paths;
+              script = builtins.elemAt paths 1;
+            };
+        };
         wrix-consumer-evaluation = checked.check {
           resources = [ ];
           evaluation = evaluation ++ loom.testResources;
@@ -428,6 +460,7 @@
       };
     in
     {
+      packages.verification-consumer-api = config.checks.loom-consumer-api;
       checks =
         checks
         // (

@@ -11,6 +11,9 @@
   fenix,
   src,
   toolchain ? null,
+  cargoToml ? null,
+  cargoLock ? null,
+  cargoVendorDir ? null,
 }:
 
 let
@@ -73,17 +76,29 @@ let
 
   commonArgs = {
     src = cleanedSrc;
-    cargoLock = builtins.path {
-      path = manifestPath "Cargo.lock";
-      name = "Cargo.lock";
-    };
-    cargoToml = builtins.path {
-      path = manifestPath "Cargo.toml";
-      name = "Cargo.toml";
-    };
-    cargoVendorDir = craneLib.vendorCargoDeps {
-      inherit (commonArgs) cargoLock cargoToml;
-    };
+    cargoLock =
+      if cargoLock != null then
+        cargoLock
+      else
+        builtins.path {
+          path = manifestPath "Cargo.lock";
+          name = "Cargo.lock";
+        };
+    cargoToml =
+      if cargoToml != null then
+        cargoToml
+      else
+        builtins.path {
+          path = manifestPath "Cargo.toml";
+          name = "Cargo.toml";
+        };
+    cargoVendorDir =
+      if cargoVendorDir != null then
+        cargoVendorDir
+      else
+        craneLib.vendorCargoDeps {
+          inherit (commonArgs) cargoLock cargoToml;
+        };
     nativeBuildInputs = [ pkgs.git ];
     LOOM_NATIVE_NIX_BIN = "${pkgs.nix}/bin/nix";
     meta = {
@@ -243,26 +258,40 @@ let
     };
   };
 
+  checkArgs = commonArgs // {
+    LOOM_PREK_BIN = "${hookRunner}/bin/prek";
+    LOOM_ISSUES_BD_BIN = "${pkgs.beads}/bin/bd";
+    src = stagedSrc;
+    inherit cargoArtifacts;
+    nativeBuildInputs = commonArgs.nativeBuildInputs ++ [
+      pkgs.cacert
+      pkgs.cargo-nextest
+      pkgs.dolt
+      pkgs.flock
+      pkgs.jq
+      pkgs.openssh
+      pkgs.sccache
+    ];
+    GIT_CONFIG_GLOBAL = "${stagedSrc}/tests/fixtures/git/test-gitconfig";
+    SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+  };
+
+  # Carry explicit metadata/vendor inputs so Crane never reads unrealized stagedSrc.
+  mkCheck =
+    { ... }@overrides:
+    assert !(overrides ? src);
+    checked.check {
+      inherit evaluation;
+      resources = testResources;
+      build = _: craneLib.cargoNextest (checkArgs // overrides);
+    };
+
   nextest = checked.cargo {
     inherit craneLib evaluation;
     operation = "test";
     resources = testResources;
-    args = commonArgs // {
-      LOOM_PREK_BIN = "${hookRunner}/bin/prek";
-      LOOM_ISSUES_BD_BIN = "${pkgs.beads}/bin/bd";
-      src = stagedSrc;
+    args = checkArgs // {
       inherit cargoArtifacts;
-      nativeBuildInputs = commonArgs.nativeBuildInputs ++ [
-        pkgs.cacert
-        pkgs.cargo-nextest
-        pkgs.dolt
-        pkgs.flock
-        pkgs.jq
-        pkgs.openssh
-        pkgs.sccache
-      ];
-      GIT_CONFIG_GLOBAL = "${stagedSrc}/tests/fixtures/git/test-gitconfig";
-      SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
     };
   };
 in
@@ -280,7 +309,9 @@ in
     stagedSrc
     workspaceSource
     testResources
+    checkArgs
+    mkCheck
     ;
-  cargoVendorDir = commonArgs.cargoVendorDir;
+  inherit (commonArgs) cargoToml cargoLock cargoVendorDir;
   toolchain = resolvedToolchain;
 }

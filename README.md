@@ -74,18 +74,16 @@ suitable for Home Manager and system profiles:
 
 For image-backed workflows, Loom also exposes `loom-wrix`: a wrapped binary with
 `wrix` on its internal PATH and `LOOM_PROFILES_MANIFEST` defaulted to a
-base/rust/python × claude/pi/direct manifest. Manifest entries also carry the
-raw Wrix launcher and immutable profile config. Both interactive and RPC
-sessions launch that raw executable with exactly one `--profile-config`,
-matching the selected profile/runtime, regardless of the configured wrapper.
-`LOOM_WRIX_BIN` configures repository Git initialization, not image selection.
-For an explicit executable override, set `LOOM_WRIX_SPAWN_BIN` to a raw Wrix
-launcher (never a configured wrapper); this changes only the executable for both
-`run` and `spawn`, not the manifest-selected profile config. There is no
-PATH/wrapper fallback for image-backed sessions. Older manifests missing
-`launcher` or `profile_config` must be regenerated with `mkProfileManifest`. Add
-that explicit package to a wrix devshell when you want `loom plan` to work
-end-to-end without setting the env vars yourself:
+base/rust/python × claude/pi/direct manifest. Entries are data-only: image ref,
+source, source kind, and immutable profile config. The raw launcher comes from
+an explicit API override, `LOOM_WRIX_SPAWN_BIN`, `LOOM_WRIX_BIN`, `WRIX_BIN`, or
+host PATH, in that order. Every launch still passes the selected immutable
+`--profile-config`; executable overrides never select an image. Use raw
+launchers, not wrappers with baked profile configuration. Legacy manifest
+`launcher` fields are ignored. See
+[Wrix consumption](docs/wrix-compatibility.md) for namespaced sessions, native
+availability metadata, and cold-evaluable Nix build/check interfaces. Add the
+wrapped package to a Wrix devshell for end-to-end use:
 
 ```nix
 {
@@ -125,6 +123,7 @@ in
   devShells.default = wrixLib.mkDevShell {
     shellHook = ''
       export LOOM_PROFILES_MANIFEST=${manifest}
+      export LOOM_NATIVE_PREFLIGHT_MANIFEST=${manifest.nativePreflight}
     '';
     packages = [ inputs'.loom.packages.loom ];
   };
@@ -146,7 +145,7 @@ wrix can hand to `mkSandbox`:
     perSystem = { pkgs, system, ... }:
       let
         wrix     = inputs.wrix.legacyPackages.${system}.lib;
-        loomLinux  = inputs.loom.lib.mkLoom { pkgs = inputs.nixpkgs.legacyPackages.x86_64-linux; };
+        loomLinux  = inputs.loom.lib.mkLoom { pkgs = inputs.loom.inputs.nixpkgs.legacyPackages.x86_64-linux; };
         sandbox    = wrix.mkSandbox {
           profile      = wrix.profiles.rust;
           agent        = "direct";
@@ -168,5 +167,5 @@ the independent host `wrix` CLI. Loom's `sandbox` and `debug` packages are
 dedicated launch apps: `nix run .#sandbox -- .` runs the selected image in the
 current checkout. They are not configured `wrix` CLIs for service commands.
 
-Loom itself has no Nix dependency on wrix — it just expects the binary on PATH
-and the standard env vars.
+Loom communicates with Wrix through its CLI; consumer Nix glue selects the
+launcher package and immutable profile data explicitly.

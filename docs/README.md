@@ -20,6 +20,10 @@ Ownership boundaries do not require new crates or commands.
 
 ## Integration Interfaces
 
+- [Wrix consumption](wrix-compatibility.md) — data-only manifests, trusted
+  caller launchers, namespaced sessions, and cold-evaluable Cargo build/check
+  inputs.
+
 - [External workspace membership](external-workspace-membership.md) — explicit
   host-side adapter selection, status-only admission, failure handling and
   scope.

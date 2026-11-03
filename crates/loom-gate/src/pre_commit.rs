@@ -297,7 +297,7 @@ repos:
   - repo: local
     hooks:
       - id: nix-flake-check
-        entry: bin/pre-push-checks --hook-id nix-flake-check --hook-entry 'skip-if-missing nix -- nix flake check' -- skip-if-missing nix -- nix flake check
+        entry: bin/pre-push-checks --hook-id nix-flake-check --hook-entry 'nix flake check' -- nix flake check
         stages: [pre-push]
       - id: cargo-clippy
         entry: bin/pre-push-checks --hook-id cargo-clippy --hook-entry 'cargo clippy --workspace --all-targets -- -D warnings' -- cargo clippy --workspace --all-targets -- -D warnings
@@ -315,7 +315,7 @@ repos:
             vec![
                 HookCoverage {
                     id: "nix-flake-check".to_owned(),
-                    entry: "skip-if-missing nix -- nix flake check".to_owned(),
+                    entry: "nix flake check".to_owned(),
                 },
                 HookCoverage {
                     id: "cargo-clippy".to_owned(),

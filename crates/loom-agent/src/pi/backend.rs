@@ -90,7 +90,7 @@ impl PiBackend {
     ///
     /// Returns an error when agent startup, protocol handling, or tool execution fails.
     pub async fn spawn_bridge(config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
-        let wrix_bin = resolve_wrix_spawn_bin(config)?;
+        let wrix_bin = resolve_wrix_spawn_bin(config);
         Self::spawn_bridge_with_wrix_bin(config, &wrix_bin).await
     }
 
@@ -148,7 +148,7 @@ impl PiBackend {
 
 impl AgentBackend for PiBackend {
     async fn spawn(config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
-        let wrix_bin = resolve_wrix_spawn_bin(config)?;
+        let wrix_bin = resolve_wrix_spawn_bin(config);
         Self::spawn_with_wrix_bin(config, &wrix_bin).await
     }
 

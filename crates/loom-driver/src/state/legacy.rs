@@ -232,6 +232,12 @@ pub(super) fn import(conn: &Connection, database: &Path) -> Result<Import, Cache
 }
 
 pub(super) fn copy_notes(source: &Connection, destination: &Connection) -> Result<(), CacheError> {
+    let tables = source.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")?
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    if tables == ["criterion_status", "meta", "specs"] {
+        return Ok(());
+    }
     let mut query =
         source.prepare("SELECT spec_label, kind, text, created_at FROM notes ORDER BY id")?;
     let notes = query.query_map([], |row| {
@@ -317,6 +323,74 @@ mod tests {
                 .unwrap()
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn initialization_imports_old_feedback_cache_without_notes_and_preserves_current_notes() {
+        let root = tempfile::tempdir().unwrap();
+        let runtime = root.path().join(".loom");
+        std::fs::create_dir_all(&runtime).unwrap();
+        let path = crate::state::path(root.path());
+        let current = CacheDb::open(&path).unwrap();
+        current
+            .notes_add(
+                &"harness".parse().unwrap(),
+                "implementation",
+                "preserved current guidance",
+                123,
+            )
+            .unwrap();
+        drop(current);
+        Connection::open(&path)
+            .unwrap()
+            .execute("DELETE FROM meta WHERE key = 'state_store_import'", [])
+            .unwrap();
+        let legacy = runtime.join("cache.db");
+        let old = Connection::open(&legacy).unwrap();
+        old.execute_batch("CREATE TABLE specs(label TEXT); CREATE TABLE meta(key TEXT,value TEXT); CREATE TABLE criterion_status(id TEXT);").unwrap();
+        drop(old);
+        assert!(
+            CacheDb::open(&path).is_err(),
+            "ordinary marker reads cannot import retired stores"
+        );
+        assert!(legacy.exists());
+        let manager = crate::lock::LockManager::new(root.path()).unwrap();
+        let guard = manager.acquire_workspace().unwrap();
+        let db = CacheDb::open_for_init(&path, &guard).unwrap();
+        assert_eq!(
+            db.notes_list(Some(&"harness".parse().unwrap()), Some("implementation"))
+                .unwrap()[0]
+                .text,
+            "preserved current guidance"
+        );
+        assert!(!legacy.exists());
+        drop(db);
+        drop(guard);
+        assert!(
+            CacheDb::open(&path).is_ok(),
+            "subsequent marker reads do not require migration"
+        );
+    }
+
+    #[test]
+    fn unknown_notes_free_legacy_schema_fails_without_retiring_the_source() {
+        let root = tempfile::tempdir().unwrap();
+        let runtime = root.path().join(".loom");
+        std::fs::create_dir_all(&runtime).unwrap();
+        let legacy = runtime.join("cache.db");
+        let old = Connection::open(&legacy).unwrap();
+        old.execute_batch("CREATE TABLE unknown_guidance(text TEXT); INSERT INTO unknown_guidance VALUES ('retain me');").unwrap();
+        drop(old);
+        let manager = crate::lock::LockManager::new(root.path()).unwrap();
+        let guard = manager.acquire_workspace().unwrap();
+        assert!(CacheDb::open_for_init(crate::state::path(root.path()), &guard).is_err());
+        let old = Connection::open(&legacy).unwrap();
+        assert_eq!(
+            old.query_row("SELECT text FROM unknown_guidance", [], |row| row
+                .get::<_, String>(0))
+                .unwrap(),
+            "retain me"
         );
     }
 

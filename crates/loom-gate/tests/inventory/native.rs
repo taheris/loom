@@ -397,7 +397,10 @@ fn nix_fixture_consumers_retain_evaluation_and_check_without_cargo_test() {
     write(
         dir.path(),
         "flake.nix",
-        "{ outputs = { self }: { checks.x86_64-linux.native = throw \"must not force execution\"; }; }\n",
+        &format!(
+            "{{ outputs = {{ self }}: {{ checks.{}.native = throw \"must not force execution\"; }}; }}\n",
+            loom_gate::runner::result::current_platform()
+        ),
     );
     strategy(dir.path(), "nix:flake:flake.nix", "test-fixture");
     let inventory = inventory(dir.path());

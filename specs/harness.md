@@ -520,7 +520,21 @@ is required.
 - CLI errors mapped to typed error variants
   [test](cli_failure_maps_to_typed_error)
 
+- Initialization recognizes the notes-free retired feedback-cache schema,
+  preserves existing current notes and enables later ordinary marker reads.
+  [test](initialization_imports_old_feedback_cache_without_notes_and_preserves_current_notes)
+
+- Unrecognized notes-free retired schemas fail import without removing source
+  data.
+  [test](unknown_notes_free_legacy_schema_fails_without_retiring_the_source)
+
 ### Nix integration
+
+- Consumer builds/checks retain explicit Cargo metadata and vendor inputs.
+  Focused checks evaluate in a cold private Nix store without realizing staged
+  sources or enabling import-from-derivation. Data-only manifests retain image
+  and immutable profile configuration provenance without executable authority.
+  [check](nix build .#verification-consumer-api)
 
 <!-- prettier-ignore -->
 - Loom binary builds via `nix build` [system](nix build .#loom)

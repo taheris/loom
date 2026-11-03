@@ -190,7 +190,8 @@ mod cases {
             "unbound task must not reach external agent"
         );
         fixture.bind().await;
-        let worker = ready(fixture.prepare().await);
+        let mut worker = ready(fixture.prepare().await);
+        worker.spawn.wrix_launcher = Some(launcher);
         let mut text = String::new();
         let result = crate::agent::run_agent_classified::<loom_agent::pi::backend::PiBackend>(
             &worker.spawn,

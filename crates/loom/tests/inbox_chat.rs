@@ -335,7 +335,6 @@ struct ChatRun {
     state_dir: PathBuf,
     bd_bin_dir: PathBuf,
     wrix_stub: PathBuf,
-    default_wrapper: PathBuf,
     manifest: PathBuf,
     argv_log: PathBuf,
     env_log: PathBuf,
@@ -349,15 +348,6 @@ fn setup_chat() -> ChatRun {
     std::fs::create_dir_all(&state_dir).expect("mkdir state");
     let bd_bin_dir = install_bd_shim(&workspace);
     let wrix_stub = install_wrix_stub(&workspace);
-    let default_wrapper = workspace.join("wrix-rust-pi");
-    loom_test_support::write_executable_bash_script(
-        &default_wrapper,
-        &format!(
-            "set -euo pipefail\nexec \"{}\" --profile-config /baked-rust-pi.json \"$@\"\n",
-            wrix_stub.display()
-        ),
-    )
-    .unwrap();
     let manifest = write_manifest(&workspace);
     ChatRun {
         argv_log: workspace.join("argv.log"),
@@ -366,7 +356,6 @@ fn setup_chat() -> ChatRun {
         state_dir,
         bd_bin_dir,
         wrix_stub,
-        default_wrapper,
         manifest,
         _tmp: tmp,
     }
@@ -511,7 +500,7 @@ fn chat_command(env: &ChatRun, mode: &str, args: &[&str], extra_env: &[(&str, &s
         .arg("chat")
         .args(args)
         .env("PATH", new_path)
-        .env("LOOM_WRIX_BIN", &env.default_wrapper)
+        .env("LOOM_WRIX_BIN", &env.wrix_stub)
         .env_remove("LOOM_WRIX_SPAWN_BIN")
         .env("WRIX_STUB_MODE", mode)
         .env("LOOM_PROFILES_MANIFEST", &env.manifest)

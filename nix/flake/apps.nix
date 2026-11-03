@@ -58,12 +58,12 @@
         pkgs.cargo-nextest
         pkgs.dolt
         pkgs.git
+        pkgs.flock
         pkgs.nix
         pkgs.python3
         pkgs.beads
         pkgs.openssh
         loom.hookRunner
-        wrixLib.skipIfMissing
         loom.bin
         loom.toolchain
       ];
@@ -213,10 +213,13 @@
             ref = "bootstrap-fixture";
             source = "${fixtureImage}";
             source_kind = "nix-descriptor";
-            launcher = "${wrixLauncher}/bin/wrix";
             profile_config = "${fixtureProfile}";
-            native_preflight = "rust";
           };
+        }
+      );
+      fixtureNative = pkgs.writeText "bootstrap-fixture-native.json" (
+        builtins.toJSON {
+          ${builtins.unsafeDiscardStringContext "${fixtureProfile}"} = "rust";
         }
       );
       bootstrapScript = source "tests/sandbox/profile-bootstrap.sh";
@@ -241,7 +244,7 @@
               [[ $# == 0 ]] || exit 64
               exec ${pkgs.bash}/bin/bash ${builtins.head paths} \
                 ${loom.bin}/bin/loom ${wrixLauncher}/bin/wrix ${fixtureManifest} \
-                ${pkgs.bash} ${pkgs.coreutils} ${pkgs.stdenv.hostPlatform.system}
+                ${pkgs.bash} ${pkgs.coreutils} ${pkgs.stdenv.hostPlatform.system} ${fixtureNative}
             '';
           };
       };
@@ -271,8 +274,6 @@
     {
       packages = {
         smoke-runtime = nativePackage smokeRuntime;
-      }
-      // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
         native-rust-fixture = nativePackage nativeRustFixture;
         native-smoke-fixture = nativePackage nativeSmokeFixture;
       };

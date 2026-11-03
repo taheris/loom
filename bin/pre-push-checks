@@ -17,10 +17,6 @@ scrub_git_local_env() {
 }
 
 exec_sanitized() {
-    if [[ "${1:-}" == skip-if-missing && "${3:-}" == -- ]] && ! command -v "$2" >/dev/null; then
-        printf 'pre-push-checks: required capability unavailable: %s; coverage remains pending\n' "$2" >&2
-        exit 78
-    fi
     scrub_git_local_env
     if [[ -f scripts/configure-cargo-patches.sh ]]; then
         bash scripts/configure-cargo-patches.sh

@@ -273,8 +273,8 @@ pub async fn prepare_with_bd<R: CommandRunner>(
         Ok(spawn) => spawn,
         Err(error) => return profile_rejection(error, manifest).map(Preparation::Rejected),
     };
-    let native_feedback =
-        manifest.lookup(&profile, runtime)?.native_preflight == Some(NativePreflight::Rust);
+    let native_feedback = manifest.native_preflight(manifest.lookup(&profile, runtime)?)
+        == Some(NativePreflight::Rust);
     if native_feedback
         || tracked_files
             .iter()
@@ -718,9 +718,10 @@ exec "$LOOM_PREFLIGHT_BASH" -euo pipefail -c 'source "$1"; require_tool nix' -- 
                 );
                 continue;
             }
-            let Preparation::Ready(worker) = prepared else {
+            let Preparation::Ready(mut worker) = prepared else {
                 panic!("provisioned worker rejected")
             };
+            worker.spawn.wrix_launcher = Some(launcher.clone());
             let result = match runtime {
                 AgentRuntime::Pi => {
                     run_prepared_backend::<loom_agent::PiBackend>(&worker.spawn).await

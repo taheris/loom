@@ -25,8 +25,8 @@ pub const DEFAULT_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 /// Options accepted by [`run`].
 pub struct PlanOpts {
     pub anchor_labels: Vec<SpecLabel>,
-    /// Explicit raw launcher override. Otherwise use `LOOM_WRIX_SPAWN_BIN`,
-    /// then the selected manifest launcher. The selected profile config is unchanged.
+    /// Explicit raw launcher override, otherwise resolved from trusted caller context.
+    /// The selected immutable profile configuration is unchanged.
     pub wrix_bin: Option<PathBuf>,
     /// CLI `--profile` override — wins over `[phase.plan]` /
     /// `[phase.default]` resolution per `specs/harness.md` § Profile-Image
@@ -36,7 +36,7 @@ pub struct PlanOpts {
     /// `[phase.default].agent.backend` select the interactive command passed
     /// to `wrix run`.
     pub agent_override: Option<AgentKind>,
-    /// Manifest selecting the matching raw launcher and immutable profile config.
+    /// Data-only manifest selecting immutable image and profile configuration.
     pub manifest: ProfileImageManifest,
     /// Repository key paths for the `wrix run` launcher process.
     pub launcher_env: Vec<(String, String)>,
@@ -132,7 +132,7 @@ pub fn run_with_timeout(
     loom_driver::spec::context::write(&package_context, scratch.path())?;
     let _restored_skills = skill_plan.materialize(scratch.path(), workspace)?;
 
-    let bin = loom_driver::wrix::resolve_launcher(&image.launcher, opts.wrix_bin.as_deref());
+    let bin = loom_driver::wrix::resolve_launcher(opts.wrix_bin.as_deref());
     let argv = match selection.kind() {
         AgentKind::Claude => {
             let claude_settings_path =

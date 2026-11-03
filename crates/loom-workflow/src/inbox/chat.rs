@@ -200,7 +200,7 @@ pub fn run(workspace: &Path, opts: &ChatOpts) -> Result<ChatReport, ChatError> {
 
     let scratch = ScratchSession::open(workspace, &key, &prompt_body, "loom inbox chat")?;
     let restored_skills = skill_plan.materialize(scratch.path(), workspace)?;
-    let bin = loom_driver::wrix::resolve_launcher(&image.launcher, opts.wrix_bin.as_deref());
+    let bin = loom_driver::wrix::resolve_launcher(opts.wrix_bin.as_deref());
 
     let stdout = match selection.kind() {
         AgentKind::Claude => {
@@ -901,7 +901,6 @@ mod tests {
             r#ref: "fixture".into(),
             source: PathBuf::from("/fixture/image"),
             source_kind: loom_driver::agent::ImageSourceKind::NixDescriptor,
-            launcher: PathBuf::from("/fixture/wrix"),
             profile_config: PathBuf::from("/fixture/profile.json"),
             digest: None,
             runtime: Some(AgentKind::Pi),

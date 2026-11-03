@@ -807,7 +807,7 @@ fn wrix_spawn_prefers_unprofiled_spawn_launcher_env() {
 }
 
 #[test]
-fn wrix_spawn_prefers_manifest_raw_launcher_over_profiled_env() {
+fn wrix_spawn_ignores_manifest_executable_and_uses_caller_pin() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
 
@@ -830,9 +830,9 @@ fn wrix_spawn_prefers_manifest_raw_launcher_over_profiled_env() {
     let loom_bin = env!("CARGO_BIN_EXE_loom");
     let output = drive_loom_todo_pi_with_spawn_bin_and_manifest_launcher(
         workspace,
-        &profiled_shim,
+        &raw_spawn_shim,
         None,
-        Some(&raw_spawn_shim),
+        Some(&profiled_shim),
         loom_bin,
     );
 
@@ -840,11 +840,11 @@ fn wrix_spawn_prefers_manifest_raw_launcher_over_profiled_env() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "loom todo must use the manifest launcher for spawn. stdout={stdout} stderr={stderr}",
+        "loom todo must use the caller's launcher, not manifest authority. stdout={stdout} stderr={stderr}",
     );
     assert!(
         !profiled_marker.exists(),
-        "spawn path invoked profiled LOOM_WRIX_BIN instead of manifest raw launcher",
+        "spawn path invoked the manifest-supplied executable instead of the caller pin",
     );
     let argv = std::fs::read_to_string(&argv_file).expect("spawn shim should record argv");
     let profile_config_count = argv

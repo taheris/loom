@@ -329,12 +329,13 @@ async fn native_baseline_without_any_acceptance_annotation_is_selected_and_dispa
         "## Success Criteria\n- Accounting [check](accounting)\n",
     );
     super::nix::native_project(&dir, "", true, true);
+    let platform = super::nix::use_host_system(&dir);
     let (snapshot, inventory) = context(&dir);
     let native = Definition::hermetic(
         &snapshot,
         &inventory,
         name("native-baseline"),
-        &name("nix:check:flake.nix:x86_64-linux:heading"),
+        &name(&format!("nix:check:flake.nix:{platform}:heading")),
         &BTreeSet::from([name("resource:README.md")]),
         &BTreeSet::from([Duty::Document]),
     )

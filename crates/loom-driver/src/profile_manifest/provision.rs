@@ -44,8 +44,10 @@ pub async fn bootstrap_loop(
     let configured = match ProfileImageManifest::from_env() {
         Ok(manifest) => Some(manifest),
         Err(ProfileError::ManifestEnvUnset) => None,
-        Err(ProfileError::ManifestNotFound { source, .. })
-            if source.kind() == std::io::ErrorKind::NotFound =>
+        Err(ProfileError::ManifestNotFound { path, source })
+            if source.kind() == std::io::ErrorKind::NotFound
+                && std::env::var_os(super::ENV_VAR)
+                    .is_some_and(|selected| path == Path::new(&selected)) =>
         {
             None
         }
@@ -81,7 +83,7 @@ pub async fn bootstrap_loop(
         .append_pair("rev", source.as_str())
         .append_pair("allRefs", "1");
     url.set_fragment(Some("profile-images"));
-    let installable = format!("git+{url}");
+    let installable = format!("git+{url}^*");
     let clock = SystemClock::new();
     let log = association
         .operator()
@@ -207,12 +209,66 @@ fn store_manifest(bytes: &[u8]) -> Result<ProfileImageManifest, ProvisionError> 
             reason: "the factory manifest is not an immutable store file",
         });
     }
-    Ok(ProfileImageManifest::from_path(&path)?)
+    let manifest = ProfileImageManifest::from_path(&path)?;
+    match build.outputs.get("nativePreflight") {
+        Some(path) => {
+            let path = std::fs::canonicalize(path)?;
+            if !path.starts_with("/nix/store") || !path.is_file() {
+                return Err(ProvisionError::Output {
+                    reason: "the factory capabilities are not an immutable store file",
+                });
+            }
+            Ok(manifest.with_native_capabilities(&path)?)
+        }
+        None => Ok(manifest),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn missing_capability_inputs_cannot_discard_selected_images_for_factory_fallback() {
+        const CHILD: &str = "LOOM_TEST_PROFILE_CAPABILITY_CHILD";
+        const MISSING: &str = "LOOM_TEST_PROFILE_CAPABILITY_MISSING";
+        if std::env::var_os(CHILD).is_some() {
+            let workspace = Path::new("/not-a-profile-factory-checkout");
+            let policy =
+                RepoGitPolicy::resolve(workspace, "unused-wrix".into(), crate::git::KeyMode::Host)
+                    .unwrap();
+            let result = bootstrap_loop(workspace, &LoomConfig::default(), policy).await;
+            let Err(ProvisionError::Profile(ProfileError::ManifestNotFound { path, .. })) = result
+            else {
+                panic!("missing capability input discarded the selected image data: {result:?}")
+            };
+            assert_eq!(path, PathBuf::from(std::env::var_os(MISSING).unwrap()));
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let manifest = directory.path().join("images.json");
+        std::fs::write(&manifest, r#"{"rust":{"pi":{"ref":"selected","source":"/selected/image","source_kind":"nix-descriptor","profile_config":"/selected/config"}}}"#).unwrap();
+        let missing = directory.path().join("missing-capabilities.json");
+        for variable in [
+            super::super::NATIVE_ENV_VAR,
+            super::super::PROVISIONED_ENV_VAR,
+        ] {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "profile_manifest::provision::tests::missing_capability_inputs_cannot_discard_selected_images_for_factory_fallback"])
+                .env(CHILD, "1").env(MISSING, &missing)
+                .env(super::super::ENV_VAR, &manifest)
+                .env_remove(super::super::NATIVE_ENV_VAR)
+                .env_remove(super::super::PROVISIONED_ENV_VAR)
+                .env(variable, &missing)
+                .output().await.unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        }
+    }
 
     #[test]
     fn factory_output_rejects_partial_results_and_mutable_manifests() {

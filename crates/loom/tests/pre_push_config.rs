@@ -186,7 +186,7 @@ fn install_recording_command(tools: &Path, name: &str) {
 }
 
 #[test]
-fn marker_free_hook_rejects_absent_required_tool_before_skip_wrapper() {
+fn marker_free_hook_fails_when_required_tool_is_absent() {
     let fixture = Fixture::new();
     let mut command = fixture.recording_command("bash");
     let output = command
@@ -195,25 +195,64 @@ fn marker_free_hook_rejects_absent_required_tool_before_skip_wrapper() {
             "--hook-id",
             "required-tool",
             "--hook-entry",
-            "skip-if-missing loom-fixture-tool-not-installed -- true",
-            "--",
-            "skip-if-missing",
             "loom-fixture-tool-not-installed",
             "--",
-            "true",
+            "loom-fixture-tool-not-installed",
         ])
         .output()
         .expect("execute actual hook wrapper");
     assert_eq!(
         output.status.code(),
-        Some(78),
+        Some(127),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(String::from_utf8_lossy(&output.stderr).contains("coverage remains pending"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("loom-fixture-tool-not-installed"));
     assert_eq!(
         std::fs::read_to_string(&fixture.log).expect("invocation log"),
         ""
+    );
+}
+
+#[test]
+fn marker_read_failure_runs_required_command_and_preserves_its_failure() {
+    let fixture = Fixture::new();
+    std::fs::create_dir_all(fixture.workspace.join(".loom")).unwrap();
+    std::fs::write(
+        fixture.workspace.join(".loom/state.db"),
+        "unavailable marker state",
+    )
+    .unwrap();
+    loom_test_support::write_executable_bash_script(
+        fixture.tools.join("loom"),
+        "set -euo pipefail\nprintf 'marker state requires initialization\\n' >&2\nexit 1\n",
+    )
+    .unwrap();
+    loom_test_support::write_executable_bash_script(
+        fixture.tools.join("required-check"),
+        "set -euo pipefail\nprintf 'required-check\\n' >> \"$PRE_PUSH_TEST_LOG\"\nexit 17\n",
+    )
+    .unwrap();
+    let output = fixture
+        .recording_command("bash")
+        .args([
+            "bin/pre-push-checks",
+            "--hook-id",
+            "required-check",
+            "--hook-entry",
+            "required-check",
+            "--",
+            "required-check",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(17));
+    assert_eq!(
+        std::fs::read_to_string(&fixture.log).unwrap(),
+        "required-check\n"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("marker state requires initialization")
     );
 }
 

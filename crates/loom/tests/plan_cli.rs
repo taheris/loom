@@ -170,7 +170,7 @@ exit "${LAUNCH_EXIT:-0}"
             .args(["plan", "flake", "--host-key"])
             .env("LOOM_PROFILES_MANIFEST", &self.manifest)
             .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
-            .env("LOOM_WRIX_BIN", &self.wrapper)
+            .env("LOOM_WRIX_BIN", &self.launcher)
             .env_remove("LOOM_WRIX_SPAWN_BIN")
             .env("LAUNCH_LOG", self.root.path().join("launch.json"))
             .env("XDG_STATE_HOME", self.root.path().join("state"))
@@ -209,14 +209,7 @@ fn plan_cli_overrides_select_matching_profile_configs() {
             String::from_utf8_lossy(&output.stderr)
         );
         let launch = fixture.launch();
-        let expected_launcher = if (profile, runtime) == ("base", "claude") {
-            fixture.launcher.clone()
-        } else {
-            fixture
-                .root
-                .path()
-                .join(format!("raw-wrix-{profile}-{runtime}"))
-        };
+        let expected_launcher = fixture.launcher.clone();
         assert_eq!(launch["launcher"], expected_launcher.to_str().unwrap());
         let argv = launch["argv"].as_array().unwrap();
         assert_eq!(argv[0], "--profile-config");
@@ -392,7 +385,7 @@ fn plan_does_not_create_epic_or_touch_bd() {
         .env("LOOM_PROFILES_MANIFEST", manifest)
         .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
         .env("LOOM_WRIX_BIN", default_wrapper)
-        .env_remove("LOOM_WRIX_SPAWN_BIN")
+        .env("LOOM_WRIX_SPAWN_BIN", &wrix)
         .env("LOOM_TEST_BIN", env!("CARGO_BIN_EXE_loom"))
         .env("WRIX_LOG", &wrix_log)
         .env("BD_READ_LOG", &bd_read_log)

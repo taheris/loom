@@ -65,6 +65,12 @@ mod cases {
             "nix_owned_verifiers_repeat_success_and_failure_without_native_reservations",
             |root| {
                 let source = app(root);
+                // Darwin cannot mount a relocated logical store for `nix run`.
+                let store = if cfg!(target_os = "macos") {
+                    PathBuf::from("daemon")
+                } else {
+                    root.join("store")
+                };
                 for valid in [true, true, false, false] {
                     let mut cmd = command(pinned(), &source);
                     cmd.args([
@@ -74,7 +80,7 @@ mod cases {
                         "--no-write-lock-file",
                         "--store",
                     ])
-                    .arg(root.join("store"))
+                    .arg(&store)
                     .arg(format!("path:{}#probe", source.display()))
                     .args([
                         "--", "eval", "--store", "dummy://", "--impure", "--raw", "--expr",
@@ -97,18 +103,20 @@ mod cases {
                     assert!(!source.join("target").exists());
                     drop(execution);
                 }
-                let output = Command::new(pinned())
-                    .args([
-                        "store",
-                        "gc",
-                        "--extra-experimental-features",
-                        "nix-command",
-                        "--store",
-                    ])
-                    .arg(root.join("store"))
-                    .output()
-                    .unwrap();
-                assert!(output.status.success(), "{output:?}");
+                if store.is_absolute() {
+                    let output = Command::new(pinned())
+                        .args([
+                            "store",
+                            "gc",
+                            "--extra-experimental-features",
+                            "nix-command",
+                            "--store",
+                        ])
+                        .arg(&store)
+                        .output()
+                        .unwrap();
+                    assert!(output.status.success(), "{output:?}");
+                }
             },
         );
     }

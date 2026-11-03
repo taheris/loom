@@ -51,7 +51,7 @@ impl AgentBackend for ClaudeBackend {
         register_native_skills::<NoNativeRegistrar>(config)?;
         let spawn_config = prepare_runtime(config)?;
 
-        let wrix_bin = resolve_wrix_spawn_bin(config)?;
+        let wrix_bin = resolve_wrix_spawn_bin(config);
         info!(
             wrix = %wrix_bin.to_string_lossy(),
             spawn_config = %spawn_config.path().display(),

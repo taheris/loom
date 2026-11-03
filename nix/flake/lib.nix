@@ -16,6 +16,9 @@ in
         fenix ? inputs.fenix,
         toolchain ? null,
         src ? loomSrc,
+        cargoToml ? null,
+        cargoLock ? null,
+        cargoVendorDir ? null,
       }:
       loomLib.mkLoom {
         inherit
@@ -24,6 +27,9 @@ in
           fenix
           toolchain
           src
+          cargoToml
+          cargoLock
+          cargoVendorDir
           ;
       };
 

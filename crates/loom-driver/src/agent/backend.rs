@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use loom_events::AgentStartMetadata;
 use loom_skill::registry::RegisteredSkills;
+use serde::de::Error as _;
 use serde::{Deserialize, Serialize};
 
 use crate::config::AgentObserversConfig;
@@ -34,12 +35,9 @@ pub struct SpawnConfig {
     /// infer the install path from filenames or platform defaults.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_source_kind: Option<ImageSourceKind>,
-    /// Raw, profile-agnostic wrix launcher selected from the same manifest
-    /// entry as [`SpawnConfig::image_ref`]. Required for host-side launch;
-    /// only an explicit raw launcher override can supersede it. Configured
-    /// wrappers and PATH defaults are not fallback image-selection mechanisms.
-    /// Skipped because it is host process state, not part of wrix's
-    /// per-launch JSON contract.
+    /// Optional raw Wrix launcher override supplied by the trusted caller.
+    /// Host executable selection is independent of immutable image data and
+    /// never crosses the Wrix JSON boundary.
     #[serde(skip)]
     pub wrix_launcher: Option<PathBuf>,
     /// Wrix `ProfileConfig` path selected from the same manifest entry as
@@ -177,6 +175,16 @@ pub struct SpawnConfig {
     pub launcher_env: Vec<(String, String)>,
 }
 
+const WRIX_LAUNCH_FIELDS: [&str; 7] = [
+    "image_ref",
+    "image_source",
+    "image_source_kind",
+    "workspace",
+    "env",
+    "agent_args",
+    "mounts",
+];
+
 impl SpawnConfig {
     /// Encode launch fields separately from Loom's opaque consumer extension.
     ///
@@ -186,15 +194,7 @@ impl SpawnConfig {
         let mut consumer = serde_json::to_value(self)?;
         let mut launch = serde_json::Map::new();
         if let Some(fields) = consumer.as_object_mut() {
-            for key in [
-                "image_ref",
-                "image_source",
-                "image_source_kind",
-                "workspace",
-                "env",
-                "agent_args",
-                "mounts",
-            ] {
+            for key in WRIX_LAUNCH_FIELDS {
                 if let Some(value) = fields.remove(key) {
                     launch.insert(key.into(), value);
                 }
@@ -209,18 +209,26 @@ impl SpawnConfig {
     /// # Errors
     /// Returns malformed or incomplete configuration errors.
     pub fn from_wrix_slice(bytes: &[u8]) -> Result<Self, serde_json::Error> {
-        let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
-        if let Some(fields) = value.as_object_mut()
-            && let Some(mut extensions) = fields.remove("extensions")
-            && let Some(consumer) = extensions
-                .get_mut("loom")
-                .and_then(serde_json::Value::as_object_mut)
-        {
-            for (key, value) in std::mem::take(consumer) {
-                fields.entry(key).or_insert(value);
+        #[derive(Deserialize)]
+        struct Launch {
+            #[serde(flatten)]
+            inputs: serde_json::Map<String, serde_json::Value>,
+            extensions: serde_json::Map<String, serde_json::Value>,
+        }
+        let mut launch: Launch = serde_json::from_slice(bytes)?;
+        let mut payload: serde_json::Map<String, serde_json::Value> = serde_json::from_value(
+            launch
+                .extensions
+                .remove("loom")
+                .ok_or_else(|| serde_json::Error::missing_field("extensions.loom"))?,
+        )?;
+        for key in WRIX_LAUNCH_FIELDS {
+            payload.remove(key);
+            if let Some(value) = launch.inputs.remove(key) {
+                payload.insert(key.into(), value);
             }
         }
-        serde_json::from_value(value)
+        serde_json::from_value(serde_json::Value::Object(payload))
     }
 }
 
@@ -519,6 +527,89 @@ mod tests {
         assert_eq!(decoded.model_id, config.model_id);
         assert_eq!(decoded.thinking_level, config.thinking_level);
         assert_eq!(decoded.shutdown_grace, config.shutdown_grace);
+    }
+
+    #[test]
+    fn wrix_runner_requires_non_null_namespaced_session_without_flat_fallback() {
+        let config = sample_config(None);
+        let flat = serde_json::to_value(&config).unwrap();
+        for extensions in [
+            None,
+            Some(serde_json::Value::Null),
+            Some(serde_json::json!({})),
+            Some(serde_json::json!({"loom": null})),
+            Some(serde_json::json!({"loom": []})),
+            Some(serde_json::json!({"loom": {}})),
+            Some(serde_json::json!([flat.clone()])),
+            Some(serde_json::json!(true)),
+            Some(serde_json::json!({"loom": 42})),
+        ] {
+            let mut value = flat.clone();
+            if let Some(extensions) = extensions {
+                value["extensions"] = extensions;
+            }
+            assert!(
+                SpawnConfig::from_wrix_slice(&serde_json::to_vec(&value).unwrap()).is_err(),
+                "accepted legacy fallback: {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn wrix_launch_and_session_namespaces_cannot_override_each_other() {
+        let config = sample_config(None);
+        let mut wire = config.to_wrix_json().unwrap();
+        wire["initial_prompt"] = "not session authority".into();
+        wire["extensions"]["loom"]["workspace"] = "/not-launch-authority".into();
+        let decoded = SpawnConfig::from_wrix_slice(&serde_json::to_vec(&wire).unwrap()).unwrap();
+        assert_eq!(decoded.initial_prompt, config.initial_prompt);
+        assert_eq!(decoded.workspace, config.workspace);
+        wire.as_object_mut().unwrap().remove("workspace");
+        assert!(SpawnConfig::from_wrix_slice(&serde_json::to_vec(&wire).unwrap()).is_err());
+    }
+
+    #[test]
+    fn wrix_launch_round_trips_complete_session_without_host_credentials() {
+        let mut config = sample_config(Some(ModelSelection {
+            provider: "provider".into(),
+            model_id: "model".into(),
+        }));
+        config.model_id = Some("model-id".into());
+        config.output_limits = Some(OutputLimits {
+            max_inline_bytes: 2048.try_into().unwrap(),
+        });
+        config.observers.doom_loop.enabled = false;
+        config.observers.duplicate_result.min_bytes = 1024;
+        config.thinking_level = Some(ThinkingLevel::High);
+        config.shutdown_grace = Some(Duration::from_secs(7));
+        config.handshake_timeout = Some(Duration::from_secs(11));
+        config.stall_warn_interval = Some(Duration::from_secs(13));
+        config.mounts.push(MountSpec {
+            host_path: "/host/cache".into(),
+            container_path: "/cache".into(),
+            read_only: false,
+        });
+        config.repin.partial_bodies.push("retained partial".into());
+        config.wrix_launcher = Some("/host/private-launcher".into());
+        config.profile_config = Some("/host/private-profile".into());
+        config.launcher_env = vec![("WRIX_SIGNING_KEY".into(), "/host/private-key".into())];
+        let wire = config.to_wrix_json().unwrap();
+        let encoded = serde_json::to_vec(&wire).unwrap();
+        assert!(!String::from_utf8_lossy(&encoded).contains("/host/private"));
+        for key in WRIX_LAUNCH_FIELDS {
+            assert!(
+                wire["extensions"]["loom"].get(key).is_none(),
+                "launch field in session: {key}"
+            );
+        }
+        let decoded = SpawnConfig::from_wrix_slice(&encoded).unwrap();
+        assert_eq!(
+            serde_json::to_value(&decoded).unwrap(),
+            serde_json::to_value(&config).unwrap()
+        );
+        assert_eq!(decoded.launcher_env, [] as [(String, String); 0]);
+        assert!(decoded.profile_config.is_none());
+        assert!(decoded.wrix_launcher.is_none());
     }
 
     /// An absent model preserves the wire shape expected by older launchers.

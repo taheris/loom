@@ -69,6 +69,17 @@ pub fn native_project(dir: &TempDir, options: &str, source: bool, pinned: bool) 
     );
 }
 
+pub fn use_host_system(dir: &TempDir) -> String {
+    let platform = loom_gate::runner::result::current_platform();
+    let flake = std::fs::read_to_string(dir.path().join("flake.nix")).unwrap();
+    write(
+        dir.path(),
+        "flake.nix",
+        &flake.replace("x86_64-linux", &platform),
+    );
+    platform
+}
+
 #[test]
 fn readonly_derivation_sources_retain_complete_native_graph_identity() {
     let dir = fixture();
@@ -845,13 +856,14 @@ fn native_runtime_resources_are_discovered_from_actual_consumers_not_file_suffix
         &flake.replace("README.md", "opaque-helper"),
     );
     write(dir.path(), "opaque-helper", "# Actual runtime resource\n");
+    let platform = use_host_system(&dir);
     let (snapshot, inventory) = context(&dir);
     let resource = name("resource:opaque-helper");
     assert_eq!(
         inventory.subject(&resource).unwrap().role(),
         loom_gate::inventory::Role::RuntimeResource
     );
-    let native = name("nix:check:flake.nix:x86_64-linux:heading");
+    let native = name(&format!("nix:check:flake.nix:{platform}:heading"));
     assert!(inventory.obligations().iter().any(|obligation| {
         obligation.subject() == &resource
             && obligation.responsible() == &native
@@ -891,6 +903,7 @@ fn declared_runtime_resource_without_actual_execution_input_is_rejected_during_d
         &flake.replace("README.md", "opaque-helper"),
     );
     write(dir.path(), "opaque-helper", "# Omitted input\n");
+    use_host_system(&dir);
     let snapshot = loom_gate::inventory::snapshot::Snapshot::discover(dir.path()).unwrap();
     assert!(matches!(
         loom_gate::inventory::Inventory::discover(&snapshot),
@@ -942,12 +955,13 @@ fn native_baseline_does_not_cover_unconsumed_nix_sources() {
         "unconsumed.nix",
         "this is deliberately not valid Nix @",
     );
+    let platform = use_host_system(&dir);
     let (snapshot, inventory) = context(&dir);
     let definition = Definition::hermetic_baseline(
         &snapshot,
         &inventory,
         name("heading"),
-        &name("nix:check:flake.nix:x86_64-linux:heading"),
+        &name(&format!("nix:check:flake.nix:{platform}:heading")),
     )
     .unwrap();
     assert!(
@@ -971,14 +985,15 @@ fn native_baseline_does_not_claim_an_independent_native_output() {
         "    checks.x86_64-linux.heading =",
         "    checks.x86_64-linux.other = self.checks.x86_64-linux.heading;\n    checks.x86_64-linux.heading =",
     ));
+    let platform = use_host_system(&dir);
     let (snapshot, inventory) = context(&dir);
-    let other = name("nix:check:flake.nix:x86_64-linux:other");
+    let other = name(&format!("nix:check:flake.nix:{platform}:other"));
     assert!(inventory.subject(&other).is_ok());
     let definition = Definition::hermetic_baseline(
         &snapshot,
         &inventory,
         name("heading"),
-        &name("nix:check:flake.nix:x86_64-linux:heading"),
+        &name(&format!("nix:check:flake.nix:{platform}:heading")),
     )
     .unwrap();
     assert!(
@@ -1080,12 +1095,19 @@ fn declared_check_names_do_not_admit_non_derivation_values() {
 fn native_graph_description_resolves_to_the_actual_store_execution() {
     let dir = fixture();
     native_project(&dir, "", true, true);
-    let (snapshot, inventory, definition) = definition(&dir).unwrap();
-    let binding = inventory
-        .subject(&name("nix:check:flake.nix:x86_64-linux:heading"))
-        .unwrap()
-        .nix_target()
-        .unwrap();
+    let platform = use_host_system(&dir);
+    let (snapshot, inventory) = context(&dir);
+    let subject = name(&format!("nix:check:flake.nix:{platform}:heading"));
+    let definition = Definition::hermetic(
+        &snapshot,
+        &inventory,
+        name("heading"),
+        &subject,
+        &BTreeSet::from([name("resource:README.md")]),
+        &BTreeSet::from([Duty::Document]),
+    )
+    .unwrap();
+    let binding = inventory.subject(&subject).unwrap().nix_target().unwrap();
     assert_eq!(binding.flake(), &path("flake.nix"));
     assert_eq!(binding.attribute(), &name("heading"));
     let registry = Registry::new(&snapshot, vec![definition]).unwrap();
@@ -1690,7 +1712,17 @@ fn cold_pinned_network_inputs_require_provisioning_before_offline_dispatch() {
         true,
         true,
     );
-    let (snapshot, inventory, definition) = definition(&dir).unwrap();
+    let platform = use_host_system(&dir);
+    let (snapshot, inventory) = context(&dir);
+    let definition = Definition::hermetic(
+        &snapshot,
+        &inventory,
+        name("heading"),
+        &name(&format!("nix:check:flake.nix:{platform}:heading")),
+        &BTreeSet::from([name("resource:README.md")]),
+        &BTreeSet::from([Duty::Document]),
+    )
+    .unwrap();
     let candidate = definition.description().clone();
     let registry = Registry::new(&snapshot, vec![definition]).unwrap();
     let unit = registry

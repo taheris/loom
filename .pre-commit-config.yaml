@@ -51,7 +51,7 @@ repos:
 
       - id: nix-flake-check
         name: nix flake check
-        entry: bin/pre-push-checks --hook-id nix-flake-check --hook-entry 'skip-if-missing nix -- nix flake check' -- skip-if-missing nix -- nix flake check
+        entry: bin/pre-push-checks --hook-id nix-flake-check --hook-entry 'nix flake check' -- nix flake check
         language: system
         stages: [pre-push]
         always_run: true
@@ -84,7 +84,7 @@ repos:
       # FIXME: Restore pre-push after the required suite is stabilized.
       - id: full-test-suite
         name: nix run .#test-required (full native coverage)
-        entry: bin/pre-push-checks --hook-id full-test-suite --hook-entry 'skip-if-missing nix -- nix run .#test-required' -- skip-if-missing nix -- nix run .#test-required
+        entry: bin/pre-push-checks --hook-id full-test-suite --hook-entry 'nix run .#test-required' -- nix run .#test-required
         language: system
         stages: [manual]
         always_run: true

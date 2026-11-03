@@ -103,7 +103,7 @@ mod cases {
         let (_root, output, source, policy) = fixture();
         let clock = MockClock::new();
         let target = prepare(&output, &source, &clock).unwrap();
-        let before = {
+        {
             let fence = Fence::trusted(&output).unwrap();
             let records = fence
                 .database
@@ -113,16 +113,28 @@ mod cases {
                 .database
                 .remove_record(RecordKind::CargoTarget, &records[0].0)
                 .unwrap();
-            fence.report(&policy).unwrap()
-        };
-        let legacy = output.join("old-context");
-        fs::create_dir(&legacy).unwrap();
-        fs::write(legacy.join("canonical-sentinel"), vec![3; 1024 * 1024]).unwrap();
+        }
         let next = prepare(&output, &source, &clock).unwrap();
         assert_ne!(next, target);
         let fence = Fence::trusted(&output).unwrap();
+        let before = fence.report(&policy).unwrap();
+        let legacy = output.join("old-context");
+        fs::create_dir(&legacy).unwrap();
+        fs::write(legacy.join("canonical-sentinel"), vec![3; 1024 * 1024]).unwrap();
+        fs::File::open(legacy.join("canonical-sentinel"))
+            .unwrap()
+            .sync_all()
+            .unwrap();
         let after = fence.report(&policy).unwrap();
-        assert!(after.allocated.get() >= before.allocated.get() + 1024 * 1024);
+        assert!(
+            after.allocated.get() >= before.allocated.get() + 1024 * 1024,
+            "allocated before={}, after={}, sentinel length={}",
+            before.allocated.get(),
+            after.allocated.get(),
+            fs::metadata(legacy.join("canonical-sentinel"))
+                .unwrap()
+                .len()
+        );
         assert!(after.outstanding.get() >= policy.reservation_bytes.get());
         assert!(target.exists());
         assert_eq!(

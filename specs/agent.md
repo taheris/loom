@@ -103,17 +103,17 @@ spawned.
 Per-phase config still resolves: each phase's `profile` key flows through
 `LoomConfig::agent_for(Phase)` exactly like the non-interactive phases. The
 resolved profile/runtime pair is looked up in the profile-image manifest. All
-image-backed launches exec the entry's raw `launcher` with its immutable
-`--profile-config` before `run` or `spawn`. A configured wrapper would inject a
-conflicting profile configuration and is not used. Image-selection environment
-variables are not part of this contract. Pi inbox chat's native TUI and non-TTY
-RPC bridge select the same manifest entry and profile configuration.
+image-backed launches exec the caller-selected raw launcher with the entry's
+immutable `--profile-config` before `run` or `spawn`. A configured wrapper would
+inject a conflicting profile configuration and is not used. Image-selection
+environment variables are not part of this contract. Pi inbox chat's native TUI
+and non-TTY RPC bridge select the same manifest entry and profile configuration.
 
-An explicit API launcher override takes precedence over `LOOM_WRIX_SPAWN_BIN`,
-which takes precedence over the manifest launcher. Overrides accept raw
-launchers only and change the executable, never the selected profile config.
-`LOOM_WRIX_BIN` remains the repository-initialization command and cannot change
-session image selection. Loom does not inspect or unwrap wrapper scripts.
+Launcher precedence is an explicit API override, `LOOM_WRIX_SPAWN_BIN`,
+`LOOM_WRIX_BIN`, `WRIX_BIN`, then the host `PATH` command `wrix`. These caller
+inputs accept raw launchers only and change the executable, never the selected
+profile config or session image. Manifests cannot select an executable. Loom
+does not inspect or unwrap wrapper scripts.
 
 ### Agent Backend Trait
 
@@ -319,13 +319,21 @@ Direct-only) carries `max_inline_bytes` — the inline-output cap above which
 content-returning Direct tools offload to the scratch offload directory. See
 [Direct Output Bounding](#direct-output-bounding).
 
-`image_ref`, `image_source`, `image_source_kind`, `wrix_launcher`, and
-`profile_config` come from the profile-image manifest at dispatch time — see
+`image_ref`, `image_source`, `image_source_kind`, and `profile_config` come from
+the data-only profile-image manifest at dispatch time — see
 [Workspaces — Profile-Image Manifest](workspaces.md#profile-image-manifest). The
-matching raw launcher and ProfileConfig path are host-only backend state;
-backends exec the raw launcher and pass the ProfileConfig as
+caller-selected raw launcher and matching ProfileConfig path are host-only
+backend state; backends exec the raw launcher and pass the ProfileConfig as
 `wrix --profile-config`. Image digests live in that ProfileConfig, not in the
 per-launch `SpawnConfig` JSON.
+
+Wrix launch fields (`image_ref`, `image_source`, `image_source_kind`,
+`workspace`, `env`, `agent_args`, and `mounts`) are top-level JSON. Opaque Loom
+session fields live exclusively under `extensions.loom`. The Wrix decoder
+requires a non-null object at that namespace and never falls back to legacy flat
+session fields. Session data cannot supply launch fields; top-level data cannot
+replace session state. Full session state round-trips independently of host-only
+launch authority.
 
 `SpawnConfig` also carries a host-only `launcher_env` map that is
 `#[serde(skip)]`-excluded from the JSON file. Backends apply it to the
@@ -1097,6 +1105,17 @@ letting the entrypoint run the wrong runtime.
   credentials
   [test](all_backends_require_private_nonsymlink_scratch_directories)
 
+- The Wrix session decoder rejects missing, null and malformed namespaces even
+  when legacy top-level session fields are complete.
+  [test](wrix_runner_requires_non_null_namespaced_session_without_flat_fallback)
+
+- Wrix spawn envelopes round-trip complete Loom session state while excluding
+  host executable, configuration and credential paths.
+  [test](wrix_launch_round_trips_complete_session_without_host_credentials)
+
+- Caller pins resolve in documented precedence without manifest executable
+  authority. [test](consumer_pin_precedence_resolves_without_manifest_authority)
+
 - `SpawnConfig` defaults absent Direct observer config to enabled
   [test](spawn_config_with_default_observers_omits_field)
 
@@ -1419,9 +1438,9 @@ letting the entrypoint run the wrong runtime.
   selected profile config
   [test](profile_config_precedes_run_and_spawn_arguments)
 
-- `loom plan` launches the manifest's raw launcher with its matching
-  `--profile-config` before `run`, even when the configured default wrapper is
-  Rust/Pi and the selected runtime/profile is Claude/base
+- `loom plan` launches the caller-selected raw launcher with the manifest's
+  matching `--profile-config` before `run`, even when the configured default
+  wrapper is Rust/Pi and the selected runtime/profile is Claude/base
   [test](plan_does_not_create_epic_or_touch_bd)
 
 - Claude-backed `loom inbox chat` uses the matching raw launcher and explicit

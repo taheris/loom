@@ -16,6 +16,9 @@ pub const ENV_VAR: &str = "LOOM_PROFILES_MANIFEST";
 /// Driver-package-owned profile closure used to upgrade legacy native feedback images.
 pub const PROVISIONED_ENV_VAR: &str = "LOOM_PROVISIONED_PROFILES_MANIFEST";
 
+/// Loom-owned native availability declarations keyed by immutable profile configuration.
+pub const NATIVE_ENV_VAR: &str = "LOOM_NATIVE_PREFLIGHT_MANIFEST";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum NativePreflight {
@@ -26,8 +29,7 @@ pub enum NativePreflight {
 ///
 /// Contains the podman ref to spawn, the Nix store path of the image source
 /// that materializes it, the source kind selecting the wrix
-/// install path, the raw wrix launcher that accepts a per-spawn
-/// `ProfileConfig`, the wrix `ProfileConfig` path matching that image variant,
+/// install path, the immutable Wrix `ProfileConfig` matching that image variant,
 /// and (when produced by the flake glue) the image content-digest file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImageEntry {
@@ -38,8 +40,6 @@ pub struct ImageEntry {
     pub source: PathBuf,
     /// Explicit source kind selecting the wrix launcher install path.
     pub source_kind: ImageSourceKind,
-    /// Raw, profile-agnostic Wrix launcher; never a configured wrapper.
-    pub launcher: PathBuf,
     /// Immutable Wrix profile configuration matching this image and runtime.
     pub profile_config: PathBuf,
     /// Optional Nix store path containing the image content digest. The
@@ -64,6 +64,8 @@ pub struct ProfileImageManifest {
     entries: BTreeMap<ProfileName, BTreeMap<AgentRuntime, ImageEntry>>,
     manifest_path: PathBuf,
     provisioned_path: Option<PathBuf>,
+    native: BTreeMap<PathBuf, Option<NativePreflight>>,
+    native_path: Option<PathBuf>,
 }
 
 fn validate_runtime_metadata(
@@ -93,7 +95,7 @@ impl ProfileImageManifest {
             profile.as_str() == "rust"
                 && runtimes
                     .values()
-                    .any(|entry| entry.native_preflight != Some(NativePreflight::Rust))
+                    .any(|entry| self.native_preflight(entry) != Some(NativePreflight::Rust))
         })
     }
 
@@ -104,19 +106,23 @@ impl ProfileImageManifest {
     /// Returns an error when the profile manifest cannot be read, parsed, or validated.
     pub fn from_env() -> Result<Self, ProfileError> {
         let raw = std::env::var_os(ENV_VAR).ok_or(ProfileError::ManifestEnvUnset)?;
-        let manifest = Self::from_path(Path::new(&raw))?;
-        match std::env::var_os(PROVISIONED_ENV_VAR) {
-            Some(path) => Ok(manifest.provision_native_from(&Self::from_path(Path::new(&path))?)),
+        let mut manifest = Self::from_path(Path::new(&raw))?;
+        if let Some(path) = std::env::var_os(PROVISIONED_ENV_VAR) {
+            manifest = manifest.provision_native_from(&Self::from_path(Path::new(&path))?);
+        }
+        match std::env::var_os(NATIVE_ENV_VAR) {
+            Some(path) => manifest.with_native_capabilities(Path::new(&path)),
             None => Ok(manifest),
         }
     }
 
-    /// Upgrade declared legacy native entries from the installed driver's explicit closure.
-    ///
-    /// Profile and runtime selection remain unchanged. This provisions feedback tools;
-    /// it does not establish required verification or authorize candidate execution.
+    /// Attach native availability only to exact matching immutable configurations.
+    /// Selected image provenance is never replaced and availability is not verification.
     #[must_use]
     pub fn provision_native_from(mut self, provisioned: &Self) -> Self {
+        if self.native_path.is_some() {
+            return self;
+        }
         for (profile, runtimes) in &mut self.entries {
             for (runtime, entry) in runtimes {
                 if entry.native_preflight.is_some() {
@@ -129,24 +135,56 @@ impl ProfileImageManifest {
                 else {
                     continue;
                 };
-                if replacement.native_preflight == Some(NativePreflight::Rust) {
-                    tracing::info!(
-                        %profile, %runtime,
-                        previous_manifest = %self.manifest_path.display(),
-                        provisioned_manifest = %provisioned.manifest_path.display(),
-                        "provisioning native feedback from the installed driver closure; required verification remains pending"
-                    );
-                    entry.clone_from(replacement);
+                if entry.profile_config == replacement.profile_config
+                    && provisioned.native_preflight(replacement) == Some(NativePreflight::Rust)
+                {
+                    entry.native_preflight = Some(NativePreflight::Rust);
                     self.provisioned_path = Some(provisioned.manifest_path.clone());
                 }
             }
         }
+        self.native.clone_from(&provisioned.native);
+        self.native_path.clone_from(&provisioned.native_path);
         self
+    }
+
+    /// Load Loom-owned native availability without changing image selection.
+    ///
+    /// # Errors
+    /// Returns unavailable or malformed capability declarations.
+    pub fn with_native_capabilities(mut self, path: &Path) -> Result<Self, ProfileError> {
+        let bytes = std::fs::read(path).map_err(|source| ProfileError::ManifestNotFound {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        self.native =
+            serde_json::from_slice(&bytes).map_err(|source| ProfileError::ManifestMalformed {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        self.native_path = Some(path.to_path_buf());
+        Ok(self)
+    }
+
+    /// Availability requests a worker probe, never acceptance of required verification.
+    pub fn native_preflight(&self, entry: &ImageEntry) -> Option<NativePreflight> {
+        self.native
+            .get(&entry.profile_config)
+            .copied()
+            .unwrap_or(entry.native_preflight)
     }
 
     /// Preserve the selected immutable profile inputs across trusted driver subprocesses.
     pub fn configure_driver(&self, command: &mut tokio::process::Command) {
         command.env(ENV_VAR, &self.manifest_path);
+        match &self.native_path {
+            Some(path) => {
+                command.env(NATIVE_ENV_VAR, path);
+            }
+            None => {
+                command.env_remove(NATIVE_ENV_VAR);
+            }
+        }
         match &self.provisioned_path {
             Some(path) => {
                 command.env(PROVISIONED_ENV_VAR, path);
@@ -179,6 +217,8 @@ impl ProfileImageManifest {
             entries,
             manifest_path: path.to_path_buf(),
             provisioned_path: None,
+            native: BTreeMap::new(),
+            native_path: None,
         })
     }
 
@@ -273,7 +313,7 @@ mod tests {
         let rust = ProfileName::new("rust")?;
         assert_eq!(
             repaired.lookup(&rust, AgentRuntime::Pi)?.source,
-            Path::new("/nix/store/pinned-image")
+            Path::new("/old-image")
         );
         assert_eq!(
             repaired
@@ -356,6 +396,107 @@ mod tests {
     }
 
     #[test]
+    fn four_field_manifests_preserve_project_provenance_with_exact_native_capabilities()
+    -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let capabilities = dir.path().join("native.json");
+        std::fs::write(&capabilities, r#"{"/project-a/config":"rust"}"#)?;
+        for (config, available) in [("/project-a/config", true), ("/project-b/config", false)] {
+            let entry = serde_json::json!({"ref":"project-image", "source":"/project/source", "source_kind":"nix-descriptor", "profile_config":config});
+            let path = write_manifest(
+                dir.path(),
+                &serde_json::json!({"rust":{"pi":entry}}).to_string(),
+            )?;
+            let original = ProfileImageManifest::from_path(&path)?;
+            assert_eq!(
+                serde_json::to_value(
+                    original.lookup(&ProfileName::new("rust")?, AgentRuntime::Pi)?
+                )?,
+                entry
+            );
+            let provisioned = original.clone().with_native_capabilities(&capabilities)?;
+            let selected = original.provision_native_from(&provisioned);
+            let image = selected.lookup(&ProfileName::new("rust")?, AgentRuntime::Pi)?;
+            assert_eq!(image.source, Path::new("/project/source"));
+            assert_eq!(image.profile_config, Path::new(config));
+            assert_eq!(image.r#ref, "project-image");
+            assert_eq!(selected.native_preflight(image).is_some(), available);
+            assert_eq!(selected.legacy_native(), !available);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_provisioning_never_substitutes_a_different_configuration() -> Result<()> {
+        let selected = tempfile::tempdir()?;
+        let installed = tempfile::tempdir()?;
+        let entry = serde_json::json!({"ref":"selected", "source":"/selected/source", "source_kind":"nix-descriptor", "profile_config":"/selected/config"});
+        let original = ProfileImageManifest::from_path(&write_manifest(
+            selected.path(),
+            &serde_json::json!({"rust":{"pi":entry}}).to_string(),
+        )?)?;
+        let mut other = entry.clone();
+        other["ref"] = "other".into();
+        other["source"] = "/other/source".into();
+        other["profile_config"] = "/other/config".into();
+        other["native_preflight"] = "rust".into();
+        let provisioned = ProfileImageManifest::from_path(&write_manifest(
+            installed.path(),
+            &serde_json::json!({"rust":{"pi":other}}).to_string(),
+        )?)?;
+        let selected = original.provision_native_from(&provisioned);
+        let image = selected.lookup(&ProfileName::new("rust")?, AgentRuntime::Pi)?;
+        assert_eq!(serde_json::to_value(image)?, entry);
+        assert_eq!(selected.native_preflight(image), None);
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_native_declarations_are_not_replaced_by_factory_capabilities() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = write_manifest(
+            dir.path(),
+            r#"{"rust":{"pi":{"ref":"selected","source":"/image","source_kind":"nix-descriptor","profile_config":"/config"}}}"#,
+        )?;
+        let explicit = dir.path().join("explicit.json");
+        let factory = dir.path().join("factory.json");
+        std::fs::write(&explicit, "{}")?;
+        std::fs::write(&factory, r#"{"/config":"rust"}"#)?;
+        let manifest = ProfileImageManifest::from_path(&path)?;
+        let supplied = manifest.clone().with_native_capabilities(&explicit)?;
+        let provisioned = manifest.with_native_capabilities(&factory)?;
+        let selected = supplied.provision_native_from(&provisioned);
+        let image = selected.lookup(&ProfileName::new("rust")?, AgentRuntime::Pi)?;
+        assert_eq!(selected.native_preflight(image), None);
+        assert_eq!(selected.native_path.as_deref(), Some(explicit.as_path()));
+        assert!(selected.provisioned_path.is_none());
+        assert_eq!(image.profile_config, Path::new("/config"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_capability_inputs_survive_driver_subprocess_without_image_replacement()
+    -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = write_manifest(dir.path(), "{}")?;
+        let native = dir.path().join("native.json");
+        std::fs::write(&native, "{}")?;
+        let manifest = ProfileImageManifest::from_path(&path)?.with_native_capabilities(&native)?;
+        let mut command = tokio::process::Command::new("bash");
+        command.args(["-euc", "test -z \"${LOOM_PROVISIONED_PROFILES_MANIFEST:-}\"; printf '%s\\n%s\\n' \"$LOOM_PROFILES_MANIFEST\" \"$LOOM_NATIVE_PREFLIGHT_MANIFEST\""]);
+        manifest.configure_driver(&mut command);
+        let output = command.output().await?;
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout)?
+                .lines()
+                .collect::<Vec<_>>(),
+            [path.to_str().unwrap(), native.to_str().unwrap()]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn manifest_env_unset_display_names_remediation() {
         let msg = ProfileError::ManifestEnvUnset.to_string();
         assert!(msg.contains("spawn-bound commands require"), "{msg}");
@@ -386,7 +527,7 @@ mod tests {
             PathBuf::from("/nix/store/bbb-image-base-pi")
         );
         assert_eq!(base_pi.source_kind, ImageSourceKind::NixDescriptor);
-        assert_eq!(base_pi.launcher, PathBuf::from("/raw/wrix"));
+        assert!(serde_json::to_value(base_pi)?.get("launcher").is_none());
         assert_eq!(base_pi.digest, None);
         assert_eq!(base_pi.runtime, None);
         let rust_direct =
@@ -397,7 +538,7 @@ mod tests {
     }
 
     #[test]
-    fn from_path_parses_raw_launcher_path() -> Result<()> {
+    fn from_path_ignores_legacy_executable_authority() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let body = r#"{
           "rust": {
@@ -411,7 +552,8 @@ mod tests {
         let path = write_manifest(dir.path(), body)?;
         let manifest = ProfileImageManifest::from_path(&path)?;
         let rust = manifest.lookup(&ProfileName::new("rust").unwrap(), AgentRuntime::Pi)?;
-        assert_eq!(rust.launcher, PathBuf::from("/nix/store/lll-wrix/bin/wrix"));
+        assert!(serde_json::to_value(rust)?.get("launcher").is_none());
+        assert_eq!(rust.profile_config, Path::new("/profile.json"));
         Ok(())
     }
 
@@ -554,8 +696,8 @@ mod tests {
     }
 
     #[test]
-    fn manifest_rejects_missing_launcher_or_profile_config() -> Result<()> {
-        for field in ["launcher", "profile_config"] {
+    fn manifest_rejects_missing_image_data_or_profile_config() -> Result<()> {
+        for field in ["ref", "source", "source_kind", "profile_config"] {
             let dir = tempfile::tempdir()?;
             let mut entry = serde_json::json!({
                 "ref": "image", "source": "/image", "source_kind": "nix-descriptor",

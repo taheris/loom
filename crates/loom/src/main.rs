@@ -28,14 +28,12 @@ use loom_driver::lock::{LockGuard, LockManager};
 use loom_driver::logging::{LogSink, sweep_retention_at};
 use loom_driver::profile_manifest::ProfileImageManifest;
 use loom_driver::state::CacheDb;
-#[cfg(test)]
-use loom_gate::integrity::runner_owns_target;
 use loom_gate::scope::{Request as GateScopeRequest, Resolved as GateScope};
 use loom_gate::{self, CacheRow, StatusCache, Tier, Verdict, render_report};
 #[cfg(test)]
 use loom_gate::{
     CargoMetadataScope, DispatchOptions, DispatchPendingExecutor, FsCommandResolver, InputResolver,
-    RunnerSpec, TestScope, TierCwds, is_missing_binary_target,
+    RunnerSpec, TestScope, TierCwds,
 };
 use loom_protocol::output;
 use loom_workflow::inbox::{
@@ -2236,19 +2234,7 @@ fn dispatch_tier_with_input_resolver(
     let parsed = loom_gate::annotation::parse(&specs_dir)?;
     let mut candidates = filter_annotations(&parsed.annotations, tier);
     candidates.retain(|ann| !ann.pending);
-    let runner_specs = match tier {
-        Tier::Check if args.target().is_none() => resolve_integrity_runner_context(workspace)?.0,
-        Tier::Check | Tier::System => resolve_runner_context(workspace, tier)?.0,
-        Tier::Test | Tier::Judge => Vec::new(),
-    };
-    let mut selected = args.select(&candidates, input_resolver);
-    if matches!(tier, Tier::Check | Tier::System) && args.is_explicit_files() {
-        let cmd_resolver = FsCommandResolver::new(workspace);
-        selected.retain(|ann| {
-            runner_owns_target(&runner_specs, ann.tier, &ann.target)
-                || !is_missing_binary_target(&ann.target, &cmd_resolver)
-        });
-    }
+    let selected = args.select(&candidates, input_resolver);
 
     let mut combined: i32 = 0;
     if tier == Tier::Check && args.target().is_none() {
@@ -2360,9 +2346,7 @@ fn partition_pending_for_forward_resolution(
 /// gate verify`) run. When `--files` is non-empty (e.g. the
 /// pre-commit hook), annotations are further narrowed to those whose
 /// declared inputs intersect the file set per `specs/pre-commit.md`;
-/// only that explicit `--files`
-/// feedback path silently skips bare-binary-missing annotations so the
-/// bead-container's commit flow is not broken by absent tooling.
+/// missing required binaries remain findings in feedback and publication scopes.
 ///
 /// Findings print to stderr in the spec-prescribed form and are
 /// **terminal**: this function returns a non-zero exit code when any
@@ -2395,13 +2379,6 @@ fn run_integrity_gate(
             partition_pending_for_forward_resolution(annotations);
         annotations = args.select(&candidates, input_resolver);
         annotations.extend(pending);
-        if args.is_explicit_files() {
-            annotations.retain(|ann| {
-                ann.pending
-                    || runner_owns_target(&specs, ann.tier, &ann.target)
-                    || !is_missing_binary_target(&ann.target, &cmd_resolver)
-            });
-        }
         if annotations.is_empty() {
             return Ok(0);
         }
@@ -6531,7 +6508,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_binary_skip_is_limited_to_explicit_files_scope() {
+    fn explicit_files_and_diff_scopes_remain_distinct() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let files = test_scope(
             tmp.path(),
@@ -6702,7 +6679,7 @@ mod tests {
     }
 
     #[test]
-    fn integrity_gate_skips_missing_binary_under_explicit_files_scope() {
+    fn integrity_gate_flags_missing_binary_under_explicit_files_scope() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let specs = tmp.path().join("specs");
         std::fs::create_dir_all(&specs).expect("specs dir");
@@ -6720,7 +6697,7 @@ mod tests {
         let mut inputs = build_input_resolver(tmp.path(), &specs).expect("native scope discovery");
         let code = run_integrity_gate(tmp.path(), &args, &mut inputs, &[Tier::Check])
             .expect("integrity gate runs");
-        assert_eq!(code, 0);
+        assert_eq!(code, 1);
     }
 
     #[test]
