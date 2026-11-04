@@ -6,6 +6,38 @@
   nextest,
 }:
 let
+  craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
+  seedSource = pkgs.runCommand "native-probe-source" { } (
+    pkgs.lib.concatMapStringsSep "\n"
+      (name: ''
+        mkdir -p "$out/$(dirname ${pkgs.lib.escapeShellArg name})"
+        cp ${pkgs.writeText (builtins.baseNameOf name) files.${name}} "$out/${name}"
+      '')
+      [
+        "Cargo.toml"
+        "Cargo.lock"
+        "src/lib.rs"
+        "payload/input.txt"
+      ]
+  );
+  seed = craneLib.mkCargoDerivation {
+    pname = "native-probe";
+    version = "0.1.0";
+    src = seedSource;
+    cargoArtifacts = null;
+    cargoVendorDir = pkgs.emptyDirectory;
+    buildPhaseCargoCommand = "cargo build --offline --locked";
+  };
+  compiler = pkgs.symlinkJoin {
+    name = "loom-native-fixture-compiler";
+    paths = [ toolchain ];
+    postBuild = ''
+      mkdir -p "$out/nix-support"
+      printf '%s\n' ${
+        pkgs.lib.escapeShellArg (builtins.toJSON (map toString ([ seed.stdenv ] ++ seed.nativeBuildInputs)))
+      } > "$out/nix-support/native-tools.json"
+    '';
+  };
   files = {
     "flake.nix" = ''
       {
@@ -15,7 +47,7 @@ let
           pkgs = import nixpkgs { system = "${pkgs.stdenv.hostPlatform.system}"; };
           # Preserve the original valid store closures, not source-copy symlinks
           # whose runtime dependencies would be absent inside the build sandbox.
-          compilerPath = builtins.appendContext "${toolchain}" { "${toolchain}" = { path = true; }; };
+          compilerPath = builtins.appendContext "${compiler}" { "${compiler}" = { path = true; }; };
           nextestPath = builtins.appendContext "${nextest}" { "${nextest}" = { path = true; }; };
           craneLib = (crane.mkLib pkgs).overrideToolchain compilerPath;
           checked = import ./verification.nix;

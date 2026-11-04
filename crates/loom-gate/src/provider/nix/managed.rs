@@ -193,7 +193,11 @@ impl super::Graph {
         }
         let reporter = self.reporter.as_ref().ok_or(super::Error::Result)?;
         let node = self.nodes.get(reporter).ok_or(super::Error::Root)?;
-        super::frontier::require_pinned(&self.nodes, reporter, |outputs| self.presence(outputs))?;
+        let inputs = super::frontier::require_pinned(&self.nodes, reporter, |paths| {
+            super::present_paths(&self.tool, paths)
+        })?;
+        let _inputs = super::pin::Inputs::acquire(&self.tool, &inputs)?;
+        self.require_current()?;
         let installables: Vec<String> = node
             .dependencies
             .iter()

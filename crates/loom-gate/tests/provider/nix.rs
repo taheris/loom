@@ -1188,6 +1188,72 @@ fn raw_native_builder_paths_are_not_pinned_tool_inputs() {
 }
 
 #[test]
+fn immutable_tool_artifacts_do_not_authorize_reexecuting_their_impure_build_history() {
+    let dir = fixture();
+    let platform = loom_gate::runner::result::current_platform();
+    native_project(&dir, "tool = self.lib.fixtureTool;", true, true);
+    use_host_system(&dir);
+    let flake = std::fs::read_to_string(dir.path().join("flake.nix")).unwrap();
+    let tool = format!(
+        r#"
+    lib.fixtureTool = builtins.derivation {{
+      name = "native-artifact-tool";
+      nonce = {};
+      inherit (self.checks.{platform}.heading) builder system;
+      __darwinAllowLocalNetworking = true;
+      args = [ "-c" "printf artifact > \"$out\"" ];
+    }};
+"#,
+        serde_json::to_string(dir.path().to_str().unwrap()).unwrap()
+    );
+    write(
+        dir.path(),
+        "flake.nix",
+        &flake.replace(
+            &format!("    checks.{platform}.heading"),
+            &(tool + &format!("    checks.{platform}.heading")),
+        ),
+    );
+    assert!(matches!(failure(&dir), NixError::Unsafe { .. }));
+    let built = std::process::Command::new("nix")
+        .current_dir(dir.path())
+        .args([
+            "build",
+            "--no-link",
+            "--offline",
+            "--json",
+            &format!("path:{}#lib.fixtureTool", dir.path().display()),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let built: serde_json::Value = serde_json::from_slice(&built.stdout).unwrap();
+    let artifact =
+        StorePath::try_from(built[0]["outputs"]["out"].as_str().unwrap().to_owned()).unwrap();
+    let (snapshot, inventory) = context(&dir);
+    let subject = name(&format!("nix:check:flake.nix:{platform}:heading"));
+    let definition =
+        Definition::hermetic_baseline(&snapshot, &inventory, name("heading"), &subject).unwrap();
+    let registry = Registry::new(&snapshot, vec![definition]).unwrap();
+    let query = registry.query(&[name("heading")]).unwrap();
+    let units = registry
+        .resolve_query(&snapshot, &inventory, &query, &contracts(&["heading"]))
+        .unwrap();
+    let graph = units[0].nix_graph().unwrap();
+    assert!(graph.resources().contains_key(&artifact));
+    let observed = units[0].run().unwrap();
+    match observed.outcome() {
+        Outcome::Pass => assert!(observed.observations().iter().any(|item| matches!(item, Observation::ExecutionGraph { digest } if digest == graph.identity()))),
+        Outcome::Unavailable { capability, .. } => assert_eq!(*capability, Capability::NixSandbox),
+        outcome => panic!("unexpected artifact-backed execution: {outcome:?}"),
+    }
+}
+
+#[test]
 fn native_unsandboxed_flags_are_invalid_definitions_not_supported_effects() {
     let dir = fixture();
     native_project(&dir, "__noChroot = true;", true, true);

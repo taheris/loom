@@ -1,43 +1,80 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{Error, Name, Nodes, Presence, StorePath};
+use super::{Error, Name, Nodes, StorePath};
+
+/// Immutable dependency artifacts and the recipes that may actually execute.
+#[derive(Debug, Clone, serde::Serialize)]
+pub(super) struct Execution {
+    pub(super) nodes: BTreeSet<StorePath>,
+    pub(super) inputs: BTreeSet<StorePath>,
+    pub(super) cold_inputs: BTreeSet<StorePath>,
+}
+
+pub(super) fn capture(
+    nodes: &Nodes,
+    roots: impl IntoIterator<Item = StorePath>,
+    mut present: impl FnMut(&BTreeSet<StorePath>) -> Result<BTreeSet<StorePath>, Error>,
+) -> Result<Execution, Error> {
+    let mut execution = Execution {
+        nodes: BTreeSet::new(),
+        inputs: BTreeSet::new(),
+        cold_inputs: BTreeSet::new(),
+    };
+    let mut pending: Vec<_> = roots.into_iter().collect();
+    while !pending.is_empty() {
+        let mut dependencies = BTreeMap::<StorePath, BTreeSet<Name>>::new();
+        for path in std::mem::take(&mut pending) {
+            if !execution.nodes.insert(path.clone()) {
+                continue;
+            }
+            let node = nodes.get(&path).ok_or(Error::Root)?;
+            if node.fixed {
+                continue;
+            }
+            for (dependency, outputs) in &node.dependencies {
+                dependencies
+                    .entry(dependency.clone())
+                    .or_default()
+                    .extend(outputs.iter().cloned());
+            }
+        }
+        let required = dependencies
+            .iter()
+            .map(|(dependency, names)| {
+                let node = nodes.get(dependency).ok_or(Error::Root)?;
+                let outputs = names
+                    .iter()
+                    .map(|name| node.outputs.get(name).cloned().ok_or(Error::Output))
+                    .collect::<Result<BTreeSet<_>, _>>()?;
+                Ok((dependency.clone(), outputs))
+            })
+            .collect::<Result<BTreeMap<_, _>, Error>>()?;
+        let paths = required.values().flatten().cloned().collect();
+        let available = present(&paths)?;
+        for (dependency, outputs) in required {
+            if outputs.is_subset(&available) {
+                execution.inputs.extend(outputs);
+            } else if nodes.get(&dependency).ok_or(Error::Root)?.fixed {
+                execution.cold_inputs.insert(dependency);
+            } else {
+                pending.push(dependency);
+            }
+        }
+    }
+    Ok(execution)
+}
 
 /// The requested check always executes; available dependency artifacts stop realization traversal.
 pub(super) fn require_pinned(
     nodes: &Nodes,
     requested: &StorePath,
-    mut presence: impl FnMut(&BTreeMap<Name, StorePath>) -> Result<Presence, Error>,
-) -> Result<(), Error> {
-    let mut pending = vec![requested.clone()];
-    let mut visited = BTreeSet::new();
-    while let Some(path) = pending.pop() {
-        if !visited.insert(path.clone()) {
-            continue;
-        }
-        let node = nodes.get(&path).ok_or(Error::Root)?;
-        for (dependency, required) in &node.dependencies {
-            let child = nodes.get(dependency).ok_or_else(|| Error::Dependency {
-                derivation: dependency.clone(),
-            })?;
-            let outputs = required
-                .iter()
-                .map(|name| {
-                    let path = child.outputs.get(name).ok_or(Error::Output)?;
-                    Ok((name.clone(), path.clone()))
-                })
-                .collect::<Result<BTreeMap<_, _>, Error>>()?;
-            if matches!(presence(&outputs)?, Presence::Present) {
-                continue;
-            }
-            if child.fixed {
-                return Err(Error::ColdInput {
-                    derivation: dependency.clone(),
-                });
-            }
-            pending.push(dependency.clone());
-        }
+    present: impl FnMut(&BTreeSet<StorePath>) -> Result<BTreeSet<StorePath>, Error>,
+) -> Result<BTreeSet<StorePath>, Error> {
+    let execution = capture(nodes, [requested.clone()], present)?;
+    if let Some(derivation) = execution.cold_inputs.into_iter().next() {
+        return Err(Error::ColdInput { derivation });
     }
-    Ok(())
+    Ok(execution.inputs)
 }
 
 #[cfg(test)]
@@ -61,7 +98,7 @@ mod tests {
             env: BTreeMap::new(),
             structured: None,
             fixed,
-            sources: BTreeSet::new(),
+            sources: [path("bash")].into(),
             dependencies: dependencies
                 .iter()
                 .map(|dependency| (path(dependency), [name("out")].into()))
@@ -86,15 +123,101 @@ mod tests {
 
     fn available(
         paths: &[&str],
-    ) -> impl FnMut(&BTreeMap<Name, StorePath>) -> Result<Presence, Error> {
+    ) -> impl FnMut(&BTreeSet<StorePath>) -> Result<BTreeSet<StorePath>, Error> {
         let paths: BTreeSet<_> = paths.iter().map(|value| path(value)).collect();
-        move |outputs| {
-            Ok(if outputs.values().all(|output| paths.contains(output)) {
-                Presence::Present
-            } else {
-                Presence::Cold
-            })
-        }
+        move |outputs| Ok(outputs.intersection(&paths).cloned().collect())
+    }
+
+    #[test]
+    fn captured_artifacts_stop_only_their_own_build_recipes() {
+        let mut nodes = graph();
+        std::sync::Arc::make_mut(nodes.get_mut(&path("compiler.drv")).unwrap())
+            .env
+            .insert("__darwinAllowLocalNetworking".to_owned(), "1".to_owned());
+        let warm = capture(&nodes, [path("check.drv")], |paths| {
+            Ok(paths
+                .intersection(&[path("compiler")].into())
+                .cloned()
+                .collect())
+        })
+        .unwrap();
+        assert_eq!(warm.nodes, [path("check.drv")].into());
+        assert_eq!(warm.inputs, [path("compiler")].into());
+        super::super::check_execution_graph(&nodes, &path("check.drv"), &warm.nodes).unwrap();
+        let cold = capture(&nodes, [path("check.drv")], |paths| {
+            Ok(paths
+                .intersection(&[path("archive")].into())
+                .cloned()
+                .collect())
+        })
+        .unwrap();
+        assert!(
+            matches!(super::super::check_execution_graph(&nodes, &path("check.drv"), &cold.nodes), Err(Error::Unsafe { derivation }) if derivation == path("compiler.drv"))
+        );
+    }
+
+    #[test]
+    fn cold_transitive_tool_recipes_cannot_gain_host_dependencies() {
+        let mut nodes = graph();
+        nodes.insert(
+            path("tls.drv"),
+            std::sync::Arc::new(node(false, &[], "tls")),
+        );
+        std::sync::Arc::make_mut(nodes.get_mut(&path("compiler.drv")).unwrap())
+            .dependencies
+            .insert(path("tls.drv"), [name("out")].into());
+        std::sync::Arc::make_mut(nodes.get_mut(&path("tls.drv")).unwrap())
+            .env
+            .insert(
+                "__darwinImpureHostDeps".to_owned(),
+                "/host/resource".to_owned(),
+            );
+        let execution = capture(&nodes, [path("check.drv")], available(&["archive"])).unwrap();
+        assert!(
+            matches!(super::super::check_execution_graph(&nodes, &path("check.drv"), &execution.nodes), Err(Error::Unsafe { derivation }) if derivation == path("tls.drv"))
+        );
+    }
+
+    #[test]
+    fn warm_outputs_never_hide_requested_execution_permissions() {
+        let mut nodes = graph();
+        std::sync::Arc::make_mut(nodes.get_mut(&path("check.drv")).unwrap())
+            .env
+            .insert("__noChroot".to_owned(), "1".to_owned());
+        let execution = capture(&nodes, [path("check.drv")], |paths| Ok(paths.clone())).unwrap();
+        assert!(
+            matches!(super::super::check_execution_graph(&nodes, &path("check.drv"), &execution.nodes), Err(Error::Unsafe { derivation }) if derivation == path("check.drv"))
+        );
+    }
+
+    #[test]
+    fn explicit_preparation_roots_remain_checked_when_consumed_as_artifacts() {
+        let nodes = graph();
+        let execution = capture(&nodes, [path("check.drv"), path("compiler.drv")], |paths| {
+            Ok(paths.clone())
+        })
+        .unwrap();
+        assert!(execution.nodes.contains(&path("compiler.drv")));
+        assert!(execution.inputs.contains(&path("compiler")));
+    }
+
+    #[test]
+    fn frontier_discovery_batches_independent_dependency_outputs() {
+        let mut nodes = graph();
+        nodes.insert(
+            path("other.drv"),
+            std::sync::Arc::new(node(false, &[], "other")),
+        );
+        std::sync::Arc::make_mut(nodes.get_mut(&path("check.drv")).unwrap())
+            .dependencies
+            .insert(path("other.drv"), [name("out")].into());
+        let mut queries = Vec::new();
+        capture(&nodes, [path("check.drv")], |paths| {
+            queries.push(paths.clone());
+            Ok(paths.clone())
+        })
+        .unwrap();
+        assert_eq!(queries[0], [path("compiler"), path("other")].into());
     }
 
     #[test]

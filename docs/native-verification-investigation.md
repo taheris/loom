@@ -229,6 +229,29 @@ source tree. Its source, index, unstaged patch, logs and machine state are
 retained. Scoping the initial catalogue was insufficient to meet the runtime
 budget; another timeout is not positive report/projection evidence.
 
+## Immutable dependencies and executable recipes
+
+A native unit retains its complete constructed recipe graph, but not every
+historical build instruction is executable in that invocation. Available
+dependency outputs are immutable inputs; cold dependencies remain build work.
+Requested verification and preparation roots retain their execution checks even
+when an output is already available. Local-network, impure-host and unsandboxed
+flags remain rejected on recipes that may execute.
+
+The captured input identity includes the available artifacts' NAR hashes and
+runtime reference closures. Before dispatch, temporary GC roots hold those exact
+inputs and current-state validation checks their identity again. Losing a
+captured artifact fails before dispatch instead of granting permission to
+rebuild its historical recipe. Missing fixed prerequisites still cannot be
+fetched by deterministic verification. Root ownership and partial multi-output
+requirements follow the same frontier in discovery and dispatch.
+
+The compiler fixture retains its actual Crane setup tools with the pinned
+compiler closure; it does not depend on incidental machine caches. These are
+input and execution-boundary properties, not accepted verdicts or Wrix
+container/kernel coverage. Temporary GC roots are retention handles, not a
+second evidence authority.
+
 ## Evidence limits
 
 Paths above are relative to `.loom/logs/coordinated-resume/` unless a full

@@ -19,6 +19,7 @@ pub mod applicability;
 pub mod catalogue;
 mod frontier;
 mod managed;
+mod pin;
 pub(crate) mod report;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -529,6 +530,7 @@ pub struct Graph {
     explicit_file_origins: BTreeSet<ResourcePath>,
     evaluation_origins: BTreeSet<ResourcePath>,
     nodes: Nodes,
+    execution: frontier::Execution,
     provenance: Vec<Source>,
     resources: BTreeMap<StorePath, Resource>,
     identity: Digest,
@@ -983,7 +985,16 @@ impl Graph {
                 nodes.get(reporter).ok_or(Error::Root)?,
             )?;
         }
-        check_execution_graph(&nodes, &root)?;
+        let roots: Vec<_> = std::iter::once(root.clone())
+            .chain(definition.catalogue.iter().cloned())
+            .chain(definition.reporter.iter().cloned())
+            .collect();
+        let execution = frontier::capture(&nodes, roots.iter().cloned(), |paths| {
+            present_paths(&tool, paths)
+        })?;
+        for requested in &roots {
+            check_execution_graph(&nodes, requested, &execution.nodes)?;
+        }
         if let Some(program) = &definition.app {
             #[derive(Deserialize)]
             #[serde(deny_unknown_fields)]
@@ -1133,7 +1144,7 @@ impl Graph {
                 actual: system.clone(),
             });
         }
-        let resources = read_resources(&tool, &nodes, &evaluation)?;
+        let resources = read_resources(&tool, &nodes, &evaluation, &execution)?;
         let locator = Locator {
             flake: partition.path,
             namespace: native.kind().namespace().to_owned(),
@@ -1165,7 +1176,7 @@ impl Graph {
             &explicit_file_origins,
             &evaluation_origins,
             native.kind(),
-            &nodes,
+            (&nodes, &execution),
             &resources,
             &tool,
             &artifact,
@@ -1181,6 +1192,7 @@ impl Graph {
             explicit_file_origins,
             evaluation_origins,
             nodes,
+            execution,
             provenance,
             resources,
             identity,
@@ -1272,7 +1284,21 @@ impl Graph {
                 .iter()
                 .flat_map(|graph| graph.evaluation.iter().cloned())
                 .collect();
-            let resources = read_resources(tool, &nodes, &evaluation)?;
+            let execution = frontier::Execution {
+                nodes: graphs
+                    .iter()
+                    .flat_map(|graph| graph.execution.nodes.iter().cloned())
+                    .collect(),
+                inputs: graphs
+                    .iter()
+                    .flat_map(|graph| graph.execution.inputs.iter().cloned())
+                    .collect(),
+                cold_inputs: graphs
+                    .iter()
+                    .flat_map(|graph| graph.execution.cold_inputs.iter().cloned())
+                    .collect(),
+            };
+            let resources = read_resources(tool, &nodes, &evaluation, &execution)?;
             for graph in graphs {
                 // All other fingerprint fields are immutable constructor facts.
                 // These are exactly the external fields read by require_current.
@@ -1306,7 +1332,7 @@ impl Graph {
             return Err(Error::ToolChanged);
         }
         let nodes = read_graph(&self.tool, &self.root)?;
-        let resources = read_resources(&self.tool, &nodes, &self.evaluation)?;
+        let resources = read_resources(&self.tool, &nodes, &self.evaluation, &self.execution)?;
         if let Some(executor) = &self.managed {
             executor.require_current()?;
         }
@@ -1323,7 +1349,7 @@ impl Graph {
             &self.explicit_file_origins,
             &self.evaluation_origins,
             self.kind,
-            &nodes,
+            (&nodes, &self.execution),
             &resources,
             &self.tool,
             &self.artifact,
@@ -1369,17 +1395,11 @@ impl Graph {
     }
 
     fn presence(&self, outputs: &BTreeMap<Name, StorePath>) -> Result<Presence, Error> {
-        let mut arguments = vec!["path-info", "--json", "--json-format", "1", "--offline"];
-        arguments.extend(outputs.values().map(StorePath::as_str));
-        let paths: BTreeMap<StorePath, Option<Validity>> =
-            serde_json::from_slice(&query(&self.tool, &arguments)?)?;
-        if paths.len() != outputs.len() || outputs.values().any(|path| !paths.contains_key(path)) {
-            return Err(Error::Result);
-        }
-        Ok(if paths.values().any(Option::is_none) {
-            Presence::Cold
-        } else {
+        let paths = outputs.values().cloned().collect();
+        Ok(if present_paths(&self.tool, &paths)? == paths {
             Presence::Present
+        } else {
+            Presence::Cold
         })
     }
 
@@ -1406,6 +1426,7 @@ impl Graph {
         requested: &StorePath,
         contract: Option<&report::Contract>,
     ) -> Result<Observed, Error> {
+        let _captured_inputs = pin::Inputs::acquire(&self.tool, &self.execution.inputs)?;
         self.require_current()?;
         let root = self.nodes.get(requested).ok_or(Error::Root)?;
         let platform: Platforms =
@@ -1435,7 +1456,10 @@ impl Graph {
                 (requested, nodes)
             });
         let root = nodes.get(requested).ok_or(Error::Root)?;
-        frontier::require_pinned(nodes, requested, |outputs| self.presence(outputs))?;
+        let inputs =
+            frontier::require_pinned(nodes, requested, |paths| present_paths(&self.tool, paths))?;
+        let _inputs = pin::Inputs::acquire(&self.tool, &inputs)?;
+        self.require_current()?;
         let installable = format!("{}^*", requested.as_str());
         let mut arguments = vec![
             "build",
@@ -1725,17 +1749,54 @@ fn read_graphs(tool: &Path, roots: &[StorePath]) -> Result<Nodes, Error> {
         .collect()
 }
 
+fn present_paths(tool: &Path, paths: &BTreeSet<StorePath>) -> Result<BTreeSet<StorePath>, Error> {
+    let mut present = BTreeSet::new();
+    let paths: Vec<_> = paths.iter().collect();
+    for chunk in paths.chunks(128) {
+        let mut arguments = vec!["path-info", "--json", "--json-format", "1", "--offline"];
+        arguments.extend(chunk.iter().map(|path| path.as_str()));
+        let output = invoke(tool, &arguments)?;
+        let observed: BTreeMap<StorePath, Option<Validity>> =
+            match serde_json::from_slice(&output.stdout) {
+                Ok(observed) => observed,
+                Err(_) if !output.status.success() => {
+                    return Err(Error::Query {
+                        detail: diagnostic(&output.stderr),
+                    });
+                }
+                Err(error) => return Err(error.into()),
+            };
+        if observed.len() != chunk.len() || chunk.iter().any(|path| !observed.contains_key(*path)) {
+            return Err(Error::Result);
+        }
+        if !output.status.success() && observed.values().all(Option::is_some) {
+            return Err(Error::Query {
+                detail: diagnostic(&output.stderr),
+            });
+        }
+        present.extend(
+            observed
+                .into_iter()
+                .filter_map(|(path, value)| value.map(|_| path)),
+        );
+    }
+    Ok(present)
+}
+
 fn read_resources(
     tool: &Path,
     nodes: &Nodes,
     evaluation: &BTreeSet<StorePath>,
+    execution: &frontier::Execution,
 ) -> Result<BTreeMap<StorePath, Resource>, Error> {
     let mut sources: BTreeSet<_> = nodes
-        .values()
-        .flat_map(|node| node.sources.iter().cloned())
+        .iter()
+        .filter(|(path, _)| execution.nodes.contains(*path))
+        .flat_map(|(_, node)| node.sources.iter().cloned())
         .collect();
     sources.insert(StorePath::root(tool)?);
     sources.extend(evaluation.iter().cloned());
+    sources.extend(execution.inputs.iter().cloned());
     let mut arguments = vec![
         "path-info",
         "--recursive",
@@ -1773,23 +1834,17 @@ fn read_resources(
     Ok(resources)
 }
 
-fn check_execution_graph(nodes: &Nodes, root: &StorePath) -> Result<(), Error> {
+fn check_execution_graph(
+    nodes: &Nodes,
+    root: &StorePath,
+    executable: &BTreeSet<StorePath>,
+) -> Result<(), Error> {
     let check = nodes.get(root).ok_or(Error::Root)?;
     if check.fixed {
         return Err(Error::FixedCheck);
     }
-    let mut pending = vec![root.clone()];
-    let mut executable = BTreeSet::new();
-    while let Some(path) = pending.pop() {
-        if !executable.insert(path.clone()) {
-            continue;
-        }
-        let node = nodes.get(&path).ok_or(Error::Root)?;
-        pending.extend(node.dependencies.keys().cloned());
-    }
-    // Derivation documents in source edges are pinned readonly data. Their
-    // instructions are not execution permissions or realization dependencies.
-    for path in &executable {
+    // Immutable artifact inputs and readonly recipe documents grant no build permission.
+    for path in executable {
         let node = nodes.get(path).ok_or(Error::Root)?;
         if node.outputs.is_empty() {
             return Err(Error::Output);
