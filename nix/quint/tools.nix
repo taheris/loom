@@ -51,8 +51,7 @@ checked.check {
         ln -s ${evaluator}/bin/quint_evaluator "$out/share/quint/rust-evaluator-v0.7.1/quint_evaluator"
         for binary in loom-quint-checker loom-quint-witnesses; do
           makeWrapper ${pkgs.coreutils}/bin/timeout "$out/bin/$binary" \
-            --add-flags "--kill-after=5s 300s ${evaluator}/bin/$binary" \
-            --run 'ulimit -v 2097152'
+            --add-flags "--kill-after=5s 300s ${evaluator}/bin/$binary"
         done
       '';
 }

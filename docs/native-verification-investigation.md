@@ -280,11 +280,14 @@ history behind newly selected host tools. Ordinary Nix provisioning of host Pi
 advances that check to the fuzz app's prerequisite; neither rejection is treated
 as acceptance or repaired by weakening purity.
 
-The fresh Darwin flake check compiles the updated Quint tools, but `quint-model`
-fails before model execution because the existing unconditional
-`ulimit -v 2097152` is rejected by Darwin. This is tracked as `lm-n3e7`; the
-resource guard is not disabled. Fresh complete native and model/flake-check
-results remain required before acceptance.
+At `52ac6804`, the fresh Darwin flake check compiles the updated Quint tools,
+but `quint-model` fails before model execution because the unconditional
+`ulimit -v 2097152` is rejected by Darwin. In `lm-n3e7`, the user authorizes
+removing this Loom-added virtual-address-space guard rather than replacing it
+with a supervisor or host-only test. The 300-second execution timeout,
+five-second kill grace, explicit model state/transition/byte budgets and Node
+heap cap remain. These are not an equivalent hard process-memory ceiling. Fresh
+complete native and model/flake-check results are required for landing.
 
 ## Evidence limits
 
