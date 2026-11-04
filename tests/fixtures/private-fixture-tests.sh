@@ -72,7 +72,7 @@ NIX_BUILD_TOP="$fixture/safe" TMPDIR="$fixture/safe" bash "$runner" bash -c '
 ' _ "$fixture/failed-root" || status=$?
 [[ "$status" == 23 ]]
 retained=$(<"$fixture/failed-root")
-[[ "$retained" == "$fixture/safe/loom-fixtures."* ]]
+[[ "$(dirname -- "$retained")" == "$fixture/safe" ]]
 [[ -d "$retained" && "$(stat --format=%a -- "$retained")" == 700 ]]
 [[ $(<"$retained/diagnostic") == 'failure evidence' ]]
 
