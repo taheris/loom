@@ -130,10 +130,6 @@ const CONTRACTS: &[FileContract] = &[
         ],
     },
     FileContract {
-        path: "tests/smoke/host-gate-test.sh",
-        required: &["extra-experimental-features = nix-command flakes"],
-    },
-    FileContract {
         path: "tests/smoke/loop.sh",
         required: &["--agent pi loop \"$BEAD_ID\""],
     },

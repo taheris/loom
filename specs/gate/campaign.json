@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "checker": "Quint 0.33.0 / Rust evaluator 0.7.0 / Rust explicit-state v1",
+  "checker": "Quint 0.33.1 / Rust evaluator 0.7.1 / Rust explicit-state v1",
   "routine": {
     "seeds": [42, 20250308],
     "traces": 64,

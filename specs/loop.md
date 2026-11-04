@@ -615,11 +615,11 @@ mutation permission.
   restarts against the preserved checkout through the real implementation,
   verification, review, hooks and publication pipeline. [system](nix build .#verification-system-smoke)
 
-<!-- prettier-ignore -->
-- The signed host-Gate fixture rejects both a real failing hook and a real
-  failing required system test, publishes neither failed candidate, and
-  verifies recovery after correction.
-  [system](nix build .#checks.x86_64-linux.smoke-host-gate)
+- Gate verification rejects a failing project hook and a failing required
+  system result, and requires successful current execution after correction.
+  Wrix owns signing and sandbox/store provisioning; this exercises Loom's gate
+  with real local processes without launching Wrix.
+  [test](gate_verify_rejects_failed_hooks_and_required_system_results_then_recovers)
 
 - A native preflight capability gap is attributed to
   `verification-capability-unavailable`, consumes no semantic retry, and does

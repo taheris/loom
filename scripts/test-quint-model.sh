@@ -19,11 +19,11 @@ for tool in quint loom-quint-checker loom-quint-witnesses timeout jq sha256sum; 
     exit 1
   fi
 done
-if [[ "$(quint --version)" != 0.33.0 ]]; then
-  printf 'test-quint: incompatible Quint version (required 0.33.0)\n' >&2
+if [[ "$(quint --version)" != 0.33.1 ]]; then
+  printf 'test-quint: incompatible Quint version (required 0.33.1)\n' >&2
   exit 1
 fi
-if [[ ! -x "$LOOM_QUINT_PACKAGE/share/quint/rust-evaluator-v0.7.0/quint_evaluator" || ! -x "$LOOM_QUINT_PACKAGE/bin/loom-quint-checker" ]]; then
+if [[ ! -x "$LOOM_QUINT_PACKAGE/share/quint/rust-evaluator-v0.7.1/quint_evaluator" || ! -x "$LOOM_QUINT_PACKAGE/bin/loom-quint-checker" ]]; then
   printf 'test-quint: incomplete Quint/Rust checker provisioning\n' >&2
   exit 1
 fi
@@ -35,7 +35,7 @@ jq -e '
   def campaign:
     (.seeds | length > 0) and (.seeds | unique | length) == (.seeds | length) and
     all(.seeds[]; positive) and all(.traces, .steps, .samples, .seconds; positive);
-  .version == 2 and .checker == "Quint 0.33.0 / Rust evaluator 0.7.0 / Rust explicit-state v1" and
+  .version == 2 and .checker == "Quint 0.33.1 / Rust evaluator 0.7.1 / Rust explicit-state v1" and
   (.routine | campaign) and (.deeper | campaign) and
   .deeper.steps > .routine.steps and .deeper.traces > .routine.traces and
   all(.exhaustive.steps, .exhaustive.seconds, .exhaustive.states, .exhaustive.transitions, .exhaustive.bytes; positive) and (.tests | positive)

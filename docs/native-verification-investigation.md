@@ -252,6 +252,40 @@ input and execution-boundary properties, not accepted verdicts or Wrix
 container/kernel coverage. Temporary GC roots are retention handles, not a
 second evidence authority.
 
+## Agent-runnable gate coverage and refreshed pins
+
+The signed `smoke-host-gate` fixture is retired, not moved to a mandatory host
+hook. Its private-store bootstrap and signing checks exercised Wrix-owned
+provisioning. The ordinary Rust CLI regression
+`gate_verify_rejects_failed_hooks_and_required_system_results_then_recovers`
+executes a real project hook and immutable native System producer, rejects each
+failure, and requires fresh successful execution after correction. The existing
+marker-wrapper failure tests remain. The optional Loom assembly smoke remains
+separate; this change grants no new container/kernel coverage.
+
+The complete native run at `542d47f4` executed 3,729 tests: 3,728 passed, one
+failed, and five were skipped. The remaining failure identified a Darwin
+`pi-coding-agent` export selecting the Linux image tool. The pending consumer
+change selects the host package without changing the worker image tool.
+
+The requested flake refresh advances nixpkgs to `ea9e3ef3` and Wrix to
+`d59945e4`. Nixpkgs now ships Quint 0.33.1 and Rust evaluator 0.7.1; package and
+campaign definitions retain exact version checks for those new inputs. Existing
+receipts are not relabelled.
+
+On these pins, Cargo build, both separate Clippy configurations and native Nix
+build pass. The complete native run executes 3,724 tests: 3,723 pass, one fails,
+and five are skipped. The remaining inventory failure rejects cold OpenSSL build
+history behind newly selected host tools. Ordinary Nix provisioning of host Pi
+advances that check to the fuzz app's prerequisite; neither rejection is treated
+as acceptance or repaired by weakening purity.
+
+The fresh Darwin flake check compiles the updated Quint tools, but `quint-model`
+fails before model execution because the existing unconditional
+`ulimit -v 2097152` is rejected by Darwin. This is tracked as `lm-n3e7`; the
+resource guard is not disabled. Fresh complete native and model/flake-check
+results remain required before acceptance.
+
 ## Evidence limits
 
 Paths above are relative to `.loom/logs/coordinated-resume/` unless a full

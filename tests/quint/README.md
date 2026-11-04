@@ -1,7 +1,7 @@
 # Quint acceptance harness
 
-`nix run .#test-quint -- provisioning-and-batching` provisions Quint 0.33.0, its
-Rust evaluator 0.7.0 and the Rust explicit-state checker from the existing
+`nix run .#test-quint -- provisioning-and-batching` provisions Quint 0.33.1, its
+Rust evaluator 0.7.1 and the Rust explicit-state checker from the existing
 `flake.lock`. Node.js runs the Quint frontend; no Apalache, JVM or external
 solver is in this verification tool closure. Cargo pins upstream Quint Connect
 and its macros to 0.1.2 through `Cargo.lock`. No tool is installed during a

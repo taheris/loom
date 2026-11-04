@@ -5034,11 +5034,6 @@ fn seed_test_nix_surface(root: &Path) {
     );
     seed(
         root,
-        "tests/smoke/host-gate-test.sh",
-        include_str!("../../../tests/smoke/host-gate-test.sh"),
-    );
-    seed(
-        root,
         "tests/smoke/loop.sh",
         "loom --agent pi loop \"$BEAD_ID\"\n",
     );
@@ -5070,19 +5065,6 @@ fn test_nix_surface_contract_fail_when_archive_destination_is_not_created() {
     );
     let out = invoke(&["test_nix_surface_contract"], Some(ws.path()), None);
     assert_fail(&out, "mkdir -p");
-}
-
-#[test]
-fn test_nix_surface_contract_fail_when_host_gate_relies_on_ambient_nix_features() {
-    let ws = make_workspace();
-    seed_test_nix_surface(ws.path());
-    seed(
-        ws.path(),
-        "tests/smoke/host-gate-test.sh",
-        "# extra-experimental-features = nix-command flakes\n",
-    );
-    let out = invoke(&["test_nix_surface_contract"], Some(ws.path()), None);
-    assert_fail(&out, "extra-experimental-features");
 }
 
 #[test]

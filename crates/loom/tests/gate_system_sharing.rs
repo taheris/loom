@@ -165,6 +165,78 @@ fn system_cli_sharing_preserves_per_criterion_reports_failures_skips_and_cache_r
 }
 
 #[test]
+fn gate_verify_rejects_failed_hooks_and_required_system_results_then_recovers() {
+    let fixture = fixture(false);
+    for (index, (hook_status, pass)) in [(1, true), (0, false), (0, true)].into_iter().enumerate() {
+        fs::write(
+            fixture.path().join(".pre-commit-config.yaml"),
+            format!("repos:\n  - repo: local\n    hooks:\n      - id: required-project-hook\n        name: Required project hook\n        entry: bash -c 'mkdir -p .loom; printf \"executed\\n\" >> .loom/hook-runs; exit {hook_status}'\n        language: system\n        always_run: true\n        pass_filenames: false\n"),
+        )
+        .unwrap();
+        fixture.record(
+            "shared",
+            &format!(
+                "{}\n",
+                json!({"target":"shared", "pass":pass, "evidence":"current required system result"})
+            ),
+            i32::from(!pass),
+        );
+        for arguments in [
+            vec!["add", "."],
+            vec!["commit", "-qm", "current gate candidate"],
+        ] {
+            let mut git = std::process::Command::new("git");
+            loom_test_support::scrub_git_local_env(&mut git);
+            let output = git
+                .current_dir(fixture.path())
+                .args([
+                    "-c",
+                    "user.name=Gate fixture",
+                    "-c",
+                    "user.email=gate@fixture.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                ])
+                .args(arguments)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_loom"))
+            .arg("--workspace")
+            .arg(fixture.path())
+            .args(["gate", "verify", "--diff", "HEAD^..HEAD"])
+            .env_remove("LOOM_INSIDE")
+            .env("PREK_QUIET", "2")
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(i32::from(hook_status != 0 || !pass)),
+            "hook_status={hook_status}, pass={pass}: {stderr}"
+        );
+        assert_eq!(
+            fs::read_to_string(fixture.path().join(".loom/hook-runs"))
+                .unwrap_or_else(|error| panic!("actual hook did not execute: {error}; {stderr}"))
+                .lines()
+                .count(),
+            index + 1,
+            "the actual project hook must run again after correction"
+        );
+        if hook_status == 0 {
+            assert_eq!(witnesses(&stderr).len(), 1, "{stderr}");
+        }
+    }
+}
+
+#[test]
 fn system_cli_failure_reports_diagnostics_after_build_preamble() {
     let fixture = fixture(false);
     let script = fixture.path().join("producer.sh");

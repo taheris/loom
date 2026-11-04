@@ -11,7 +11,6 @@
 #               the full-suite script against a host signing config.
 #
 #   smoke-git-policy — real offline Wrix signing with only smoke Git tools.
-#   smoke-host-gate — real host gate and hooks with only smoke runtime tools.
 #
 #   loom-smoke — Linux-only `writeShellApplication` wrapping the
 #               container smoke harness (`tests/run-tests.sh`). On
@@ -261,70 +260,6 @@ let
   ]
   ++ smokeGitInputs;
 
-  smoke-host-gate =
-    let
-      nativeSources = map checkResource [
-        "tests/smoke/host-gate-temporary-root-test.sh"
-        "scripts/run-private-fixture-tests"
-        "tests/smoke/host-gate-test.sh"
-        "bin/pre-push-checks"
-      ];
-      nativeFixture = import ../../nix/tests/native-smoke-fixture.nix { inherit pkgs; };
-      nativeInputClosure = pkgs.closureInfo {
-        rootPaths = [
-          pkgs.bash
-          pkgs.nix
-        ];
-      };
-    in
-    checked.check {
-      resources = nativeSources;
-      evaluation =
-        (import ../../nix/native-context.nix)
-        ++ loomPackage.testResources
-        ++ map checkResource [
-          "nix"
-          "flake.nix"
-          "flake.lock"
-          "rust-toolchain.toml"
-          "Cargo.toml"
-          "Cargo.lock"
-          "tests/default.nix"
-          "tests/loom/default.nix"
-          "scripts/full-test.sh"
-          "scripts/required-test.sh"
-          "tests/smoke/result-check.sh"
-          "tests/smoke/spec.md"
-        ];
-      build =
-        _:
-        pkgs.runCommand "smoke-host-gate" { } ''
-          set -euo pipefail
-          env -i \
-            PATH="${
-              makeBinPath (
-                [
-                  bin
-                  pkgs.coreutils
-                  pkgs.findutils
-                  pkgs.gnugrep
-                  pkgs.jq
-                  pkgs.nix
-                  pkgs.prek
-                ]
-                ++ smokeGitInputs
-              )
-            }" \
-            TMPDIR="$TMPDIR" \
-            NIX_BUILD_TOP="''${NIX_BUILD_TOP:-}" \
-            ${pkgs.bash}/bin/bash ${(builtins.elemAt nativeSources 1).path} \
-              ${pkgs.bash}/bin/bash ${(builtins.elemAt nativeSources 0).path} \
-                ${(builtins.elemAt nativeSources 2).path} ${wrixLauncher}/bin/wrix ${(builtins.elemAt nativeSources 3).path} \
-              ${nativeFixture} ${nativeInputClosure}/registration
-          touch "$out"
-        '';
-    };
-
   smokeApp = pkgs.writeShellApplication {
     name = "smoke";
     runtimeInputs = smokeRuntimeInputs;
@@ -369,7 +304,6 @@ in
     loomTests
     test-app-ignores-host-git-signing
     smokeAcceptance
-    smoke-host-gate
     ;
 }
 // optionalAttrs isLinux {

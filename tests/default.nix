@@ -39,7 +39,6 @@ in
     loomTests
     smokeAcceptance
     test-app-ignores-host-git-signing
-    smoke-host-gate
     ;
 }
 // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {

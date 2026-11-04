@@ -10,7 +10,7 @@ let
   checker = resource "nix/quint/checker.rs";
   witnesses = resource "nix/quint/witnesses.rs";
   upstream =
-    assert pkgs.quint.version == "0.33.0";
+    assert pkgs.quint.version == "0.33.1";
     pkgs.quint;
   evaluator = upstream.quint-evaluator.overrideAttrs (old: {
     preUnpack = (import ../cargo-home.nix) + (old.preUnpack or "");
@@ -34,21 +34,21 @@ checked.check {
   ];
   build =
     _:
-    pkgs.runCommand "loom-quint-tools-0.33.0"
+    pkgs.runCommand "loom-quint-tools-0.33.1"
       {
         nativeBuildInputs = [ pkgs.makeWrapper ];
         passthru = {
           inherit (upstream) quint-cli;
           inherit evaluator;
-          version = "0.33.0";
+          version = "0.33.1";
         };
       }
       ''
-        mkdir -p "$out/bin" "$out/share/quint/rust-evaluator-v0.7.0"
+        mkdir -p "$out/bin" "$out/share/quint/rust-evaluator-v0.7.1"
         makeWrapper ${pkgs.nodejs}/bin/node "$out/bin/quint" \
           --add-flags "--max-old-space-size=3072 ${upstream.quint-cli}/share/quint/dist/src/cli.js" \
           --set QUINT_HOME "$out/share/quint"
-        ln -s ${evaluator}/bin/quint_evaluator "$out/share/quint/rust-evaluator-v0.7.0/quint_evaluator"
+        ln -s ${evaluator}/bin/quint_evaluator "$out/share/quint/rust-evaluator-v0.7.1/quint_evaluator"
         for binary in loom-quint-checker loom-quint-witnesses; do
           makeWrapper ${pkgs.coreutils}/bin/timeout "$out/bin/$binary" \
             --add-flags "--kill-after=5s 300s ${evaluator}/bin/$binary" \

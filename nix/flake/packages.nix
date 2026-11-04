@@ -7,7 +7,7 @@ _:
       config,
       sandbox,
       debugSandbox,
-      imagePiCodingAgent,
+      wrixModules,
       loom,
       loomBin,
       wrixSrc,
@@ -57,7 +57,7 @@ _:
         verification-clippy-all-targets = loom.clippyAllTargets;
         verification-nextest = loom.nextest;
         loom-wrix = nativePackage loomBin;
-        pi-coding-agent = nativePackage imagePiCodingAgent;
+        pi-coding-agent = nativePackage (wrixModules.pi { inherit pkgs; });
 
         debug = nativePackage (launchApp {
           name = "loom-debug";

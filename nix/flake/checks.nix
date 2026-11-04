@@ -502,7 +502,6 @@
             { }
         )
         // {
-          smoke-host-gate = testsDeriv.smoke-host-gate;
           checks-match-host-system = checked.check {
             resources = [ ];
             evaluation = evaluation ++ loom.testResources;

@@ -81,7 +81,7 @@ test_invalid_and_empty_campaigns() {
   cp "$root/specs/gate/model.qnt" "$tmp/source/specs/gate/model.qnt"
   write_wrapper <<'SH'
 set -euo pipefail
-if [[ "$1" == --version ]]; then printf '0.33.0\n'; fi
+if [[ "$1" == --version ]]; then printf '0.33.1\n'; fi
 SH
   must_fail 'invalid or incomplete' env PATH="$tmp/bin:$PATH" "$BASH" "$script" witnesses
   rm "$tmp/bin/quint"
@@ -115,7 +115,7 @@ test_native_witness_runner_matches_cli() {
 
 test_model_mutations() {
   python3 "$root/tests/quint/mutations.py" "$tmp/witness-ir.json" \
-    "$LOOM_QUINT_PACKAGE/share/quint/rust-evaluator-v0.7.0/quint_evaluator" "$tmp/failed-mutation-input.json"
+    "$LOOM_QUINT_PACKAGE/share/quint/rust-evaluator-v0.7.1/quint_evaluator" "$tmp/failed-mutation-input.json"
 }
 
 test_short_trace_cannot_hide_before_full_trace() {
