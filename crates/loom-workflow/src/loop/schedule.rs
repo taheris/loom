@@ -38,9 +38,8 @@ pub(super) const fn handoff_commands<'a>(
     agent: Option<AgentKind>,
     loom: &'a Path,
     wrix: &'a Path,
-    manifest: &'a loom_driver::profile_manifest::ProfileImageManifest,
 ) -> MoleculePushGateCommands<'a> {
-    MoleculePushGateCommands::new(agent, loom, wrix).with_manifest(manifest)
+    MoleculePushGateCommands::new(agent, loom, wrix)
 }
 
 #[derive(Default)]
@@ -259,7 +258,7 @@ where
         retry_policy,
         max_iterations,
         repo_git_policy,
-        manifest,
+        manifest: _,
     } = request;
     let spawn = Arc::new(spawn);
     let bd = BdClient::<loom_driver::bd::TokioRunner>::new();
@@ -641,7 +640,7 @@ where
             &bd,
             &label,
             molecule.as_ref(),
-            handoff_commands(agent_override, &loom_bin, &wrix_bin, &manifest),
+            handoff_commands(agent_override, &loom_bin, &wrix_bin),
             &workspace,
             &git,
         )

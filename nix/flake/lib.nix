@@ -227,10 +227,21 @@ in
         agentPkg = imagePiCodingAgent;
       };
 
+      profileCatalogue = loomLib.mkProfileCatalogue {
+        inherit pkgs wrixLib nativeCargo;
+        imagePkgs = wrixLinuxPkgs;
+        profiles = {
+          inherit (wrixLib.profiles) base python;
+          rust = rustProfile;
+        };
+        loomBin = imageLoom.bin;
+        agentPkg = imagePiCodingAgent;
+      };
+
       wrixLauncher = wrixLib.rustPackage.wrix;
 
       loomBin = loomLib.mkLoomBin {
-        inherit pkgs profileManifest wrixLauncher;
+        inherit pkgs wrixLauncher;
         loomBuild = loom;
       };
     in
@@ -253,6 +264,7 @@ in
           loomBin
           nativeCargo
           wrixSrc
+          profileCatalogue
           profileManifest
           rustProfile
           rustToolchain

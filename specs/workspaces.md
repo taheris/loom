@@ -390,8 +390,13 @@ image entry. Each entry carries the podman reference, immutable image source,
 source kind and immutable Wrix profile configuration path. The data-only
 manifest supplies no executable authority; host launchers come from caller
 context or explicit overrides. Optional legacy digest/runtime metadata remains
-readable without selecting a process. Loom parses the manifest once from
-`LOOM_PROFILES_MANIFEST` and has no implicit search fallback.
+readable without selecting a process. The trusted driver discovers the
+recipe-only `profile-catalogue` output from the clean, signature-verified
+published operator source. No environment variable supplies profile metadata.
+Discovery retains recipes without realizing image payloads; dispatch realizes
+and privately roots only the selected profile/runtime manifest and its closure.
+Unavailable discovery fails closed with bounded infrastructure diagnostics,
+never accepted coverage.
 
 Dispatch resolves the CLI profile override or bead `profile:X` label together
 with the phase backend, then looks up the pair. Missing profiles or runtimes are
@@ -408,9 +413,10 @@ and rustc.
 
 Every entry requires `ref`, `source`, `source_kind`, and `profile_config`.
 Missing image data fails ingestion with regeneration guidance. Native probe
-availability is carried separately under `LOOM_NATIVE_PREFLIGHT_MANIFEST`, keyed
-by the exact immutable profile configuration. Provisioning must not replace a
-selected image or grant availability to another configuration.
+availability belongs to the selected manifest entry and its exact immutable
+profile configuration. Provisioning must not replace a selected image or grant
+availability to another configuration. Native availability requires worker
+readiness probes; it never constitutes accepted verification.
 
 ### Concurrency & Locking
 
@@ -1165,14 +1171,14 @@ for worker feedback.
 ### Bead Dispatch
 
 <!-- prettier-ignore -->
-- Missing or legacy native profiles are provisioned automatically from the
-  registered operator's clean, signature-verified published Git source through
-  its fixed profile factory. Cold starts and legacy manifests recover without
-  changing selection or granting coverage. Missing/corrupt authority is neither
+- Selected profiles are provisioned automatically from the registered operator's
+  clean, signature-verified published Git source through its recipe-only
+  catalogue. Cold starts realize only the selected entry without changing
+  selection or granting coverage. Missing/corrupt authority is neither
   reconstructed nor bypassed. [system](nix build .#verification-system-profile-bootstrap)
 
-- Provisioned profile inputs survive trusted driver subprocesses, including
-  the review handoff. [test](provisioned_profile_inputs_survive_actual_driver_subprocess_environment)
+- Provisioned profile inputs retain the selected immutable configuration.
+  [test](provisioned_profile_inputs_retain_the_selected_configuration)
 
 - Profile factory output must be complete and identify an immutable store
   manifest. [test](factory_output_rejects_partial_results_and_mutable_manifests)

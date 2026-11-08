@@ -203,6 +203,9 @@ pub async fn prepare_with_bd<R: CommandRunner>(
     })?;
     let tracked_files = GitClient::open(workspace)?.tracked_files().await?;
     let profile = resolve_profile(&bead.labels, cli_profile, phase_default);
+    if let Err(error) = manifest.resolve(&profile, runtime).await {
+        return profile_rejection(error, manifest).map(Preparation::Rejected);
+    }
     let skill_plan = SkillPlan::resolve(
         workspace,
         &tracked_files,

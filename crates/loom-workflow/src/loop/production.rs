@@ -1465,8 +1465,7 @@ where
             &self.bd,
             &self.label,
             self.handoff_molecule.as_ref(),
-            MoleculePushGateCommands::new(self.agent_override, &self.loom_bin, &self.wrix_bin)
-                .with_manifest(&self.manifest),
+            MoleculePushGateCommands::new(self.agent_override, &self.loom_bin, &self.wrix_bin),
             &self.workspace,
             &self.git,
         )
@@ -1671,7 +1670,6 @@ pub struct MoleculePushGateCommands<'a> {
     review_agent: Option<AgentRuntime>,
     loom_bin: &'a Path,
     wrix_bin: &'a Path,
-    manifest: Option<&'a ProfileImageManifest>,
 }
 
 impl<'a> MoleculePushGateCommands<'a> {
@@ -1684,14 +1682,7 @@ impl<'a> MoleculePushGateCommands<'a> {
             review_agent,
             loom_bin,
             wrix_bin,
-            manifest: None,
         }
-    }
-
-    #[must_use]
-    pub const fn with_manifest(mut self, manifest: &'a ProfileImageManifest) -> Self {
-        self.manifest = Some(manifest);
-        self
     }
 }
 
@@ -1803,9 +1794,6 @@ pub async fn execute_molecule_push_gate<R: CommandRunner>(
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_millis());
     let mut review_command = Command::new(commands.loom_bin);
-    if let Some(manifest) = commands.manifest {
-        manifest.configure_driver(&mut review_command);
-    }
     review_command
         .current_dir(&gate_workspace)
         .env(REVIEW_PHASE_WHEN_ENV, phase_when_millis.to_string())
@@ -4462,32 +4450,14 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn parallel_handoff_propagates_provisioned_profiles_to_actual_review_child() {
+    async fn parallel_handoff_does_not_inject_profile_metadata_into_review_child() {
         let dir = tempfile::tempdir().expect("fixture");
-        let original = write_manifest(dir.path());
-        let mut entries: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(original.manifest_path()).expect("manifest"))
-                .expect("json");
-        for entry in entries["base"]
-            .as_object_mut()
-            .expect("runtimes")
-            .values_mut()
-        {
-            entry["native_preflight"] = "rust".into();
-        }
-        let installed_path = dir.path().join("installed.json");
-        std::fs::write(&installed_path, serde_json::to_vec(&entries).expect("json"))
-            .expect("installed");
-        let manifest = (*original).clone().provision_native_from(
-            &ProfileImageManifest::from_path(&installed_path).expect("installed manifest"),
-        );
         let workspace = dir.path().join("workspace");
         let git = git_workspace(&workspace);
         let marker = dir.path().join("review-environment-observed");
         let stub = dir.path().join("review-child.sh");
         loom_test_support::write_executable_bash_script(&stub, &format!(
-            "set -euo pipefail\n[[ \"$LOOM_PROFILES_MANIFEST\" == {original:?} ]]\n[[ \"$LOOM_PROVISIONED_PROFILES_MANIFEST\" == {installed_path:?} ]]\ntest -r \"$LOOM_PROFILES_MANIFEST\"\ntest -r \"$LOOM_PROVISIONED_PROFILES_MANIFEST\"\nprintf 'observed\\n' > {marker:?}\nexit 1\n",
-            original = original.manifest_path(),
+            "set -euo pipefail\nprintf '%s\\n%s\\n' \"${{LOOM_PROFILES_MANIFEST:-}}\" \"${{LOOM_PROVISIONED_PROFILES_MANIFEST:-}}\" > {marker:?}\nexit 1\n",
         )).expect("external child");
         let bd = BdClient::with_runner(molecule_lookup_script(
             dir.path(),
@@ -4499,20 +4469,19 @@ mod tests {
             &bd,
             &SpecLabel::new("alpha").expect("label"),
             None,
-            super::super::schedule::handoff_commands(
-                None,
-                &stub,
-                Path::new("unused-wrix"),
-                &manifest,
-            ),
+            super::super::schedule::handoff_commands(None, &stub, Path::new("unused-wrix")),
             &workspace,
             &git,
         )
         .await
         .expect("typed review failure");
         assert_eq!(
-            std::fs::read_to_string(marker).expect("review child observed both inputs"),
-            "observed\n"
+            std::fs::read_to_string(marker).expect("review child environment recorded"),
+            format!(
+                "{}\n{}\n",
+                std::env::var("LOOM_PROFILES_MANIFEST").unwrap_or_default(),
+                std::env::var("LOOM_PROVISIONED_PROFILES_MANIFEST").unwrap_or_default()
+            )
         );
         assert!(
             handoff

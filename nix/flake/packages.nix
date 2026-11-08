@@ -13,6 +13,7 @@ _:
       wrixSrc,
       wrixLauncher,
       profileManifest,
+      profileCatalogue,
       ...
     }:
     let
@@ -43,6 +44,7 @@ _:
       packages = {
         profileManifest = nativePackage profileManifest;
         profile-images = nativePackage profileManifest;
+        profile-catalogue = nativePackage profileCatalogue;
 
         cargo-patches = nativePackage loom.cargoConfig;
         default = loom.bin;

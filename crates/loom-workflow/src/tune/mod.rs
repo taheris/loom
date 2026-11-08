@@ -164,6 +164,12 @@ impl PreparedRun {
         self
     }
 
+    #[must_use]
+    pub fn with_profile_manifest(mut self, manifest: ProfileImageManifest) -> Self {
+        self.context.profile_manifest = Some(manifest);
+        self
+    }
+
     ///
     /// # Errors
     ///
@@ -235,6 +241,7 @@ struct Context {
     split_salt: SplitSalt,
     base_commit: String,
     launcher_env: Vec<(String, String)>,
+    profile_manifest: Option<ProfileImageManifest>,
 }
 
 impl Context {
@@ -282,6 +289,7 @@ impl Context {
             split_salt,
             base_commit,
             launcher_env: Vec::new(),
+            profile_manifest: None,
         })
     }
 
@@ -1650,7 +1658,10 @@ async fn replay_selected_cases(
     budget.remaining()?;
     tune_executor::require_checkable(plan)?;
     let source = Snapshot::capture(&context.workspace, &context.tracked_files)?;
-    let manifest = ProfileImageManifest::from_env()?;
+    let manifest = match &context.profile_manifest {
+        Some(manifest) => manifest.clone(),
+        None => return Err(ProfileError::NotProvisioned.into()),
+    };
     let mut replays = Vec::with_capacity(plan.selected_cases.len());
     for selected in &plan.selected_cases {
         let (targets, input, snapshot) =
@@ -1814,7 +1825,9 @@ async fn run_replay_agent(
     let checkout = snapshot.checkout(budget).await?;
     let phase = checker_phase(selected.checker.domain());
     let selection = context.loom_config.agent_for(phase);
-    let entry = manifest.lookup(&selection.profile, selection.kind())?;
+    let entry = manifest
+        .resolve(&selection.profile, selection.kind())
+        .await?;
     let key = format!("tune-{}-{side}", selected.case_id).replace(':', "-");
     let scratch = ScratchSession::open(checkout.path(), &key, &prompt, "loom tune replay")?;
     let mut spawn = crate::spawn::build_spawn_config(

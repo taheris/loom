@@ -9,18 +9,22 @@ use crate::identifier::ProfileName;
 
 /// Errors raised while resolving the profile-image manifest.
 ///
-/// Loom reads the manifest path from `LOOM_PROFILES_MANIFEST` at startup and
-/// must fail fast — there is no implicit search path or fallback default.
+/// Discovery requires authenticated published operator source; malformed metadata
+/// or unavailable selected outputs fail closed.
 #[expect(
     clippy::doc_markdown,
     reason = "displaydoc fields are format placeholders; backticks would change the generated error text"
 )]
 #[derive(Debug, Display, Error)]
 pub enum ProfileError {
-    /// LOOM_PROFILES_MANIFEST is not set; spawn-bound commands require a
-    /// profile-image manifest (enter `nix develop`, use `nix run .#loom-wrix`,
-    /// or export LOOM_PROFILES_MANIFEST)
-    ManifestEnvUnset,
+    /// invalid profile catalogue: {reason}
+    Catalogue { reason: &'static str },
+
+    /// selected profile requires explicit authenticated provisioning
+    NotProvisioned,
+
+    /// selected profile provisioning failed
+    Provision(#[source] Box<super::provision::ProvisionError>),
 
     /// profile-image manifest not found at {path}
     ManifestNotFound {

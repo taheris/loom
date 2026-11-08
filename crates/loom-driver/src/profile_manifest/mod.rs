@@ -1,19 +1,15 @@
-//! Profile-image manifest parser.
+//! Authenticated profile discovery and selected image provisioning.
 //!
-//! The manifest is a JSON file produced by `mkProfileImages` at flake-build
-//! time mapping each profile/runtime pair to the podman ref + Nix store path
-//! needed to spawn its image. Loom reads the manifest path from
-//! `LOOM_PROFILES_MANIFEST` once at startup, parses it into a typed
-//! `BTreeMap<ProfileName, BTreeMap<AgentRuntime, ImageEntry>>`, and looks each
-//! bead's resolved profile/runtime pair up against it at dispatch time. See
-//! `specs/harness.md` § Profile-Image Manifest.
+//! The driver discovers a recipe-only catalogue from the clean, signature-verified
+//! published operator source. Only the requested profile/runtime is materialized
+//! and rooted. Image-owned native readiness remains separate from verification
+//! acceptance. No environment variable supplies profile selection metadata.
 
+mod catalogue;
 mod error;
 mod manifest;
 mod provision;
 
 pub use error::ProfileError;
-pub use manifest::{
-    ENV_VAR, ImageEntry, NATIVE_ENV_VAR, NativePreflight, PROVISIONED_ENV_VAR, ProfileImageManifest,
-};
+pub use manifest::{ImageEntry, NativePreflight, ProfileImageManifest};
 pub use provision::{ProvisionError, bootstrap_loop};

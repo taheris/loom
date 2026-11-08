@@ -954,6 +954,25 @@ fn exit_code_for_gate(gate: &GateOutcome) -> ExitCode {
     }
 }
 
+fn configured_profiles(workspace: &Path, host_key: bool) -> anyhow::Result<ProfileImageManifest> {
+    let mode = if host_key {
+        KeyMode::Host
+    } else {
+        KeyMode::Repository
+    };
+    let wrix_bin =
+        std::env::var_os("LOOM_WRIX_BIN").map_or_else(|| PathBuf::from("wrix"), PathBuf::from);
+    let policy = RepoGitPolicy::resolve(workspace, wrix_bin, mode)?;
+    let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(loom_driver::profile_manifest::bootstrap_loop(
+            workspace, &config, policy,
+        ))
+        .map_err(Into::into)
+}
+
 fn prepare_wrix_git_policy(workspace: &Path, host_key: bool) -> anyhow::Result<RepoGitPolicy> {
     loom_driver::workspace::external::admit_blocking(workspace, workspace)?;
     let mode = if host_key {
@@ -988,6 +1007,12 @@ fn run_tune(workspace: &Path, args: TuneArgs, host_key: bool) -> anyhow::Result<
     let prepared = runtime
         .block_on(loom_workflow::tune::prepare(workspace))?
         .with_launcher_env(launcher_env);
+    let prepared = match &request {
+        loom_workflow::tune::Request::Propose(proposal) if !proposal.dry_run => {
+            prepared.with_profile_manifest(configured_profiles(workspace, host_key)?)
+        }
+        _ => prepared,
+    };
     if matches!(&request, loom_workflow::tune::Request::Propose(_)) {
         println!("evidence roots:");
         for line in prepared.evidence_roots().lines() {
@@ -2795,7 +2820,7 @@ fn run_gate_mint(
             let admission = checked_gate::Admission::load(workspace, &mint_scope)?;
             admission.require_current()?;
             let launcher_env = prepare_wrix_git_policy(workspace, host_key)?.launcher_env();
-            let manifest = Arc::new(ProfileImageManifest::from_env()?);
+            let manifest = Arc::new(configured_profiles(workspace, host_key)?);
             let labels = resolve_tree_mint_labels(workspace, None)?;
             let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
             let opts = loom_workflow::mint::MintOptions {
@@ -3396,7 +3421,7 @@ fn run_plan(
     host_key: bool,
 ) -> anyhow::Result<()> {
     let launcher_env = prepare_wrix_git_policy(workspace, host_key)?.launcher_env();
-    let manifest = ProfileImageManifest::from_env()?;
+    let manifest = configured_profiles(workspace, host_key)?;
     let anchor_labels = plan::parse_anchor_labels(anchor_label_args)?;
     let report = plan::run(
         workspace,
@@ -4914,7 +4939,7 @@ fn run_review(
     // Review inspects source, not deterministic execution authority. Native
     // admission and producer preparation belong to verify/mint, not this lane.
     let launcher_env = prepare_wrix_git_policy(workspace, host_key)?.launcher_env();
-    let manifest = Arc::new(ProfileImageManifest::from_env()?);
+    let manifest = Arc::new(configured_profiles(workspace, host_key)?);
     let label = resolve_review_label(workspace, &opts.scope)?;
     let runtime = command_runtime()?;
     let verified_scope = verified_scope_from_env()?;
@@ -5237,7 +5262,7 @@ fn run_inbox_chat(
         _ => None,
     };
     let launcher_env = prepare_wrix_git_policy(workspace, host_key)?.launcher_env();
-    let manifest = ProfileImageManifest::from_env()?;
+    let manifest = configured_profiles(workspace, host_key)?;
     let opts = loom_workflow::inbox::chat::ChatOpts {
         spec_filter: filters.spec,
         kind_filter: filters.kind,
@@ -5474,7 +5499,7 @@ fn run_todo(
     host_key: bool,
 ) -> anyhow::Result<()> {
     let launcher_env = prepare_wrix_git_policy(workspace, host_key)?.launcher_env();
-    let manifest = Arc::new(ProfileImageManifest::from_env()?);
+    let manifest = Arc::new(configured_profiles(workspace, host_key)?);
     let lock_mgr = LockManager::new(workspace)?;
     let _guard = lock_mgr.acquire_todo()?;
 

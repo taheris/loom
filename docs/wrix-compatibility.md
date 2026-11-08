@@ -68,16 +68,19 @@ These must identify raw launchers, not wrappers with a baked profile. Loom does
 not unwrap scripts. Every image-backed launch still passes exactly the selected
 immutable `--profile-config`; changing the executable does not select an image.
 
-`mkProfileManifest` also produces `nativePreflight`, a separate Loom-owned JSON
-output mapping exact immutable profile configuration paths to native probe
-availability. Export it as `LOOM_NATIVE_PREFLIGHT_MANIFEST` alongside
-`LOOM_PROFILES_MANIFEST`. `mkLoomBin`, the development shell, and factory
-bootstrap carry both outputs. Native availability is not accepted verification.
-Legacy provisioning may attach a probe only for a matching configuration; it
-never substitutes another project's image source, ref, digest, or configuration.
-Factory bootstrap requests all declared outputs (`profile-images^*`), because
-Nix's default build JSON reports only `out`. Missing capability files fail
-without discarding selected image data or falling back to another factory image.
+`mkProfileCatalogue` exports a schema-versioned, recipe-only
+`profile-catalogue`. The driver discovers it from clean, signature-verified
+published operator source; no profile-manifest or catalogue environment variable
+is supported. Shell entry and `mkLoomBin` do not materialize an image matrix or
+carry profile metadata. Dispatch validates the selected recipe/output binding,
+realizes just its single-entry manifest with signature enforcement, and retains
+catalogue and selected output roots in private external state. Source and
+association changes fail closed around every bounded provisioning command.
+
+Selected manifests carry image-owned `native_preflight` metadata alongside the
+exact immutable profile configuration. Native availability requests worker
+readiness probes; it is not accepted verification and cannot substitute another
+project's image source, ref, digest, or configuration.
 
 ## Spawn extension boundary
 

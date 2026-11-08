@@ -649,7 +649,7 @@ mutation permission.
 - The production post-integration gate retains its candidate and attempt history
   after verifier infrastructure exhaustion without requesting source repair.
   [test](production_gate_preserves_candidate_after_verifier_infrastructure_exhaustion)
-- Parallel handoff passes provisioned manifest inputs to the actual review child, and a refused review cannot mint publication evidence. [test](parallel_handoff_propagates_provisioned_profiles_to_actual_review_child)
+- Parallel handoff does not inject profile metadata into the actual review child; the child discovers authenticated published metadata itself, and a refused review cannot mint publication evidence. [test](parallel_handoff_does_not_inject_profile_metadata_into_review_child)
 - Real Gate CLI preserves unavailable, timeout and interruption exits through grouped and direct dispatch; semantic failure takes precedence. [test](gate_verify_retains_real_infrastructure_exits_and_semantic_failure_precedence)
 
 - Verifier exhaustion and driver restart recover the protected candidate through

@@ -140,8 +140,6 @@ pub fn run(workspace: &Path, opts: &ChatOpts) -> Result<ChatReport, ChatError> {
     let cfg = LoomConfig::load(LoomConfig::resolve_path(workspace))
         .map_err(|e| ChatError::Config(e.to_string()))?;
     let selection = resolve_chat_selection(opts.cli_profile.as_ref(), opts.agent_override, &cfg)?;
-    let image: &ImageEntry = opts.manifest.lookup(&selection.profile, selection.kind())?;
-
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -164,6 +162,8 @@ pub fn run(workspace: &Path, opts: &ChatOpts) -> Result<ChatReport, ChatError> {
         });
     }
 
+    let image: &ImageEntry =
+        runtime.block_on(opts.manifest.resolve(&selection.profile, selection.kind()))?;
     let scope_label = opts
         .spec_filter
         .clone()

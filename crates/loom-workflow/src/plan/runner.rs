@@ -80,7 +80,12 @@ pub fn run_with_timeout(
     let cfg = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
 
     let selection = resolve_plan_selection(opts.cli_profile.as_ref(), opts.agent_override, &cfg)?;
-    let image: &ImageEntry = opts.manifest.lookup(&selection.profile, selection.kind())?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|source| PlanError::Spawn { source })?;
+    let image: &ImageEntry =
+        runtime.block_on(opts.manifest.resolve(&selection.profile, selection.kind()))?;
 
     let pinned_context = read_pinned_context(workspace, &cfg.pinned_context)?;
     let spec_index = read_pinned_context(workspace, "docs/README.md")?;

@@ -817,7 +817,10 @@ where
         self.require_matching_verified_scope()?;
         let built_prompt = self.build_review_prompt().await?;
         let prompt = built_prompt.prompt;
-        let entry = self.manifest.lookup(&self.phase_default, self.runtime)?;
+        let entry = self
+            .manifest
+            .resolve(&self.phase_default, self.runtime)
+            .await?;
         let banner = format!("loom review @ {}", self.label);
         let scratch = loom_driver::scratch::ScratchSession::open(
             &self.workspace,
@@ -1232,7 +1235,6 @@ where
         // acquires the same lock and would otherwise time out behind us.
         self.lock.take();
         let mut command = Command::new(&self.loom_bin);
-        self.manifest.configure_driver(&mut command);
         let status = command
             .current_dir(&self.workspace)
             .arg("run")

@@ -207,21 +207,50 @@
       );
       fixtureProfile = pkgs.writeText "bootstrap-fixture-profile.json" ''{"profile":{"mounts":[]}}'';
       fixtureImage = pkgs.writeText "bootstrap-fixture-image.json" "{}";
-      fixtureManifest = pkgs.writeText "bootstrap-fixture-manifest.json" (
+      fixtureSelectedManifest = pkgs.writeText "bootstrap-selected-manifest.json" (
         builtins.toJSON {
           rust.direct = {
             ref = "bootstrap-fixture";
             source = "${fixtureImage}";
             source_kind = "nix-descriptor";
             profile_config = "${fixtureProfile}";
+            native_preflight = "rust";
           };
         }
       );
-      fixtureNative = pkgs.writeText "bootstrap-fixture-native.json" (
+      fixtureCatalogue = pkgs.writeText "bootstrap-catalogue.json" (
         builtins.toJSON {
-          ${builtins.unsafeDiscardStringContext "${fixtureProfile}"} = "rust";
+          schema = 1;
+          profiles.rust.direct = {
+            ref = "bootstrap-fixture";
+            source_kind = "nix-descriptor";
+            realization = {
+              path = builtins.unsafeDiscardStringContext "${fixtureSelectedManifest}";
+              derivation = builtins.unsafeDiscardOutputDependency fixtureSelectedManifest.drvPath;
+            };
+          };
         }
       );
+      profileProbe = checked.check {
+        inherit evaluation;
+        resources = loom.testResources;
+        build =
+          _:
+          loom.craneLib.buildPackage (
+            loom.checkArgs
+            // {
+              pname = "loom-profile-catalogue-probe";
+              cargoExtraArgs = "--package loom-driver --example profile-catalogue-probe";
+              doCheck = false;
+              installPhaseCommand = ''
+                mapfile -t candidates < <(find target -type f -name profile-catalogue-probe)
+                [[ "''${#candidates[@]}" == 1 ]]
+                mkdir -p "$out/bin"
+                install -m755 "''${candidates[0]}" "$out/bin/profile-catalogue-probe"
+              '';
+            }
+          );
+      };
       bootstrapScript = source "tests/sandbox/profile-bootstrap.sh";
       profileBootstrapApp = checked.check {
         resources = [ bootstrapScript ];
@@ -243,8 +272,9 @@
             text = ''
               [[ $# == 0 ]] || exit 64
               exec ${pkgs.bash}/bin/bash ${builtins.head paths} \
-                ${loom.bin}/bin/loom ${wrixLauncher}/bin/wrix ${fixtureManifest} \
-                ${pkgs.bash} ${pkgs.coreutils} ${pkgs.stdenv.hostPlatform.system} ${fixtureNative}
+                ${loom.bin}/bin/loom ${wrixLauncher}/bin/wrix \
+                ${pkgs.bash} ${pkgs.coreutils} ${pkgs.stdenv.hostPlatform.system} \
+                ${fixtureCatalogue} ${profileProbe}/bin/profile-catalogue-probe
             '';
           };
       };

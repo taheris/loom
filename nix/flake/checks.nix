@@ -77,8 +77,8 @@
         text = ''
           if [[ "''${1:-}" == --launch-inputs ]]; then
             printf 'git=%s\nraw=%s\n' "''${LOOM_WRIX_BIN:-}" "''${LOOM_WRIX_SPAWN_BIN:-}"
-          elif [[ "''${1:-}" == --provisioned-inputs ]]; then
-            printf '%s\n' "''${LOOM_PROVISIONED_PROFILES_MANIFEST:-}"
+          elif [[ "''${1:-}" == --profile-environment ]]; then
+            env | grep -E '^LOOM_(PROFILE_CATALOGUE|PROFILES_MANIFEST|PROVISIONED_PROFILES_MANIFEST|NATIVE_PREFLIGHT_MANIFEST)=' || true
           else
             printf 'loom 0.0.0\n'
           fi
@@ -94,12 +94,10 @@
               launcher = fakeUnprofiledWrix;
             };
           });
-      fakeProfileManifest = pkgs.writeText "profile-images.json" "{}";
       fakeLoomWrix = (import ../lib.nix).mkLoomBin {
         inherit pkgs;
         loomBuild.bin = fakeLoomBin;
         wrixLauncher = fakeProfiledWrix;
-        profileManifest = fakeProfileManifest;
       };
       fakeSmokeNix = pkgs.writeShellScriptBin "nix" ''
         touch "$SMOKE_NIX_CALLED"
@@ -187,6 +185,11 @@
           ) extraOrigins;
       };
       checks = {
+        profile-catalogue = checked.check {
+          resources = [ ];
+          evaluation = evaluation ++ loom.testResources;
+          build = _: import ../tests/profile-catalogue.nix { inherit pkgs wrixLib; };
+        };
         loom-consumer-api = checked.check {
           resources = [
             consumerSource
@@ -449,8 +452,7 @@
           scriptCheck "loom-wrix-does-not-default-launcher-override" [ ] [ ]
             (_: ''
               unset LOOM_WRIX_BIN LOOM_WRIX_SPAWN_BIN
-              export LOOM_PROVISIONED_PROFILES_MANIFEST=/stale/operator/environment.json
-              [[ "$(${fakeLoomWrix}/bin/loom --provisioned-inputs)" == ${fakeProfileManifest} ]]
+              [[ -z "$(${fakeLoomWrix}/bin/loom --profile-environment)" ]]
               expected=$(printf 'git=%s\nraw=\n' ${fakeProfiledWrix}/bin/wrix)
               [[ "$(${fakeLoomWrix}/bin/loom --launch-inputs)" == "$expected" ]]
               export LOOM_WRIX_SPAWN_BIN=${fakeUnprofiledWrix}/bin/wrix

@@ -3,11 +3,11 @@ set -euo pipefail
 
 loom_bin="${1:?fixed Loom fixture driver is required}"
 wrix_bin="${2:?fixed Wrix launcher is required}"
-manifest="${3:?fixed provisioned manifest is required}"
-bash_package="${4:?fixed builder package is required}"
-coreutils_package="${5:?fixed symlink tool package is required}"
-system="${6:?fixed host system is required}"
-native_capabilities="${7:?fixed native availability manifest is required}"
+bash_package="${3:?fixed builder package is required}"
+coreutils_package="${4:?fixed symlink tool package is required}"
+system="${5:?fixed host system is required}"
+catalogue="${6:?fixed recipe-only catalogue is required}"
+profile_probe="${7:?production selected provisioning probe is required}"
 if [[ "${LOOM_INSIDE:-0}" == 1 ]]; then
   printf 'profile bootstrap requires the trusted driver lane; worker coverage remains unverified\n' >&2
   exit 77
@@ -17,6 +17,7 @@ while IFS= read -r git_var; do
   if [[ -n "$git_var" ]]; then unset "$git_var"; fi
 done <<< "$git_vars"
 fixture=$(mktemp -d)
+fixture=$(realpath "$fixture")
 cleanup() {
   local status=$?
   if [[ "$status" == 0 ]]; then
@@ -39,7 +40,7 @@ export BEADS_DOLT_SERVER_SOCKET="$fixture/absent-dolt.sock"
 export BD_NO_DAEMON=1
 export BD_DISABLE_METRICS=1
 unset GIT_SSH_COMMAND GIT_SSH
-unset LOOM_PROFILES_MANIFEST LOOM_PROVISIONED_PROFILES_MANIFEST LOOM_NATIVE_PREFLIGHT_MANIFEST
+unset LOOM_PROFILES_MANIFEST LOOM_PROVISIONED_PROFILES_MANIFEST LOOM_NATIVE_PREFLIGHT_MANIFEST LOOM_PROFILE_CATALOGUE
 unset WRIX_UNSAFE_PODMAN_SOCKET WRIX_NETWORK WRIX_NETWORK_ALLOWLIST
 unset WRIX_PI_AUTH_FILE ANTHROPIC_API_KEY OPENAI_API_KEY CLAUDE_CODE_OAUTH_TOKEN
 mkdir -p "$HOME" "$fixture/project/src"
@@ -82,15 +83,14 @@ cat > flake.nix <<EOF
     retain = path: builtins.appendContext path { "\${path}" = { path = true; }; };
     shell = retain "$bash_package";
     tools = retain "$coreutils_package";
-    profiles = retain "$manifest";
-    native = retain "$native_capabilities";
+    catalogue = retain "$catalogue";
   in {
-    packages."$system".profile-images = builtins.derivation {
+    packages."$system".profile-catalogue = builtins.derivation {
       name = "isolated-profile-bootstrap";
       system = "$system";
-      outputs = [ "out" "nativePreflight" ];
+      outputs = [ "out" ];
       builder = "\${shell}/bin/bash";
-      args = [ "-euc" ''"\${tools}/bin/ln" -s "\${profiles}" "\$out"; "\${tools}/bin/ln" -s "\${native}" "\$nativePreflight"'' ];
+      args = [ "-euc" ''"\${tools}/bin/ln" -s "\${catalogue}" "\$out"'' ];
     };
   };
 }
@@ -130,9 +130,7 @@ run_until_missing_tracker() {
 run_until_missing_tracker cold
 jq -e --arg head "$expected_head" '.source == $head and .exit_code == 0 and .coverage_admitted == false' \
   .loom/diagnostics/profile-provisioning.jsonl >/dev/null
-jq 'with_entries(.value |= with_entries(.value |= del(.native_preflight)))' "$manifest" > "$fixture/legacy.json"
-export LOOM_PROFILES_MANIFEST="$fixture/legacy.json"
-run_until_missing_tracker legacy
+run_until_missing_tracker cached-discovery
 [[ "$(wc -l < .loom/diagnostics/profile-provisioning.jsonl)" == 2 ]]
 
 [[ ! -e .git/loom-workspace.json ]]
@@ -172,7 +170,13 @@ git push -q origin main
 git -C .loom/integration fetch -q origin main
 git -C .loom/integration merge -q --ff-only origin/main
 expected_head=$(git rev-parse HEAD)
-run_until_missing_tracker exhausted
+if timeout --kill-after=5s 90s "$loom_bin" loop lm-bootstrap-fixture > "$fixture/exhausted.log" 2>&1; then
+  printf 'unavailable catalogue did not fail closed\n' >&2
+  exit 1
+else
+  [[ "$?" == 1 ]]
+fi
+grep -F 'exhausted its infrastructure budget; required coverage remains pending' "$fixture/exhausted.log"
 jq -se --arg head "$expected_head" \
   '[.[] | select(.source == $head)] | length == 2 and all(.[]; .exit_code != 0 and .coverage_admitted == false)' \
   .loom/diagnostics/profile-provisioning.jsonl >/dev/null
@@ -240,3 +244,26 @@ jq -se --arg head "$expected_head" 'last | .source == $head and .exit_code == 0 
   .loom/diagnostics/profile-provisioning.jsonl >/dev/null
 printf 'published-profile-bootstrap-preserves-unpublished-integration-ok\n'
 printf 'published-profile-bootstrap-authority-and-skew-ok\n'
+
+before_selection=$(wc -l < .loom/diagnostics/profile-provisioning.jsonl)
+"$profile_probe" "$PWD" rust direct > "$fixture/selected.json"
+jq -e '.ref == "bootstrap-fixture" and .native_preflight == "rust"' "$fixture/selected.json" >/dev/null
+selected_manifest=$(jq -r '.profiles.rust.direct.realization.path' "$catalogue")
+[[ -f "$selected_manifest" ]]
+nix-store --query --roots "$selected_manifest" | grep -F "$XDG_STATE_HOME/loom/profile-provisions/"
+jq -se --argjson before "$before_selection" \
+  '.[ $before: ] | map(.operation) == ["catalogue", "catalogue-root", "recipe-binding", "selected-entry"] and all(.[]; .exit_code == 0 and .coverage_admitted == false)' \
+  .loom/diagnostics/profile-provisioning.jsonl >/dev/null
+printf 'authenticated-selected-profile-realization-and-root-ok\n'
+
+jq '.profiles.rust.direct.ref = "unpublished-selection"' "$catalogue" > "$fixture/mismatched-catalogue.json"
+bad_catalogue=$(nix-store --add "$fixture/mismatched-catalogue.json")
+before_mismatch=$(wc -l < .loom/diagnostics/profile-provisioning.jsonl)
+env LOOM_PROFILES_MANIFEST="$bad_catalogue" LOOM_PROVISIONED_PROFILES_MANIFEST="$bad_catalogue" \
+  LOOM_NATIVE_PREFLIGHT_MANIFEST="$bad_catalogue" LOOM_PROFILE_CATALOGUE="$bad_catalogue" \
+  "$profile_probe" "$PWD" rust direct > "$fixture/retired-environment.json"
+cmp "$fixture/selected.json" "$fixture/retired-environment.json"
+jq -se --argjson before "$before_mismatch" \
+  '.[ $before: ] | map(.operation) == ["catalogue", "catalogue-root", "recipe-binding", "selected-entry"]' \
+  .loom/diagnostics/profile-provisioning.jsonl >/dev/null
+printf 'retired-environment-cannot-substitute-published-selection-ok\n'

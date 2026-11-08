@@ -1,5 +1,13 @@
+use super::{catalogue::Catalogue, provision::Provisioning};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
+
+#[derive(Debug, Default)]
+struct Slot {
+    image: OnceLock<ImageEntry>,
+    native: OnceLock<NativePreflight>,
+}
 
 use serde::{Deserialize, Serialize};
 
@@ -7,17 +15,6 @@ use crate::agent::{AgentRuntime, ImageSourceKind};
 use crate::identifier::ProfileName;
 
 use super::error::ProfileError;
-
-/// Environment variable that points at the profile-image manifest produced by
-/// Loom's Nix glue around `wrix.lib.${system}.mkProfileImages` at flake-build
-/// time.
-pub const ENV_VAR: &str = "LOOM_PROFILES_MANIFEST";
-
-/// Driver-package-owned profile closure used to upgrade legacy native feedback images.
-pub const PROVISIONED_ENV_VAR: &str = "LOOM_PROVISIONED_PROFILES_MANIFEST";
-
-/// Loom-owned native availability declarations keyed by immutable profile configuration.
-pub const NATIVE_ENV_VAR: &str = "LOOM_NATIVE_PREFLIGHT_MANIFEST";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -61,7 +58,9 @@ pub struct ImageEntry {
 /// Parsed profile-image manifest keyed by workspace profile, then runtime.
 #[derive(Debug, Clone)]
 pub struct ProfileImageManifest {
-    entries: BTreeMap<ProfileName, BTreeMap<AgentRuntime, ImageEntry>>,
+    entries: BTreeMap<ProfileName, BTreeMap<AgentRuntime, Arc<Slot>>>,
+    catalogue: Option<Arc<Catalogue>>,
+    provisioning: Option<Arc<Provisioning>>,
     manifest_path: PathBuf,
     provisioned_path: Option<PathBuf>,
     native: BTreeMap<PathBuf, Option<NativePreflight>>,
@@ -90,30 +89,87 @@ fn validate_runtime_metadata(
 }
 
 impl ProfileImageManifest {
-    pub(super) fn legacy_native(&self) -> bool {
-        self.entries.iter().any(|(profile, runtimes)| {
-            profile.as_str() == "rust"
-                && runtimes
-                    .values()
-                    .any(|entry| self.native_preflight(entry) != Some(NativePreflight::Rust))
-        })
+    pub(super) fn from_catalogue(catalogue: Arc<Catalogue>) -> Self {
+        let entries = catalogue
+            .profiles
+            .iter()
+            .map(|(profile, runtimes)| {
+                (
+                    profile.clone(),
+                    runtimes
+                        .keys()
+                        .map(|runtime| (*runtime, Arc::new(Slot::default())))
+                        .collect(),
+                )
+            })
+            .collect();
+        Self {
+            entries,
+            manifest_path: catalogue.path.clone(),
+            catalogue: Some(catalogue),
+            provisioning: None,
+            provisioned_path: None,
+            native: BTreeMap::new(),
+            native_path: None,
+        }
     }
 
-    /// Read the manifest path from `LOOM_PROFILES_MANIFEST` and parse it.
+    pub(super) fn with_provisioner(mut self, provisioning: Provisioning) -> Self {
+        self.provisioning = Some(Arc::new(provisioning));
+        self
+    }
+
+    /// Materialize only the requested entry before exposing its ready image data.
     ///
     /// # Errors
-    ///
-    /// Returns an error when the profile manifest cannot be read, parsed, or validated.
-    pub fn from_env() -> Result<Self, ProfileError> {
-        let raw = std::env::var_os(ENV_VAR).ok_or(ProfileError::ManifestEnvUnset)?;
-        let mut manifest = Self::from_path(Path::new(&raw))?;
-        if let Some(path) = std::env::var_os(PROVISIONED_ENV_VAR) {
-            manifest = manifest.provision_native_from(&Self::from_path(Path::new(&path))?);
+    /// Rejects missing selections, unavailable authority and invalid or unrealized outputs.
+    pub async fn resolve(
+        &self,
+        profile: &ProfileName,
+        runtime: AgentRuntime,
+    ) -> Result<&ImageEntry, ProfileError> {
+        let existing = match self.lookup(profile, runtime) {
+            Ok(entry) => Some(entry),
+            Err(ProfileError::NotProvisioned) => None,
+            Err(error) => return Err(error),
+        };
+        if let Some(entry) = existing
+            && (profile.as_str() != "rust"
+                || self.native_preflight(entry).is_some()
+                || self.provisioning.is_none()
+                || self.catalogue.is_none())
+        {
+            return Ok(entry);
         }
-        match std::env::var_os(NATIVE_ENV_VAR) {
-            Some(path) => manifest.with_native_capabilities(Path::new(&path)),
-            None => Ok(manifest),
+        let provisioning = self
+            .provisioning
+            .as_ref()
+            .ok_or(ProfileError::NotProvisioned)?;
+        let selected = provisioning
+            .resolve(self.catalogue.as_deref(), profile, runtime)
+            .await
+            .map_err(|error| ProfileError::Provision(Box::new(error)))?;
+        let slot = self
+            .entries
+            .get(profile)
+            .and_then(|runtimes| runtimes.get(&runtime))
+            .ok_or(ProfileError::NotProvisioned)?;
+        if let Some(entry) = existing {
+            if entry.profile_config == selected.profile_config
+                && selected.native_preflight == Some(NativePreflight::Rust)
+            {
+                slot.native.get_or_init(|| NativePreflight::Rust);
+            }
+            return Ok(entry);
         }
+        if let Err(other) = slot.image.set(selected)
+            && slot.image.get() != Some(&other)
+        {
+            return Err(ProfileError::Catalogue {
+                reason: "concurrent realization changed an immutable selection",
+            });
+        }
+        slot.image.get().ok_or(ProfileError::NotProvisioned)
     }
 
     /// Attach native availability only to exact matching immutable configurations.
@@ -123,8 +179,11 @@ impl ProfileImageManifest {
         if self.native_path.is_some() {
             return self;
         }
-        for (profile, runtimes) in &mut self.entries {
-            for (runtime, entry) in runtimes {
+        for (profile, runtimes) in &self.entries {
+            for (runtime, slot) in runtimes {
+                let Some(entry) = slot.image.get() else {
+                    continue;
+                };
                 if entry.native_preflight.is_some() {
                     continue;
                 }
@@ -132,13 +191,14 @@ impl ProfileImageManifest {
                     .entries
                     .get(profile)
                     .and_then(|r| r.get(runtime))
+                    .and_then(|slot| slot.image.get())
                 else {
                     continue;
                 };
                 if entry.profile_config == replacement.profile_config
                     && provisioned.native_preflight(replacement) == Some(NativePreflight::Rust)
                 {
-                    entry.native_preflight = Some(NativePreflight::Rust);
+                    slot.native.get_or_init(|| NativePreflight::Rust);
                     self.provisioned_path = Some(provisioned.manifest_path.clone());
                 }
             }
@@ -171,28 +231,19 @@ impl ProfileImageManifest {
         self.native
             .get(&entry.profile_config)
             .copied()
-            .unwrap_or(entry.native_preflight)
-    }
-
-    /// Preserve the selected immutable profile inputs across trusted driver subprocesses.
-    pub fn configure_driver(&self, command: &mut tokio::process::Command) {
-        command.env(ENV_VAR, &self.manifest_path);
-        match &self.native_path {
-            Some(path) => {
-                command.env(NATIVE_ENV_VAR, path);
-            }
-            None => {
-                command.env_remove(NATIVE_ENV_VAR);
-            }
-        }
-        match &self.provisioned_path {
-            Some(path) => {
-                command.env(PROVISIONED_ENV_VAR, path);
-            }
-            None => {
-                command.env_remove(PROVISIONED_ENV_VAR);
-            }
-        }
+            .unwrap_or_else(|| {
+                entry.native_preflight.or_else(|| {
+                    self.entries
+                        .values()
+                        .flat_map(BTreeMap::values)
+                        .find_map(|slot| {
+                            slot.image
+                                .get()
+                                .filter(|image| image.profile_config == entry.profile_config)
+                                .and_then(|_| slot.native.get().copied())
+                        })
+                })
+            })
     }
 
     /// Parse a manifest from `path`. Read errors map to
@@ -207,6 +258,18 @@ impl ProfileImageManifest {
             path: path.to_path_buf(),
             source,
         })?;
+        let discriminator: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|source| ProfileError::ManifestMalformed {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        if discriminator
+            .get("schema")
+            .is_some_and(serde_json::Value::is_number)
+        {
+            return Catalogue::from_path(path)
+                .map(|catalogue| Self::from_catalogue(Arc::new(catalogue)));
+        }
         let entries: BTreeMap<ProfileName, BTreeMap<AgentRuntime, ImageEntry>> =
             serde_json::from_slice(&bytes).map_err(|source| ProfileError::ManifestMalformed {
                 path: path.to_path_buf(),
@@ -214,7 +277,28 @@ impl ProfileImageManifest {
             })?;
         validate_runtime_metadata(&entries, path)?;
         Ok(Self {
-            entries,
+            entries: entries
+                .into_iter()
+                .map(|(profile, runtimes)| {
+                    (
+                        profile,
+                        runtimes
+                            .into_iter()
+                            .map(|(runtime, image)| {
+                                (
+                                    runtime,
+                                    Arc::new(Slot {
+                                        image: OnceLock::from(image),
+                                        native: OnceLock::new(),
+                                    }),
+                                )
+                            })
+                            .collect(),
+                    )
+                })
+                .collect(),
+            catalogue: None,
+            provisioning: None,
             manifest_path: path.to_path_buf(),
             provisioned_path: None,
             native: BTreeMap::new(),
@@ -239,14 +323,16 @@ impl ProfileImageManifest {
                 name: profile.clone(),
                 manifest_path: self.manifest_path.clone(),
             })?;
-        runtimes
-            .get(&runtime)
-            .ok_or_else(|| ProfileError::UnknownRuntimeForProfile {
-                profile: profile.clone(),
-                runtime,
-                declared_runtimes: runtimes.keys().copied().collect(),
-                manifest_path: self.manifest_path.clone(),
-            })
+        let slot =
+            runtimes
+                .get(&runtime)
+                .ok_or_else(|| ProfileError::UnknownRuntimeForProfile {
+                    profile: profile.clone(),
+                    runtime,
+                    declared_runtimes: runtimes.keys().copied().collect(),
+                    manifest_path: self.manifest_path.clone(),
+                })?;
+        slot.image.get().ok_or(ProfileError::NotProvisioned)
     }
 
     /// Disk path the manifest was loaded from.
@@ -360,9 +446,8 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn provisioned_profile_inputs_survive_actual_driver_subprocess_environment() -> Result<()>
-    {
+    #[test]
+    fn provisioned_profile_inputs_retain_the_selected_configuration() -> Result<()> {
         let original = tempfile::tempdir()?;
         let installed = tempfile::tempdir()?;
         let entry = serde_json::json!({"ref":"image", "source":"/image", "source_kind":"nix-descriptor", "launcher":"/wrix", "profile_config":"/profile"});
@@ -378,19 +463,11 @@ mod tests {
         )?;
         let manifest = ProfileImageManifest::from_path(&original_path)?
             .provision_native_from(&ProfileImageManifest::from_path(&provisioned_path)?);
-        let mut command = tokio::process::Command::new("bash");
-        command.args(["-euc", "printf '%s\\n%s\\n' \"$LOOM_PROFILES_MANIFEST\" \"$LOOM_PROVISIONED_PROFILES_MANIFEST\""]);
-        manifest.configure_driver(&mut command);
-        let output = command.output().await?;
-        assert!(output.status.success());
+        let image = manifest.lookup(&ProfileName::new("rust")?, AgentRuntime::Pi)?;
+        assert_eq!(image.profile_config, Path::new("/profile"));
         assert_eq!(
-            String::from_utf8(output.stdout)?
-                .lines()
-                .collect::<Vec<_>>(),
-            [
-                original_path.to_str().unwrap(),
-                provisioned_path.to_str().unwrap()
-            ]
+            manifest.native_preflight(image),
+            Some(NativePreflight::Rust)
         );
         Ok(())
     }
@@ -421,7 +498,6 @@ mod tests {
             assert_eq!(image.profile_config, Path::new(config));
             assert_eq!(image.r#ref, "project-image");
             assert_eq!(selected.native_preflight(image).is_some(), available);
-            assert_eq!(selected.legacy_native(), !available);
         }
         Ok(())
     }
@@ -474,34 +550,15 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn native_capability_inputs_survive_driver_subprocess_without_image_replacement()
-    -> Result<()> {
+    #[test]
+    fn native_capability_inputs_retain_image_selection() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let path = write_manifest(dir.path(), "{}")?;
         let native = dir.path().join("native.json");
         std::fs::write(&native, "{}")?;
         let manifest = ProfileImageManifest::from_path(&path)?.with_native_capabilities(&native)?;
-        let mut command = tokio::process::Command::new("bash");
-        command.args(["-euc", "test -z \"${LOOM_PROVISIONED_PROFILES_MANIFEST:-}\"; printf '%s\\n%s\\n' \"$LOOM_PROFILES_MANIFEST\" \"$LOOM_NATIVE_PREFLIGHT_MANIFEST\""]);
-        manifest.configure_driver(&mut command);
-        let output = command.output().await?;
-        assert!(output.status.success());
-        assert_eq!(
-            String::from_utf8(output.stdout)?
-                .lines()
-                .collect::<Vec<_>>(),
-            [path.to_str().unwrap(), native.to_str().unwrap()]
-        );
+        assert_eq!(manifest.native_path.as_deref(), Some(native.as_path()));
         Ok(())
-    }
-
-    #[test]
-    fn manifest_env_unset_display_names_remediation() {
-        let msg = ProfileError::ManifestEnvUnset.to_string();
-        assert!(msg.contains("spawn-bound commands require"), "{msg}");
-        assert!(msg.contains("nix develop"), "{msg}");
-        assert!(msg.contains("nix run .#loom-wrix"), "{msg}");
     }
 
     #[test]

@@ -1278,7 +1278,10 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
             .await?
             .ok_or(TodoError::NoChangedSpecs)?;
         let prompt = built_prompt.prompt;
-        let entry = self.manifest.lookup(&self.phase_default, self.runtime)?;
+        let entry = self
+            .manifest
+            .resolve(&self.phase_default, self.runtime)
+            .await?;
         let preflight = self
             .preflight
             .as_ref()

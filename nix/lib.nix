@@ -6,13 +6,13 @@ let
   workerProfile = import ./worker-profile.nix;
   workspaceBuilder = import ./workspace.nix;
 in
-{
+rec {
   # Build the loom Cargo workspace. Returns `{ bin, clippy, nextest,
   # cargoArtifacts, craneLib, toolchain }`. See `nix/workspace.nix`.
   mkLoom = workspaceBuilder;
 
   # Build a `profile-images.json` derivation for the given profile/runtime
-  # matrix, suitable for `export LOOM_PROFILES_MANIFEST=...`. `profiles` is an
+  # matrix for explicit artifact consumers. `profiles` is an
   # attrset of wrix profile definitions; default covers the three wrix ships out
   # of the box. The manifest is keyed first by profile, then by agent runtime.
   # `loomBin` is threaded into every sandbox so the in-container PATH always
@@ -180,15 +180,16 @@ in
         cp ${pkgs.writeText "native-preflight.json" (builtins.toJSON nativeCapabilities)} "$nativePreflight"
       '';
 
+  mkProfileCatalogue = import ./profile-catalogue.nix { inherit mkProfileManifest; };
+
   # Wrap the raw loom binary with the matching sandbox launcher defaults, so a
   # consumer only needs the wrapped binary on PATH to run loom end-to-end.
-  # Consumers can still override the env defaults.
+  # Profile metadata is discovered from authenticated published operator source.
   mkLoomBin =
     {
       pkgs,
       loomBuild,
       wrixLauncher,
-      profileManifest,
     }:
     let
       inherit (pkgs) stdenv;
@@ -213,11 +214,6 @@ in
         mkdir -p "$out/bin"
         makeWrapper ${loomBuild.bin}/bin/loom "$out/bin/loom" \
           --prefix PATH : ${wrixLauncher}/bin:${launcherRuntimePath} \
-          --set-default LOOM_WRIX_BIN ${wrixLauncher}/bin/wrix \
-          --set LOOM_PROVISIONED_PROFILES_MANIFEST ${profileManifest} \
-          --set LOOM_NATIVE_PREFLIGHT_MANIFEST ${
-            profileManifest.nativePreflight or (pkgs.writeText "native-preflight.json" "{}")
-          } \
-          --set-default LOOM_PROFILES_MANIFEST ${profileManifest}
+          --set-default LOOM_WRIX_BIN ${wrixLauncher}/bin/wrix
       '';
 }

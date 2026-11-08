@@ -9,7 +9,6 @@ _:
       rustToolchain,
       sandbox,
       loom,
-      profileManifest,
       ...
     }:
     let
@@ -41,9 +40,6 @@ _:
       '';
 
       commonEnv = {
-        LOOM_PROFILES_MANIFEST = profileManifest;
-        LOOM_PROVISIONED_PROFILES_MANIFEST = profileManifest;
-        LOOM_NATIVE_PREFLIGHT_MANIFEST = profileManifest.nativePreflight;
         LOOM_WRIX_BIN = "${wrixLauncher}/bin/wrix";
       };
     in
