@@ -8,6 +8,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use loom_test_support::profile_manifest::ProfileFactoryCommand as _;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -124,7 +125,7 @@ fn run_loom_loop_bead(
         // exit 0 silently — this test asserts envelope stamping on
         // the run-phase path, not gate dispatch.
         .env("LOOM_BIN", &loom_noop_stub)
-        .env("LOOM_PROFILES_MANIFEST", manifest)
+        .profile_factory(manifest)
         .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
         .env("BD_STATE_DIR", state_dir)
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))

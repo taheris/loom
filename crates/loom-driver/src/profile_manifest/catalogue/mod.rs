@@ -67,12 +67,9 @@ impl Catalogue {
                 path: path.to_path_buf(),
                 source,
             })?;
-        if raw.schema != 1
-            || raw.profiles.is_empty()
-            || raw.profiles.values().any(BTreeMap::is_empty)
-        {
+        if raw.schema != 1 || raw.profiles.values().any(BTreeMap::is_empty) {
             return Err(ProfileError::Catalogue {
-                reason: "unsupported schema or empty profile/runtime matrix",
+                reason: "unsupported schema or empty runtime declaration",
             });
         }
         for entry in raw.profiles.values().flat_map(BTreeMap::values) {

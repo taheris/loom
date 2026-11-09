@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 
 fn document() -> serde_json::Value {
@@ -44,9 +46,14 @@ fn catalogue_discovery_has_no_ready_image_or_implicit_realization() {
 #[test]
 fn catalogue_rejects_unsupported_schema_output_bearing_fields_and_unsafe_paths() {
     assert!(parse(&document()).is_ok());
+    let empty = parse(&serde_json::json!({"schema":1,"profiles":{}})).unwrap();
+    let empty = super::super::ProfileImageManifest::from_catalogue(std::sync::Arc::new(empty));
+    assert!(matches!(
+        empty.lookup(&ProfileName::new("rust").unwrap(), AgentRuntime::Pi),
+        Err(ProfileError::UnknownProfile { .. })
+    ));
     for (pointer, value) in [
         ("/schema", serde_json::json!(2)),
-        ("/profiles", serde_json::json!({})),
         ("/profiles/rust", serde_json::json!({})),
         ("/profiles/rust/pi/ref", serde_json::json!("")),
         (

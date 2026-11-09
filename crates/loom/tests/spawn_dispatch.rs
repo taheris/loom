@@ -19,6 +19,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use loom_test_support::profile_manifest::ProfileFactoryCommand as _;
 use std::io::{BufRead, BufReader, Read};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
@@ -222,7 +223,7 @@ git config --local user.signingkey "wrix/signing-key/${{key_name}}-signing"
 git config --local commit.gpgsign true
 git config --local core.sshCommand wrix/git-ssh
 mkdir -p .git/wrix
-printf allowed > .git/wrix/allowed_signers
+printf '%s %s\n' "$(git config user.email)" "$(ssh-keygen -y -f "${{WRIX_SIGNING_KEY:?}}")" > .git/wrix/allowed_signers
 printf '#!/bin/sh\n' > .git/wrix/git-ssh
 chmod +x .git/wrix/git-ssh
 "#,
@@ -484,7 +485,7 @@ fn drive_loom_todo_pi_with_spawn_bin_and_manifest_launcher(
         .env("PATH", new_path)
         .env("LOOM_WRIX_BIN", wrix_bin)
         .env("LOOM_BIN", loom_bin)
-        .env("LOOM_PROFILES_MANIFEST", &manifest_path)
+        .profile_factory(&manifest_path)
         .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
         // Bypass the nested-loom guard so cargo test inside a loom container
@@ -748,8 +749,15 @@ fn wrix_spawn_invocation_records_correct_argv() {
     );
     assert_eq!(
         cfg.image_source,
-        workspace.join("rust.tar"),
-        "spawn-config image_source must match the selected profile image",
+        PathBuf::from(
+            serde_json::from_slice::<serde_json::Value>(
+                &std::fs::read(workspace.join("profile-images.json")).unwrap()
+            )
+            .unwrap()["rust"]["pi"]["source"]
+                .as_str()
+                .unwrap()
+        ),
+        "spawn-config image_source must match the selected immutable profile image",
     );
     assert_eq!(
         cfg.image_source_kind,
@@ -1119,7 +1127,7 @@ fn loom_loop_bead_writes_per_bead_jsonl_log() {
         // The gate subprocess shim accepts per-bead verification and emits
         // typed review evidence; this test asserts run-phase log writes.
         .env("LOOM_BIN", &loom_noop_stub)
-        .env("LOOM_PROFILES_MANIFEST", &manifest_path)
+        .profile_factory(&manifest_path)
         .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
         // Bypass the nested-loom guard so cargo test inside a loom container
@@ -1295,7 +1303,7 @@ fn completed_bead_with_renamed_builtin_source_reaches_publication() {
         .env("LOOM_BIN", &loom_dispatch)
         .env("LOOM_WRIX_BIN", &wrix)
         .env("LOOM_WRIX_SPAWN_BIN", &wrix)
-        .env("LOOM_PROFILES_MANIFEST", &manifest_path)
+        .profile_factory(&manifest_path)
         .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
         .env_remove("LOOM_INSIDE")
@@ -1418,7 +1426,7 @@ fn loom_loop_parallel_renders_prefixed_stdout_and_per_bead_logs() {
         .env("LOOM_WRIX_BIN", &shim)
         .env("LOOM_WRIX_SPAWN_BIN", &shim)
         .env("LOOM_BIN", &loom_noop_stub)
-        .env("LOOM_PROFILES_MANIFEST", &manifest_path)
+        .profile_factory(&manifest_path)
         .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
         .env_remove("LOOM_INSIDE")
@@ -1618,7 +1626,7 @@ fn loom_loop_multiple_task_roots_does_not_rerun_startup_fast_forward() {
         .env("LOOM_WRIX_BIN", &shim)
         .env("LOOM_WRIX_SPAWN_BIN", &shim)
         .env("LOOM_BIN", &loom_noop_stub)
-        .env("LOOM_PROFILES_MANIFEST", &manifest_path)
+        .profile_factory(&manifest_path)
         .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
         .env_remove("LOOM_INSIDE")
@@ -1723,7 +1731,14 @@ fn loom_gate_review_threads_launcher_keys_to_wrix_spawn() {
     let deploy_key = deploy_key_dir.join(format!("loom-{host}"));
     let signing_key = deploy_key_dir.join(format!("loom-{host}-signing"));
     std::fs::write(&deploy_key, "deploy-key").unwrap();
-    std::fs::write(&signing_key, "signing-key").unwrap();
+    assert!(
+        Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+            .arg(&signing_key)
+            .status()
+            .unwrap()
+            .success()
+    );
     let set_origin = git_command()
         .arg("-C")
         .arg(workspace)
@@ -1761,6 +1776,17 @@ fn loom_gate_review_threads_launcher_keys_to_wrix_spawn() {
     // ReviewResult::PushBlocked, no push gates fire.
     let bead_json = r#"[{"id":"lm-reviewtest","title":"review gate epic","description":"","status":"open","priority":2,"issue_type":"epic","labels":["spec:agent","loom:active","loom:clarify"]}]"#;
     let bd_bin_dir = install_bd_bead_stub(runtime.path(), bead_json);
+    loom_test_support::profile_manifest::factory::publish_with_key(
+        workspace,
+        &manifest_path,
+        Some(&signing_key),
+    )
+    .unwrap();
+    loom_test_support::write_executable_bash_script(
+        bd_bin_dir.join("wrix-git-sign"),
+        include_str!("../../loom-test-support/src/git_policy/sign.sh"),
+    )
+    .unwrap();
     let hostname = bd_bin_dir.join("hostname");
     std::fs::write(
         &hostname,
@@ -1793,7 +1819,7 @@ fn loom_gate_review_threads_launcher_keys_to_wrix_spawn() {
         .env("LOOM_WRIX_BIN", &policy_shim)
         .env("LOOM_WRIX_SPAWN_BIN", &shim)
         .env("LOOM_BIN", loom_bin)
-        .env("LOOM_PROFILES_MANIFEST", &manifest_path)
+        .profile_factory(&manifest_path)
         .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
         .env("XDG_STATE_HOME", runtime.path().join("state"))
         .env("HOME", &home)
@@ -2437,7 +2463,7 @@ fn loom_todo_claude_runs_shutdown_watchdog_through_run_agent() {
         .env("LOOM_WRIX_BIN", &shim)
         .env("LOOM_WRIX_SPAWN_BIN", &shim)
         .env("LOOM_BIN", loom_bin)
-        .env("LOOM_PROFILES_MANIFEST", &manifest_path)
+        .profile_factory(&manifest_path)
         .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
         .env("RUST_LOG", "loom_agent=warn")
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
@@ -2531,7 +2557,7 @@ fn loom_todo_pi_hang_probe_surfaces_handshake_timeout() {
         .env("LOOM_WRIX_BIN", &shim)
         .env("LOOM_WRIX_SPAWN_BIN", &shim)
         .env("LOOM_BIN", loom_bin)
-        .env("LOOM_PROFILES_MANIFEST", &manifest_path)
+        .profile_factory(&manifest_path)
         .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
         .env("LOOM_HANDSHAKE_TIMEOUT_MS", "500")
         .env("RUST_LOG", "loom_agent=warn")
@@ -2624,7 +2650,7 @@ fn loom_todo_pi_stall_mid_session_emits_stall_warning() {
         .env("LOOM_WRIX_BIN", &shim)
         .env("LOOM_WRIX_SPAWN_BIN", &shim)
         .env("LOOM_BIN", loom_bin)
-        .env("LOOM_PROFILES_MANIFEST", &manifest_path)
+        .profile_factory(&manifest_path)
         .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
         .env("LOOM_STALL_WARN_MS", "300")
         .env("LOOM_TEST_STALL_READY", &session_ready)

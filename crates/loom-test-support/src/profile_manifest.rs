@@ -1,4 +1,9 @@
-//! Complete launch manifests for tests that mock Wrix rather than manifest ingestion.
+//! Immutable launch inputs and authenticated factories for Wrix transport fixtures.
+
+#[cfg(feature = "acceptance")]
+pub mod factory;
+#[cfg(feature = "acceptance")]
+pub use factory::ProfileFactoryCommand;
 
 use std::io;
 use std::path::Path;

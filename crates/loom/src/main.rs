@@ -997,21 +997,23 @@ fn run_tune(workspace: &Path, args: TuneArgs, host_key: bool) -> anyhow::Result<
         return Ok(());
     };
     let request = tune_request(action);
-    let launcher_env = match &request {
+    let policy = match &request {
         loom_workflow::tune::Request::Propose(proposal) if !proposal.dry_run => {
-            prepare_wrix_git_policy(workspace, host_key)?.launcher_env()
+            Some(prepare_wrix_git_policy(workspace, host_key)?)
         }
-        _ => Vec::new(),
+        _ => None,
     };
+    let launcher_env = policy
+        .as_ref()
+        .map_or_else(Vec::new, RepoGitPolicy::launcher_env);
     let runtime = command_runtime()?;
     let prepared = runtime
         .block_on(loom_workflow::tune::prepare(workspace))?
         .with_launcher_env(launcher_env);
-    let prepared = match &request {
-        loom_workflow::tune::Request::Propose(proposal) if !proposal.dry_run => {
-            prepared.with_profile_manifest(configured_profiles(workspace, host_key)?)
-        }
-        _ => prepared,
+    let prepared = if let Some(policy) = policy {
+        prepared.with_profile_policy(policy)
+    } else {
+        prepared
     };
     if matches!(&request, loom_workflow::tune::Request::Propose(_)) {
         println!("evidence roots:");

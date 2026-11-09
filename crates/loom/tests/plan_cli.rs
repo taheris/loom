@@ -12,6 +12,7 @@ use std::process::Command;
 
 use loom_driver::identifier::SpecLabel;
 use loom_driver::state::CacheDb;
+use loom_test_support::profile_manifest::ProfileFactoryCommand as _;
 
 fn install_bd_shim(root: &Path) -> PathBuf {
     let bin_dir = root.join("bin");
@@ -168,7 +169,7 @@ exit "${LAUNCH_EXIT:-0}"
             .arg("--workspace")
             .arg(&self.workspace)
             .args(["plan", "flake", "--host-key"])
-            .env("LOOM_PROFILES_MANIFEST", &self.manifest)
+            .profile_factory(&self.manifest)
             .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
             .env("LOOM_WRIX_BIN", &self.launcher)
             .env_remove("LOOM_WRIX_SPAWN_BIN")
@@ -215,11 +216,8 @@ fn plan_cli_overrides_select_matching_profile_configs() {
         assert_eq!(argv[0], "--profile-config");
         assert_eq!(
             argv[1],
-            fixture
-                .workspace
-                .join(format!("{profile}-{runtime}-profile.json"))
-                .to_str()
-                .unwrap()
+            serde_json::from_slice::<serde_json::Value>(&std::fs::read(&fixture.manifest).unwrap())
+                .unwrap()[profile][runtime]["profile_config"]
         );
         assert_eq!(argv[2], "run");
         assert_eq!(argv[3], fixture.workspace.to_str().unwrap());
@@ -260,11 +258,8 @@ fn plan_raw_launcher_override_changes_executable_not_profile_config() {
     assert_eq!(launch["launcher"], override_bin.to_str().unwrap());
     assert_eq!(
         launch["argv"][1],
-        fixture
-            .workspace
-            .join("base-claude-profile.json")
-            .to_str()
-            .unwrap()
+        serde_json::from_slice::<serde_json::Value>(&std::fs::read(&fixture.manifest).unwrap())
+            .unwrap()["base"]["claude"]["profile_config"]
     );
 }
 
@@ -382,7 +377,7 @@ fn plan_does_not_create_epic_or_touch_bd() {
         .arg(&workspace)
         .arg("--host-key")
         .args(["plan", "agent"])
-        .env("LOOM_PROFILES_MANIFEST", manifest)
+        .profile_factory(manifest)
         .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
         .env("LOOM_WRIX_BIN", default_wrapper)
         .env("LOOM_WRIX_SPAWN_BIN", &wrix)
@@ -408,7 +403,10 @@ fn plan_does_not_create_epic_or_touch_bd() {
     assert_eq!(argv[1], "--profile-config");
     assert_eq!(
         argv[2],
-        workspace.join("base-claude-profile.json").to_string_lossy()
+        serde_json::from_slice::<serde_json::Value>(
+            &std::fs::read(workspace.join("profile-images.json")).unwrap()
+        )
+        .unwrap()["base"]["claude"]["profile_config"]
     );
     assert_eq!(argv[3], "run");
     assert_eq!(argv[4], workspace.to_string_lossy());

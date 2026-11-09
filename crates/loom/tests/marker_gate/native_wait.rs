@@ -81,8 +81,9 @@ pub fn assert_native_wait_parking() {
         ),
     )
     .unwrap();
-    let before = loom_driver::git::sync_head_commit_sha(workspace).unwrap();
     let manifest = write_minimal_manifest(workspace);
+    loom_test_support::profile_manifest::factory::publish(workspace, &manifest).unwrap();
+    let before = loom_driver::git::sync_head_commit_sha(workspace).unwrap();
     let output = run_loom_loop_bead_with_agent(
         workspace,
         &bin,

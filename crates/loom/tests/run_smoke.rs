@@ -5,6 +5,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use loom_test_support::profile_manifest::ProfileFactoryCommand as _;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
@@ -455,7 +456,7 @@ fn loom_loop_without_spec_uses_active_epic_in_multi_spec_workspace() {
         .arg("--parallel")
         .arg("2")
         .env("PATH", new_path)
-        .env("LOOM_PROFILES_MANIFEST", &manifest_path)
+        .profile_factory(&manifest_path)
         .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
         .env("LOOM_BIN", loom_bin)
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
@@ -540,7 +541,7 @@ fn loom_loop_parallel_does_not_pass_exclude_label_to_bd_ready() {
         .arg("--parallel")
         .arg("2")
         .env("PATH", new_path)
-        .env("LOOM_PROFILES_MANIFEST", &manifest_path)
+        .profile_factory(&manifest_path)
         .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
         .env("LOOM_BIN", loom_bin)
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
@@ -616,7 +617,7 @@ fn parallel_codepath_returns_loop_outcome_with_gate_field() {
         .arg("--parallel")
         .arg("2")
         .env("PATH", new_path)
-        .env("LOOM_PROFILES_MANIFEST", &manifest_path)
+        .profile_factory(&manifest_path)
         .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
         .env("LOOM_BIN", loom_bin)
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
@@ -646,8 +647,8 @@ fn loom_loop_parallel_static_infra_parks_as_loom_infra() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     init_workspace_repo(workspace);
-    std::fs::create_dir_all(workspace.join("specs")).unwrap();
-    std::fs::write(workspace.join("specs/agent.md"), "# agent\n").unwrap();
+    loom_test_support::acceptance::write(workspace, "agent").unwrap();
+    loom_test_support::acceptance::write(workspace, "harness").unwrap();
 
     let argv_log = workspace.join("bd-argv.log");
     let bin_dir = install_bd_parallel_infra_stub(workspace, &argv_log);
@@ -670,7 +671,7 @@ fn loom_loop_parallel_static_infra_parks_as_loom_infra() {
         .arg("--parallel")
         .arg("2")
         .env("PATH", new_path)
-        .env("LOOM_PROFILES_MANIFEST", &manifest_path)
+        .profile_factory(&manifest_path)
         .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
         .env("LOOM_BIN", loom_bin)
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))

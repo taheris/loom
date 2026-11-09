@@ -24,9 +24,25 @@ pub async fn run() {
         .parse::<u64>()
         .unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let root = std::path::Path::new(&workspace);
+    let config =
+        loom_driver::config::LoomConfig::load(loom_driver::config::LoomConfig::resolve_path(root))
+            .unwrap();
+    let policy = loom_driver::git::RepoGitPolicy::resolve(
+        root,
+        "unused-wrix".into(),
+        loom_driver::git::KeyMode::Host,
+    )
+    .unwrap();
+    let profiles = startup(loom_driver::profile_manifest::bootstrap_loop(
+        root, &config, policy,
+    ))
+    .await
+    .unwrap();
     let prepared = startup(tune::prepare(std::path::Path::new(&workspace)))
         .await
         .unwrap()
+        .with_profile_manifest(profiles)
         .with_launcher_env(vec![(
             "LOOM_TEST_REPLAY_ENDPOINT".to_owned(),
             listener.local_addr().unwrap().to_string(),

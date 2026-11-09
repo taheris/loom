@@ -170,6 +170,13 @@ impl PreparedRun {
         self
     }
 
+    /// Bind lazy replay provisioning to the caller's explicit Git authority.
+    #[must_use]
+    pub fn with_profile_policy(mut self, policy: loom_driver::git::RepoGitPolicy) -> Self {
+        self.context.profile_policy = Some(policy);
+        self
+    }
+
     ///
     /// # Errors
     ///
@@ -222,7 +229,7 @@ pub async fn prepare(workspace: &Path) -> Result<PreparedRun, TuneError> {
 ///
 /// Returns an error when tuning setup, execution, evidence, or validation fails.
 pub async fn run(workspace: &Path, request: Request) -> Result<Response, TuneError> {
-    prepare(workspace).await?.execute(request).await
+    Box::pin(prepare(workspace).await?.execute(request)).await
 }
 
 #[derive(Debug)]
@@ -242,6 +249,7 @@ struct Context {
     base_commit: String,
     launcher_env: Vec<(String, String)>,
     profile_manifest: Option<ProfileImageManifest>,
+    profile_policy: Option<loom_driver::git::RepoGitPolicy>,
 }
 
 impl Context {
@@ -290,6 +298,7 @@ impl Context {
             base_commit,
             launcher_env: Vec::new(),
             profile_manifest: None,
+            profile_policy: None,
         })
     }
 
@@ -1660,7 +1669,16 @@ async fn replay_selected_cases(
     let source = Snapshot::capture(&context.workspace, &context.tracked_files)?;
     let manifest = match &context.profile_manifest {
         Some(manifest) => manifest.clone(),
-        None => return Err(ProfileError::NotProvisioned.into()),
+        None => Box::pin(loom_driver::profile_manifest::bootstrap_loop(
+            &context.workspace,
+            &context.loom_config,
+            context
+                .profile_policy
+                .clone()
+                .ok_or(ProfileError::NotProvisioned)?,
+        ))
+        .await
+        .map_err(|error| ProfileError::Provision(Box::new(error)))?,
     };
     let mut replays = Vec::with_capacity(plan.selected_cases.len());
     for selected in &plan.selected_cases {

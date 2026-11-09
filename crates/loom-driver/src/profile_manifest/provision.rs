@@ -31,6 +31,12 @@ pub enum ProvisionError {
     Git(#[from] crate::git::GitError),
     /// automatic profile provisioning requires clean, signature-verified published operator source: {reason}
     Source { reason: &'static str },
+    /// operator must match the clean published commit: HEAD={head}, published={published}, status={status}
+    SourceState {
+        head: String,
+        published: String,
+        status: String,
+    },
     /// profile provisioning I/O failed
     Io(#[from] std::io::Error),
     /// private profile state is unavailable
@@ -284,9 +290,13 @@ async fn published_source(
     let published = git
         .resolve_commit_sha(&format!("refs/remotes/origin/{}", git.integration_branch()))
         .await?;
-    if head != published || !git.status().await?.is_empty() {
-        return Err(ProvisionError::Source {
-            reason: "operator must match the clean published commit",
+    let status = git.status().await?;
+    if head != published || !status.is_empty() {
+        tracing::warn!(%head, %published, ?status, operator = %association.operator().display(), "published profile source rejected");
+        return Err(ProvisionError::SourceState {
+            head: head.to_string(),
+            published: published.to_string(),
+            status: format!("{status:?}"),
         });
     }
     if !matches!(

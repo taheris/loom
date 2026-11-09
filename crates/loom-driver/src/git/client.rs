@@ -97,6 +97,17 @@ pub struct GitClient {
 }
 
 impl GitClient {
+    /// Construct a Git command for isolated cross-crate fixture preparation.
+    /// Production callers must use the repository operations on this client.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn fixture_command(workspace: &Path) -> std::process::Command {
+        let mut command = std::process::Command::new("git");
+        command.current_dir(workspace);
+        command
+    }
+
     /// Open an existing repository at `path` using a [`SystemClock`] for
     /// subprocess timeouts and the default integration branch (`main`).
     ///
@@ -2753,13 +2764,40 @@ impl GitClient {
         &self,
         commit: &GitOid,
     ) -> Result<SignatureCheck, GitError> {
-        if !self.signing_verification_enabled().await? {
+        let authority = if let Some(path) = self
+            .repo_git_policy
+            .as_ref()
+            .and_then(|policy| policy.allowed_signers_path(&self.workdir))
+        {
+            path
+        } else {
+            let configured = run_git_raw(
+                &self.workdir,
+                self.clock.as_ref(),
+                ["config", "--path", "--get", "gpg.ssh.allowedSignersFile"],
+                None,
+            )
+            .await?;
+            if !configured.status.success() {
+                return Ok(SignatureCheck::Skipped);
+            }
+            let value = String::from_utf8_lossy(&configured.stdout)
+                .trim()
+                .to_owned();
+            if value.is_empty() {
+                return Ok(SignatureCheck::Skipped);
+            }
+            let path = PathBuf::from(value);
+            if path.is_absolute() {
+                path
+            } else {
+                self.workdir.join(path)
+            }
+        };
+        if !tokio::fs::try_exists(&authority).await? {
             return Ok(SignatureCheck::Skipped);
         }
-        let allowed_signers = format!(
-            "gpg.ssh.allowedSignersFile={}",
-            self.allowed_signers_path().display()
-        );
+        let allowed_signers = format!("gpg.ssh.allowedSignersFile={}", authority.display());
         let output = run_git_raw(
             &self.workdir,
             self.clock.as_ref(),

@@ -2,6 +2,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use loom_test_support::profile_manifest::ProfileFactoryCommand as _;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -237,7 +238,13 @@ fn run_loom_with_env(
         .env_remove("LOOM_CONFIG")
         .env_remove("LOOM_INSIDE");
     for (key, value) in envs {
-        command.env(key, value);
+        if *key == "LOOM_TEST_PROFILE_FIXTURE" {
+            if !args.contains(&"--dry-run") {
+                command.profile_factory(Path::new(value));
+            }
+        } else {
+            command.env(key, value);
+        }
     }
     command.output().expect("spawn loom")
 }
@@ -368,6 +375,7 @@ max_changed_files = 2
         loom_test_support::scrub_git_local_env(&mut command);
         loom_test_support::configure_hermetic_git(&mut command);
         let output = command
+            .current_dir(&self.workspace)
             .args([
                 "--exact",
                 "tune_replay_clock_worker",
@@ -377,11 +385,11 @@ max_changed_files = 2
             .env("PATH", path)
             .env("BD_STATE_DIR", &self.state)
             .env("BD_CREATE_ID", "lm-replay.1")
-            .env("LOOM_PROFILES_MANIFEST", &self.manifest)
+            .profile_factory(&self.manifest)
             .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
             .env_remove("LOOM_NATIVE_PREFLIGHT_MANIFEST")
             .env("LOOM_WRIX_SPAWN_BIN", &self.launcher)
-            .env("XDG_STATE_HOME", self.state.join("state-home"))
+            .env("XDG_STATE_HOME", self.workspace.with_extension("state"))
             .env("LOOM_TEST_REPLAY_WORKSPACE", &self.workspace)
             .env("LOOM_TEST_REPLAY_HANG", self.hang.to_string())
             .env("LOOM_TEST_REPLAY_RELEASE", release.to_string())
@@ -831,7 +839,7 @@ contains = ["missing test from replay input"]
         &state_dir,
         &dry_args,
         &[
-            ("LOOM_PROFILES_MANIFEST", manifest_path.as_ref()),
+            ("LOOM_TEST_PROFILE_FIXTURE", manifest_path.as_ref()),
             ("LOOM_WRIX_SPAWN_BIN", launcher_path.as_ref()),
         ],
     );
@@ -869,7 +877,7 @@ contains = ["missing test from replay input"]
         &args,
         &[
             ("BD_CREATE_ID", "lm-tune.2"),
-            ("LOOM_PROFILES_MANIFEST", manifest_path.as_ref()),
+            ("LOOM_TEST_PROFILE_FIXTURE", manifest_path.as_ref()),
             ("LOOM_WRIX_SPAWN_BIN", launcher_path.as_ref()),
         ],
     );

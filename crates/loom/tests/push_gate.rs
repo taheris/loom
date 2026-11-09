@@ -2,6 +2,7 @@
 
 #[cfg(test)]
 mod tests {
+    use loom_test_support::profile_manifest::ProfileFactoryCommand as _;
     use std::collections::BTreeMap;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
@@ -118,7 +119,11 @@ mod tests {
             std::fs::write(path, body).unwrap();
         }
         fn commit(&self) {
-            loom_driver::git::commit_all_in(self.root(), "fixture content").unwrap();
+            loom_test_support::profile_manifest::factory::publish(
+                self.root(),
+                &self.home.join("profiles.json"),
+            )
+            .unwrap();
         }
         fn command(&self, args: &[&str], mode: &str) -> Command {
             let ambient = std::env::var_os("PATH").unwrap_or_default();
@@ -135,7 +140,7 @@ mod tests {
                 .env("LOOM_TEST_WRIX_LOG", self.home.join("wrix.log"))
                 .env("LOOM_TEST_PREK_LOG", self.home.join("prek.log"))
                 .env("LOOM_TEST_AGENT_MODE", mode)
-                .env("LOOM_PROFILES_MANIFEST", self.home.join("profiles.json"))
+                .profile_factory(self.home.join("profiles.json"))
                 .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
                 .env("BD_STATE_DIR", &self.state)
                 .env("XDG_STATE_HOME", self.home.join("user-state"))
@@ -477,6 +482,7 @@ mod tests {
         let fixture = Fixture::new();
         let log = fixture.verified_log();
         fixture.file(".pre-commit-config.yaml", "repos: []\n");
+        fixture.commit();
         let output = fixture
             .command(&["review", "--diff", &fixture.range()], "complete-marker")
             .env("LOOM_REVIEW_VERIFIED_LOG", log)

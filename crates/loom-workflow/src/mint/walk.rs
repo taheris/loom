@@ -445,14 +445,16 @@ where
         let prompt = self.build_rubric_prompt().await?;
         let entry = self
             .manifest
-            .lookup(&self.phase_default, self.runtime)
-            .map_err(|e| WalkError::Rubric(e.to_string()))?;
+            .resolve(&self.phase_default, self.runtime)
+            .await
+            .map_err(|e| WalkError::Rubric(e.to_string()))?
+            .clone();
         let banner = format!("loom gate mint @ {}", self.label);
         let key = resolve_scratch_key(Phase::Review, std::slice::from_ref(&self.label), None);
         let scratch = ScratchSession::open(&self.workspace, &key, &prompt, &banner)
             .map_err(|e| WalkError::Rubric(format!("scratch: {e}")))?;
         let mut spawn_config = crate::spawn::build_spawn_config(
-            entry,
+            &entry,
             self.runtime,
             self.workspace.clone(),
             prompt,

@@ -2,6 +2,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use loom_test_support::profile_manifest::ProfileFactoryCommand as _;
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -503,7 +504,7 @@ fn chat_command(env: &ChatRun, mode: &str, args: &[&str], extra_env: &[(&str, &s
         .env("LOOM_WRIX_BIN", &env.wrix_stub)
         .env_remove("LOOM_WRIX_SPAWN_BIN")
         .env("WRIX_STUB_MODE", mode)
-        .env("LOOM_PROFILES_MANIFEST", &env.manifest)
+        .profile_factory(&env.manifest)
         .env_remove("LOOM_PROVISIONED_PROFILES_MANIFEST")
         .env("BD_STATE_DIR", &env.state_dir)
         .env("XDG_STATE_HOME", env.workspace.join(".loom-test-state"))
@@ -704,9 +705,11 @@ fn init_apply_repo(env: &ChatRun) {
     commit_all_in(&integration, "Add review context").unwrap();
     std::fs::write(
         env.workspace.join(".git/info/exclude"),
-        "/bd-state/\n/bd-bin/\n/wrix-bin/\n/apply-loom-bin/\n/profile-images.json\n/base.tar\n/argv.log\n/env.log\n/apply-loom.log\n",
+        "/bd-state/\n/bd-bin/\n/wrix-bin/\n/apply-loom-bin/\n/profile-images.json\n/base.tar\n/argv.log\n/env.log\n/apply-loom.log\n/chat-hooks/\n/unexpected-chat-push\n",
     )
     .expect("write git exclude");
+    loom_test_support::profile_manifest::factory::publish(&env.workspace, &env.manifest)
+        .expect("publish profile fixture before recording proposal base");
 }
 
 fn assert_apply_failed_kind(env: &ChatRun, id: &str, kind: &str) {
@@ -740,9 +743,8 @@ fn loom_inbox_chat_launches_container() {
     assert_eq!(lines[0], "--profile-config");
     assert_eq!(
         lines[1],
-        env.workspace
-            .join("base-claude-profile.json")
-            .to_string_lossy()
+        serde_json::from_slice::<serde_json::Value>(&std::fs::read(&env.manifest).unwrap())
+            .unwrap()["base"]["claude"]["profile_config"]
     );
     assert_eq!(lines[2], "run");
     assert_eq!(lines[3], env.workspace.to_string_lossy());
@@ -800,12 +802,9 @@ fn inbox_chat_raw_override_preserves_selected_config_and_launcher_keys() {
     let argv = std::fs::read_to_string(&env.argv_log).unwrap();
     assert_eq!(
         argv.lines().nth(1),
-        Some(
-            env.workspace
-                .join("base-claude-profile.json")
-                .to_str()
-                .unwrap()
-        )
+        serde_json::from_slice::<serde_json::Value>(&std::fs::read(&env.manifest).unwrap())
+            .unwrap()["base"]["claude"]["profile_config"]
+            .as_str()
     );
     assert_eq!(
         argv.lines()
@@ -851,10 +850,8 @@ fn inbox_chat_agent_override_selects_matching_profile_config() {
     assert_eq!(lines[0], "--profile-config");
     assert_eq!(
         lines[1],
-        env.workspace
-            .join("rust-claude-profile.json")
-            .to_str()
-            .unwrap()
+        serde_json::from_slice::<serde_json::Value>(&std::fs::read(&env.manifest).unwrap())
+            .unwrap()["rust"]["claude"]["profile_config"]
     );
     assert_eq!(lines[2], "run");
     assert_eq!(lines[4], "claude");

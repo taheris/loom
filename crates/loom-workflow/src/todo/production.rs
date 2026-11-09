@@ -1273,15 +1273,17 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
     }
 
     async fn build_session(&mut self) -> Result<TodoSession, TodoError> {
+        // Realize the selected image before prompt preparation mutates workflow files.
+        let entry = self
+            .manifest
+            .resolve(&self.phase_default, self.runtime)
+            .await?
+            .clone();
         let built_prompt = self
             .build_prompt()
             .await?
             .ok_or(TodoError::NoChangedSpecs)?;
         let prompt = built_prompt.prompt;
-        let entry = self
-            .manifest
-            .resolve(&self.phase_default, self.runtime)
-            .await?;
         let preflight = self
             .preflight
             .as_ref()
@@ -1312,7 +1314,7 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
             .into_iter()
             .collect();
         let mut config = crate::spawn::build_spawn_config(
-            entry,
+            &entry,
             self.runtime,
             self.workspace.clone(),
             prompt,
