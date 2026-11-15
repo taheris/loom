@@ -13,8 +13,7 @@
 use std::path::Path;
 use std::process::{Command, Output};
 
-#[path = "common/checked.rs"]
-mod checked;
+use super::checked;
 
 const fn loom_bin() -> &'static str {
     env!("CARGO_BIN_EXE_loom")

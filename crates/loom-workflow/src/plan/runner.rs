@@ -293,7 +293,7 @@ mod tests {
     }
 
     fn mock_script_path(rel: &str) -> PathBuf {
-        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let manifest_dir = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR"));
         for ancestor in manifest_dir.ancestors() {
             let candidate = ancestor.join("tests").join(rel);
             if candidate.is_file() {
@@ -514,7 +514,7 @@ exec bash "$mock_claude" interactive-compaction-canary "${{mapped[@]}}" > "$cana
         seed_workspace(dir.path())?;
         let package = dir.path().join("specs/queue");
         std::fs::create_dir(&package)?;
-        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        let fixture = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/planning/coverage/split");
         for document in ["spec.md", "tests.md"] {
             std::fs::copy(fixture.join(document), package.join(document))?;

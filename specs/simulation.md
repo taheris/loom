@@ -429,7 +429,7 @@ review; no keyword classifier or compiler can establish intent.
 - Missing tools, invalid models, empty trace batches, adapter failures,
   incomplete exploration, and timeouts fail visibly; none count as completed
   model verification or implementation conformance.
-  [test](loom-gate::quint::campaign::tests::quint_incomplete_verification_is_not_success)
+  [test](loom-gate::integration::quint::campaign::tests::quint_incomplete_verification_is_not_success)
 
 - Semantic review checks correspondence between prose, model assumptions,
   properties, and implementation projections; an unchanged model's passing
@@ -475,7 +475,7 @@ review; no keyword classifier or compiler can establish intent.
   declared bounded work may report bounded success; hitting a resource limit
   before that work completes reports incomplete verification. Slow execution
   does not silently reduce coverage or change applicability.
-  [test](loom-gate::quint::campaign::tests::quint_campaign_budget_exhaustion_is_explicit)
+  [test](loom-gate::integration::quint::campaign::tests::quint_campaign_budget_exhaustion_is_explicit)
 
 <!-- prettier-ignore -->
 - The pilot integrates actual Loom and Wrix consumers with their production

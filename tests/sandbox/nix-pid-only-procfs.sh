@@ -7,16 +7,7 @@ coreutils_package="${3:?immutable coreutils package is required}"
 registration="${4:?declared input closure registration is required}"
 
 if [[ "${5:-}" != inside ]]; then
-  python3 - "$0" "$nix_bin" "$bash_package" "$coreutils_package" "$registration" <<'PY'
-import os
-import sys
-
-if os.environ.get("NIX_TEST_NONEMPTY_GROUPS") == "1":
-    os.setgroups([os.getgid()])
-elif os.getgroups():
-    os.setgroups([])
-os.execvp("unshare", ["unshare", "--user", "--map-root-user", "--mount", "--pid", "--fork", "bash", *sys.argv[1:], "inside"])
-PY
+  loom-verification pid-only-procfs -- "$0" "$nix_bin" "$bash_package" "$coreutils_package" "$registration"
   exit 0
 fi
 

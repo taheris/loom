@@ -1,5 +1,9 @@
 # Import immutable upstream modules without derivation-backed evaluator inputs.
-{ pkgs, src }:
+{
+  pkgs,
+  src,
+  cargoGitHashes ? { },
+}:
 let
   inherit (builtins) scopedImport toString;
   inherit (pkgs.lib) hasPrefix hasSuffix;
@@ -36,6 +40,26 @@ let
       ) fenix.packages;
     };
 
+  pinnedCrane =
+    crane:
+    crane
+    // {
+      mkLib =
+        packages:
+        (crane.mkLib packages).overrideScope (
+          _final: previous: {
+            vendorCargoDeps =
+              args:
+              previous.vendorCargoDeps (
+                args
+                // {
+                  outputHashes = cargoGitHashes // (args.outputHashes or { });
+                }
+              );
+          }
+        );
+    };
+
   load =
     path:
     let
@@ -45,8 +69,28 @@ let
     in
     if !hasPrefix "${root}/" filename then
       import path
+    else if filename == "${root}/crates/wrix-service/src/lifecycle/drain/native/compiler.nix" then
+      { pkgs }:
+      (original { inherit pkgs; }).overrideAttrs (old: {
+        # New Rust hooks select system zstd. Keep the pinned drain-patched
+        # compiler and its features, supplying that library explicitly.
+        buildInputs = old.buildInputs ++ [ pkgs.zstd ];
+      })
+    else if filename == "${root}/lib/sandbox/pi.nix" then
+      { pkgs }:
+      import ./pi-agent.nix {
+        inherit pkgs;
+        authStorageTest = "${root}/tests/security/pi-auth-storage.mjs";
+      }
     else if filename == "${root}/lib/default.nix" then
-      { fenix, ... }@args: original (args // { fenix = pinnedFenix fenix; })
+      { fenix, crane, ... }@args:
+      original (
+        args
+        // {
+          fenix = pinnedFenix fenix;
+          crane = pinnedCrane crane;
+        }
+      )
     else
       original;
 in

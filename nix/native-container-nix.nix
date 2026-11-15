@@ -1,8 +1,8 @@
-# This fixed native-container tool requires kernel restricted proc variants.
-# It never retries an unrestricted mount or disables Nix's strict sandbox.
+# Reuse the configured strict Nix tool, including its restricted-proc support.
+# Closed upstream fixtures declare their interpreters without changing coverage.
 { pkgs }:
 if pkgs.stdenv.hostPlatform.isLinux then
-  (pkgs.nix.appendPatches [ ./patches/nix-restricted-proc.patch ]).overrideScope (
+  pkgs.nix.overrideScope (
     _final: previous: {
       nix-functional-tests = previous.nix-functional-tests.overrideAttrs (old: {
         nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pkgs.gzip ];

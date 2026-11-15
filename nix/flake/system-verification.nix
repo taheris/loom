@@ -15,15 +15,23 @@ _: {
         runtimeInputs = [ pkgs.nix ];
         text = "exec nix --extra-experimental-features 'nix-command flakes' develop --offline .#ci -c loom --version";
       };
+      ciRuntimeRegistration = pkgs.closureInfo {
+        rootPaths = [
+          config.devShells.ci
+          pkgs.bashInteractive
+        ];
+      };
+      ciRegistration = pkgs.runCommand "ci-shell-registration" { } ''
+        cat ${loom.testRegistration}/registration ${ciRuntimeRegistration}/registration > "$out"
+      '';
       bootstrapRegistration = pkgs.runCommand "profile-bootstrap-registration" { } ''
         cat ${loom.testRegistration}/registration ${profileBootstrapRegistration}/registration > "$out"
       '';
       scenarios = {
         verification-system-smoke = {
           name = "smoke";
-          runtime = "native-container";
           nixRegistration = "${loom.testRegistration}/registration";
-          program = "${config.packages.smoke-runtime}/bin/smoke";
+          program = config.apps.smoke.program;
         };
         verification-system-profile-bootstrap = {
           name = "profile-bootstrap";
@@ -32,7 +40,7 @@ _: {
         };
         verification-system-ci-shell = {
           name = "ci-shell";
-          nixRegistration = "${loom.testRegistration}/registration";
+          nixRegistration = ciRegistration;
           program = "${ciShell}/bin/ci-shell-scenario";
         };
         verification-system-decision-admission = {

@@ -6,8 +6,7 @@
 
 use std::process::Command;
 
-#[path = "common/cargo.rs"]
-mod cargo;
+use super::cargo;
 
 #[test]
 fn test_tier_filters_targets_by_files_scope_intersection() {

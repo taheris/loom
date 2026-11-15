@@ -9,10 +9,10 @@ use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
 use loom_driver::agent::{AgentRuntime, SpawnConfig};
+#[cfg(test)]
+use loom_driver::bd::CommandRunner;
 use loom_driver::bd::LabelExt;
-use loom_driver::bd::{
-    BdClient, Bead, CommandRunner, ListOpts, ReadyOpts, TokioRunner, UpdateOpts,
-};
+use loom_driver::bd::{BdClient, Bead, TokioRunner};
 use loom_driver::clock::{Clock, SystemClock};
 use loom_driver::config::{LoomConfig, LoomTopConfig, SkillsConfig};
 use loom_driver::git::{CreatedWorktree, GitClient, GitOid, RebaseOutcome};
@@ -22,6 +22,10 @@ use loom_driver::logging::phase_log_path;
 use loom_driver::profile_manifest::ProfileImageManifest;
 use loom_events::{
     AgentEvent, DriverEventPayload, DriverKind, EnvelopeBuilder, SessionScope, Source,
+};
+use loom_issues::{
+    task::{Guard, Query, Ready, Update},
+    tracking::Store,
 };
 use tokio::process::Command;
 use tracing::{info, warn};
@@ -76,7 +80,7 @@ pub const REVIEW_SPEC_LABEL_ENV: &str = "LOOM_REVIEW_SPEC_LABEL";
 /// [`loom_gate::VerifiedScope`] the push-eligible review must consume.
 pub const REVIEW_VERIFIED_LOG_ENV: &str = "LOOM_REVIEW_VERIFIED_LOG";
 
-/// Wires the [`AgentLoopController`] trait against the real `BdClient`, a
+/// Wires the [`AgentLoopController`] trait against the selected tracker, a
 /// caller-provided agent dispatch closure, and a child `loom review` exec for
 /// handoff.
 ///
@@ -92,12 +96,12 @@ pub const REVIEW_VERIFIED_LOG_ENV: &str = "LOOM_REVIEW_VERIFIED_LOG";
 /// (callable repeatedly). It receives `(SpawnConfig, BeadId)` — the bead id
 /// is passed alongside the spawn config so the closure can open the per-bead
 /// JSONL [`LogSink`](loom_driver::logging::LogSink) before dispatch.
-pub struct ProductionAgentLoopController<S, F, R: CommandRunner = TokioRunner>
+pub struct ProductionAgentLoopController<S, F, T: crate::tracking::Adapter = BdClient<TokioRunner>>
 where
     S: Fn(SpawnConfig, BeadId) -> F + Send,
     F: std::future::Future<Output = (SessionResult, Option<ExitSignal>)> + Send,
 {
-    bd: BdClient<R>,
+    bd: T,
     label: SpecLabel,
     loom_bin: PathBuf,
     wrix_bin: PathBuf,
@@ -183,14 +187,14 @@ where
     handoff_molecule: Option<MoleculeId>,
 }
 
-impl<S, F, R: CommandRunner> ProductionAgentLoopController<S, F, R>
+impl<S, F, T: crate::tracking::Adapter> ProductionAgentLoopController<S, F, T>
 where
     S: Fn(SpawnConfig, BeadId) -> F + Send,
     F: std::future::Future<Output = (SessionResult, Option<ExitSignal>)> + Send,
 {
     #[expect(clippy::too_many_arguments, reason = "controller construction surface")]
     pub fn new(
-        bd: BdClient<R>,
+        bd: T,
         label: SpecLabel,
         loom_bin: PathBuf,
         workspace: PathBuf,
@@ -380,7 +384,7 @@ where
         {
             return Ok(true);
         }
-        self.bd.update(bead, UpdateOpts { if_status: Some(source.status), status: Some(loom_driver::bd::Status::Open), remove_labels: vec!["loom:infra".into()], append_notes: Some(format!("Required verifier rejected the preserved candidate; implementation repair resumes automatically: {detail}")), ..UpdateOpts::default() }).await?;
+        self.bd.update(bead, Update { status: Some(loom_driver::bd::Status::Open), remove_labels: vec![crate::tracking::label("loom:infra")?], append_notes: Some(format!("Required verifier rejected the preserved candidate; implementation repair resumes automatically: {detail}")), ..Update::default() }, Guard::Status(source.status)).await?;
         self.emit_to_log(DriverKind::BdStateTransition, "semantic verifier rejection returned to implementation repair", serde_json::json!({"bead_id":bead, "status":"open", "source_route":"verification-source-repair"}));
         Ok(true)
     }
@@ -517,15 +521,16 @@ where
         if !self.infra_queue_loaded {
             let beads = self
                 .bd
-                .list(ListOpts {
+                .query(Query {
                     statuses: vec![loom_driver::bd::Status::Blocked],
                     label: self
                         .ready_parent
                         .is_none()
-                        .then(|| self.spec_label_filter()),
-                    label_any: vec!["loom:infra".to_string()],
+                        .then(|| crate::tracking::label(&self.spec_label_filter()))
+                        .transpose()?,
+                    label_any: vec![crate::tracking::label("loom:infra")?],
                     parent: self.ready_parent.clone(),
-                    ..ListOpts::default()
+                    ..Query::default()
                 })
                 .await?;
             self.infra_queue = beads
@@ -665,7 +670,7 @@ where
         let Some(path) = self.current_worktree_path.clone() else {
             return Ok(());
         };
-        if self.bd.show(bead).await?.status != loom_driver::bd::Status::Closed {
+        if self.bd.get(bead).await?.status != loom_driver::bd::Status::Closed {
             return Ok(());
         }
         if !self.git.remove_worktree(&path).await? {
@@ -684,7 +689,8 @@ where
     }
 }
 
-impl<S, F, R: CommandRunner> AgentLoopController for ProductionAgentLoopController<S, F, R>
+impl<S, F, T: crate::tracking::Adapter> AgentLoopController
+    for ProductionAgentLoopController<S, F, T>
 where
     S: Fn(SpawnConfig, BeadId) -> F + Send,
     F: std::future::Future<Output = (SessionResult, Option<ExitSignal>)> + Send,
@@ -725,14 +731,15 @@ where
         // line per skip so the operator sees the routing decision.
         let beads = self
             .bd
-            .ready(ReadyOpts {
+            .ready(Ready {
                 limit: None,
                 label: self
                     .ready_parent
                     .is_none()
-                    .then(|| self.spec_label_filter()),
+                    .then(|| crate::tracking::label(&self.spec_label_filter()))
+                    .transpose()?,
                 parent: self.ready_parent.clone(),
-                exclude_label: vec![],
+                exclude_labels: vec![],
             })
             .await?;
         for bead in beads {
@@ -759,7 +766,7 @@ where
                 continue;
             }
             let parent_is_parked = if let Some(parent_id) = bead.parent.clone() {
-                let parent = self.bd.show(&parent_id).await?;
+                let parent = self.bd.get(&parent_id).await?;
                 bead_has_parked_state(&parent)
             } else {
                 false
@@ -902,11 +909,12 @@ where
             self.bd
                 .update(
                     &bead.id,
-                    UpdateOpts {
+                    Update {
                         status: Some(loom_driver::bd::Status::Open),
-                        remove_labels: vec!["loom:infra".to_string()],
-                        ..UpdateOpts::default()
+                        remove_labels: vec![crate::tracking::label("loom:infra")?],
+                        ..Update::default()
                     },
+                    Guard::None,
                 )
                 .await?;
         }
@@ -971,7 +979,7 @@ where
             0
         };
         self.current_attempt = attempt;
-        let worker = match super::worker::prepare_with_bd(
+        let worker = match super::worker::prepare_with_tracking(
             &self.bd,
             super::worker::Request {
                 bead,
@@ -1308,10 +1316,11 @@ where
             self.bd
                 .update(
                     bead,
-                    UpdateOpts {
+                    Update {
                         notes: Some(question.to_string()),
-                        ..UpdateOpts::default()
+                        ..Update::default()
                     },
+                    Guard::None,
                 )
                 .await?;
             self.emit_to_log(
@@ -1365,12 +1374,13 @@ where
         self.bd
             .update(
                 bead,
-                UpdateOpts {
+                Update {
                     status: Some(loom_driver::bd::Status::Blocked),
-                    add_labels: vec!["loom:blocked".to_string()],
+                    add_labels: vec![crate::tracking::label("loom:blocked")?],
                     append_notes: Some(notes),
-                    ..UpdateOpts::default()
+                    ..Update::default()
                 },
+                Guard::None,
             )
             .await?;
         self.emit_to_log(
@@ -1409,39 +1419,17 @@ where
             record.parked_cause = Some(diagnostic.cause.clone());
             association.append_verification(&record)?;
         }
-        let mut metadata = vec![
-            ("loom.infra.cause".to_string(), diagnostic.cause.clone()),
-            ("loom.infra.phase".to_string(), "loop".to_string()),
-            (
-                "loom.infra.class".to_string(),
-                diagnostic.infra_class.clone(),
-            ),
-        ];
-        if let Some(first_event_seen) = diagnostic.first_event_seen {
-            metadata.push((
-                "loom.infra.first_event_seen".to_string(),
-                first_event_seen.to_string(),
-            ));
-        }
-        if let Some(attempt) = diagnostic.attempt {
-            metadata.push(("loom.infra.attempt".to_string(), attempt.to_string()));
-        }
-        if let Some(max_attempts) = diagnostic.max_attempts {
-            metadata.push((
-                "loom.infra.max_attempts".to_string(),
-                max_attempts.to_string(),
-            ));
-        }
         self.bd
             .update(
                 bead,
-                UpdateOpts {
+                Update {
                     status: Some(loom_driver::bd::Status::Blocked),
-                    add_labels: vec!["loom:infra".to_string()],
+                    add_labels: vec![crate::tracking::label("loom:infra")?],
                     append_notes: Some(diagnostic_notes(&diagnostic.cause, &diagnostic.error)),
-                    set_metadata: metadata,
-                    ..UpdateOpts::default()
+                    set_metadata: crate::tracking::infra_metadata(diagnostic),
+                    ..Update::default()
                 },
+                Guard::None,
             )
             .await?;
         self.emit_to_log(
@@ -1606,7 +1594,7 @@ where
                             .into(),
                 });
             }
-            self.bd.update(bead, UpdateOpts { if_status: Some(loom_driver::bd::Status::Blocked), status: Some(status), remove_labels: vec!["loom:infra".into()], append_notes: Some("Trusted verification continuation completed; original source state restored without source redispatch. Publication still requires its normal gates.".into()), ..UpdateOpts::default() }).await?;
+            self.bd.update(bead, Update { status: Some(status), remove_labels: vec![crate::tracking::label("loom:infra")?], append_notes: Some("Trusted verification continuation completed; original source state restored without source redispatch. Publication still requires its normal gates.".into()), ..Update::default() }, Guard::Status(loom_driver::bd::Status::Blocked)).await?;
         }
         if let Some(record) = &continuation {
             association.await_verification_publication(record)?;
@@ -1690,8 +1678,8 @@ impl<'a> MoleculePushGateCommands<'a> {
 /// # Errors
 ///
 /// Returns an error when loop state, agent execution, or gate handling fails.
-pub async fn execute_molecule_push_gate<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub async fn execute_molecule_push_gate<T: Store>(
+    bd: &T,
     label: &SpecLabel,
     selected_molecule: Option<&MoleculeId>,
     commands: MoleculePushGateCommands<'_>,
@@ -1794,6 +1782,8 @@ pub async fn execute_molecule_push_gate<R: CommandRunner>(
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_millis());
     let mut review_command = Command::new(commands.loom_bin);
+    // Child launch selection remains explicit; tracking publication is adapter-owned.
+    review_command.env("WRIX_BIN", commands.wrix_bin);
     review_command
         .current_dir(&gate_workspace)
         .env(REVIEW_PHASE_WHEN_ENV, phase_when_millis.to_string())
@@ -1991,18 +1981,7 @@ pub async fn execute_molecule_push_gate<R: CommandRunner>(
             detail: format!("marker mint failed before push: {error}"),
         }
     })?;
-    git.push().await?;
-    let beads_output = wrix_beads_push_command(commands.wrix_bin, workspace)
-        .output()
-        .await?;
-    if !beads_output.status.success() {
-        return Err(LoopError::ReviewHandoff {
-            detail: format!(
-                "wrix beads push failed after git push: {}",
-                String::from_utf8_lossy(&beads_output.stderr),
-            ),
-        });
-    }
+    push_and_synchronize(git, bd).await?;
     let association = loom_driver::workspace::Association::resolve(workspace)?;
     let integrated = GitClient::open(&gate_workspace)?;
     for record in association.verification_continuations()? {
@@ -2030,10 +2009,12 @@ pub async fn execute_molecule_push_gate<R: CommandRunner>(
     })
 }
 
-fn wrix_beads_push_command(wrix_bin: &Path, workspace: &Path) -> Command {
-    let mut command = Command::new(wrix_bin);
-    command.current_dir(workspace).arg("beads").arg("push");
-    command
+async fn push_and_synchronize<T: Store>(git: &GitClient, tracking: &T) -> Result<(), LoopError> {
+    git.push().await?;
+    tracking
+        .synchronize(loom_issues::tracking::Synchronization::Publish)
+        .await?;
+    Ok(())
 }
 
 fn append_agent_override(command: &mut Command, agent_override: Option<AgentRuntime>) {
@@ -2042,21 +2023,20 @@ fn append_agent_override(command: &mut Command, agent_override: Option<AgentRunt
     }
 }
 
-async fn molecule_state<R: CommandRunner>(
-    bd: &BdClient<R>,
+async fn molecule_state<T: Store>(
+    bd: &T,
     molecule: &MoleculeId,
 ) -> Result<MoleculeState, LoopError> {
     let parent = BeadId::new(molecule.as_str()).map_err(|_| LoopError::Bug {
         context: format!("molecule id `{molecule}` is not a bead id"),
     })?;
-    let molecule_bead = bd.show(&parent).await?;
-    let progress = bd.mol_progress(molecule).await?;
+    let molecule_bead = bd.get(&parent).await?;
+    let progress = bd.progress(molecule).await?;
     let beads = bd
-        .list(ListOpts {
-            all: true,
+        .query(loom_issues::task::Query {
             limit: Some(0),
             parent: Some(parent),
-            ..ListOpts::default()
+            ..loom_issues::task::Query::default()
         })
         .await?;
     if bead_has_parked_state(&molecule_bead)
@@ -2120,8 +2100,8 @@ fn allocate_review_log_path(workspace: &Path) -> (PathBuf, std::time::SystemTime
     (path, phase_when)
 }
 
-async fn verification_publication_ready<R: CommandRunner>(
-    bd: &BdClient<R>,
+async fn verification_publication_ready<T: Store>(
+    bd: &T,
     label: &SpecLabel,
     molecule: &MoleculeId,
     workspace: &Path,
@@ -2168,15 +2148,17 @@ async fn verification_publication_ready<R: CommandRunner>(
     Ok(true)
 }
 
-pub(super) async fn verification_source<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub(super) async fn verification_source<T: Store>(
+    bd: &T,
     workspace: &Path,
     id: &BeadId,
 ) -> Result<Option<Bead>, LoopError> {
-    let (source, dependencies) = bd.show_with_dependencies(id).await?;
+    let observed = bd.observe(id).await?;
+    let source = observed.record;
+    let dependencies = observed.graph;
     if source.id != *id {
         return Err(LoopError::Bug {
-            context: "native verification response identifies a different bead".into(),
+            context: "tracking verification response identifies a different task".into(),
         });
     }
     let mut guard_source = source.clone();
@@ -2710,17 +2692,20 @@ fn verdict_to_outcome(verdict: PhaseVerdict, exit_code: i32) -> AgentOutcome {
 /// Helper used by `main.rs` to fetch the spec-filtered open list when the
 /// caller needs the typed [`Bead`] slice (e.g. to print a status line).
 ///
-/// Surfacing this here keeps the `BdClient` list-shape next to the controller.
+/// Uses the same neutral query contract as workflow policy.
 ///
 /// # Errors
 ///
 /// Returns an error when loop state, agent execution, or gate handling fails.
-pub async fn list_open_for_spec(bd: &BdClient, label: &SpecLabel) -> Result<Vec<Bead>, LoopError> {
+pub async fn list_open_for_spec<T: Store>(
+    bd: &T,
+    label: &SpecLabel,
+) -> Result<Vec<Bead>, LoopError> {
     let beads = bd
-        .list(ListOpts {
+        .query(loom_issues::task::Query {
             statuses: vec![loom_driver::bd::Status::Open],
-            label: Some(format!("spec:{}", label.as_str())),
-            ..ListOpts::default()
+            label: Some(crate::tracking::label(&format!("spec:{}", label.as_str()))?),
+            ..loom_issues::task::Query::default()
         })
         .await?;
     Ok(beads)
@@ -2729,7 +2714,7 @@ pub async fn list_open_for_spec(bd: &BdClient, label: &SpecLabel) -> Result<Vec<
 #[cfg(test)]
 mod tests {
     mod decision_inventory;
-    mod native_waits;
+    mod tracking_waits;
     use super::super::runner::MISSING_AGENT_BINARY_CAUSE;
     use super::*;
     use crate::r#loop::INVALID_SPAWN_CONFIG_CAUSE;
@@ -2748,6 +2733,7 @@ mod tests {
     struct ScriptedBd {
         responses: Mutex<VecDeque<RunOutput>>,
         molecule: Option<(String, Vec<u8>)>,
+        publication: Option<TokioRunner>,
         /// Capture handle shared with the test, so an `Arc::clone` snapshot
         /// is held while the inner `ScriptedBd` is moved into `BdClient`.
         calls: Arc<Mutex<Vec<Vec<OsString>>>>,
@@ -2758,8 +2744,14 @@ mod tests {
             Self {
                 responses: Mutex::new(responses.into_iter().collect()),
                 molecule: None,
+                publication: None,
                 calls: Arc::new(Mutex::new(Vec::new())),
             }
+        }
+
+        fn with_publication(mut self, program: &Path, workspace: &Path) -> Self {
+            self.publication = Some(TokioRunner::default().with_publication(program, workspace));
+            self
         }
 
         fn calls_handle(&self) -> Arc<Mutex<Vec<Vec<OsString>>>> {
@@ -2768,6 +2760,15 @@ mod tests {
     }
 
     impl CommandRunner for ScriptedBd {
+        async fn publish(&self, timeout: Duration) -> Result<(), BdError> {
+            match &self.publication {
+                Some(runner) => runner.publish(timeout).await,
+                None => Err(BdError::Unsupported {
+                    reason: "publication transport is not configured".into(),
+                }),
+            }
+        }
+
         async fn run(&self, args: Vec<OsString>, _timeout: Duration) -> Result<RunOutput, BdError> {
             self.calls.lock().unwrap().push(args.clone());
             if let Some((id, body)) = &self.molecule {
@@ -3130,19 +3131,100 @@ mod tests {
         assert!(configured_command.as_std().get_args().next().is_none());
     }
 
-    #[test]
-    fn molecule_handoff_publishes_beads_through_wrix_cli() {
-        let command = wrix_beads_push_command(Path::new("wrix"), Path::new("/workspace"));
-        let std_command = command.as_std();
-        assert_eq!(std_command.get_program(), "wrix");
-        assert_eq!(
-            std_command
-                .get_args()
-                .map(|arg| arg.to_string_lossy().into_owned())
-                .collect::<Vec<_>>(),
-            ["beads", "push"],
+    #[tokio::test]
+    async fn molecule_handoff_publishes_beads_through_wrix_cli() {
+        use loom_issues::tracking::Synchronization;
+        use std::os::unix::fs::PermissionsExt as _;
+        let directory = tempfile::tempdir().unwrap();
+        let git = git_workspace(directory.path());
+        let program = directory.path().join("selected-wrix");
+        std::fs::write(
+            &program,
+            loom_test_support::bash_script(
+                "set -euo pipefail\n[[ \"$*\" == 'beads push' ]]\npwd > publication-directory\n",
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let tracking = BdClient::with_runner(
+            TokioRunner::default().with_publication(&program, directory.path()),
         );
-        assert_eq!(std_command.get_current_dir(), Some(Path::new("/workspace")));
+        tracking
+            .synchronize(Synchronization::SharedState)
+            .await
+            .unwrap();
+        assert!(!directory.path().join("publication-directory").exists());
+        push_and_synchronize(&git, &tracking).await.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("publication-directory"))
+                .unwrap()
+                .trim(),
+            directory.path().to_str().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn tracking_publication_sync_preserves_backend_and_workflow_boundaries() {
+        use loom_issues::{
+            memory::{Backend, Fault, Operation, Timing},
+            task::Create,
+            tracking::{Error, Synchronization},
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let git = git_workspace(directory.path());
+        let tracking = Backend::default();
+        let task = tracking
+            .create(Create {
+                title: "retained authoritative task".into(),
+                ..Create::default()
+            })
+            .await
+            .unwrap();
+        tracking
+            .inject(Fault {
+                operation: Operation::Synchronize,
+                timing: Timing::AfterWrite,
+                skip: 0,
+            })
+            .unwrap();
+        assert!(matches!(
+            push_and_synchronize(&git, &tracking).await,
+            Err(LoopError::Tracking(Error::Uncertain { .. }))
+        ));
+        let restarted = tracking.clone();
+        assert_eq!(
+            restarted.get(&task).await.unwrap().title,
+            "retained authoritative task"
+        );
+        push_and_synchronize(&git, &restarted).await.unwrap();
+        let origin = loom_driver::git::read_origin_url(&git.loom_workspace())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            loom_driver::git::sync_head_commit_sha(Path::new(&origin)).unwrap(),
+            loom_driver::git::sync_head_commit_sha(&git.loom_workspace()).unwrap()
+        );
+        let broken = git.loom_workspace().join("missing-origin");
+        std::fs::rename(&origin, broken).unwrap();
+        restarted
+            .inject(Fault {
+                operation: Operation::Synchronize,
+                timing: Timing::BeforeWrite,
+                skip: 0,
+            })
+            .unwrap();
+        assert!(matches!(
+            push_and_synchronize(&git, &restarted).await,
+            Err(LoopError::Git(_))
+        ));
+        assert!(matches!(
+            restarted.synchronize(Synchronization::Publish).await,
+            Err(Error::Transport { .. })
+        ));
+        assert_eq!(
+            restarted.get(&task).await.unwrap().title,
+            "retained authoritative task"
+        );
     }
 
     #[tokio::test]
@@ -4641,15 +4723,13 @@ mod tests {
         loom_test_support::write_executable_bash_script(&stub, &stub_body)
             .expect("write loom review stub");
 
-        let bd = BdClient::with_runner(molecule_lookup_script(
-            dir.path(),
-            "gamma",
-            "lm-mol9",
-            "abc12345",
-        ));
         let wrix = dir.path().join("wrix.sh");
         loom_test_support::write_executable_bash_script(&wrix, "set -euo pipefail\nexit 0\n")
             .expect("write wrix stub");
+        let bd = BdClient::with_runner(
+            molecule_lookup_script(dir.path(), "gamma", "lm-mol9", "abc12345")
+                .with_publication(&wrix, &workspace),
+        );
         let mut controller = ProductionAgentLoopController::new(
             bd,
             label.clone(),
@@ -6081,13 +6161,13 @@ mod tests {
 
     #[tokio::test]
     async fn parallel_repaired_candidates_repeat_required_verification_before_publication() {
-        parallel_repair_campaign(true, 2).await;
+        Box::pin(parallel_repair_campaign(true, 2)).await;
     }
 
     #[tokio::test]
     async fn parallel_semantic_repair_budget_survives_restart_and_retains_rejected_history() {
         for budget in [0, 2] {
-            parallel_repair_campaign(false, budget).await;
+            Box::pin(parallel_repair_campaign(false, budget)).await;
         }
     }
 

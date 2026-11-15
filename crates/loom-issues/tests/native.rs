@@ -97,7 +97,10 @@ mod native {
                 .env("BD_JSON_ENVELOPE", "1")
                 .env("BD_DISABLE_METRICS", "1")
                 .env("BD_DISABLE_EVENT_FLUSH", "1")
-                .env("GOMAXPROCS", "2");
+                .env(
+                    "GOMAXPROCS",
+                    std::env::var("GOMAXPROCS").unwrap_or_else(|_| "1".into()),
+                );
             command
         }
 

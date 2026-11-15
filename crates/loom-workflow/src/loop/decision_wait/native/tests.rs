@@ -3,66 +3,89 @@ mod cases {
     use super::super::*;
     use crate::r#loop::{AgentOutcome, WaitPrerequisites};
     use crate::test_support::{IsolatedBeads, client};
-    use loom_driver::bd::{BdError, CreateOpts, ReadyOpts, RunOutput};
+    use loom_driver::bd::{BdClient, BdError, CommandRunner, RunOutput};
+    use loom_issues::{
+        memory::Backend,
+        task::{Create, Label, Ready, Relation},
+    };
     use std::ffi::OsString;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
-    struct Fixture {
+    struct Fixture<T: Store = Backend> {
         directory: tempfile::TempDir,
-        bd: BdClient<IsolatedBeads>,
+        bd: T,
         root: BeadId,
         source: Bead,
         blockers: Vec<BeadId>,
         sibling: BeadId,
     }
 
-    impl Fixture {
+    impl Fixture<Backend> {
         async fn new() -> Self {
             let directory = tempfile::tempdir().unwrap();
+            loom_driver::git::initialize_snapshot(
+                directory.path(),
+                &loom_driver::clock::SystemClock::new(),
+            )
+            .await
+            .unwrap();
+            Self::with_store(directory, Backend::default()).await
+        }
+    }
+
+    impl Fixture<BdClient<IsolatedBeads>> {
+        async fn new_native() -> Self {
+            let directory = tempfile::tempdir().unwrap();
             let bd = client(directory.path()).await;
+            Self::with_store(directory, bd).await
+        }
+    }
+
+    impl<T: Store> Fixture<T> {
+        async fn with_store(directory: tempfile::TempDir, bd: T) -> Self {
             let root = bd
-                .create(CreateOpts {
-                    title: "native wait root".into(),
-                    issue_type: Some(IssueType::Epic),
-                    labels: vec!["spec:loop".into()],
-                    ..CreateOpts::default()
+                .create(Create {
+                    title: "dependency wait root".into(),
+                    kind: Some(IssueType::Epic),
+                    labels: vec![Label::new("spec:loop").unwrap()],
+                    ..Create::default()
                 })
                 .await
                 .unwrap();
             let source = bd
-                .create(CreateOpts {
+                .create(Create {
                     title: "waiting work".into(),
                     parent: Some(root.clone()),
                     notes: Some("retained draft".into()),
-                    metadata: Some(r#"{"operator.note":"keep"}"#.into()),
-                    ..CreateOpts::default()
+                    metadata: [("operator.note".into(), "keep".into())].into(),
+                    ..Create::default()
                 })
                 .await
                 .unwrap();
             let sibling = bd
-                .create(CreateOpts {
+                .create(Create {
                     title: "independent ready work".into(),
                     parent: Some(root.clone()),
-                    ..CreateOpts::default()
+                    ..Create::default()
                 })
                 .await
                 .unwrap();
             let mut blockers = Vec::new();
             for title in ["first prerequisite", "second prerequisite"] {
                 let id = bd
-                    .create(CreateOpts {
+                    .create(Create {
                         title: title.into(),
                         parent: Some(root.clone()),
-                        ..CreateOpts::default()
+                        ..Create::default()
                     })
                     .await
                     .unwrap();
-                bd.dep_add(&source, &id).await.unwrap();
+                bd.relate(&source, &id, Relation::Blocks).await.unwrap();
                 blockers.push(id);
             }
-            let source = bd.show(&source).await.unwrap();
+            let source = bd.get(&source).await.unwrap();
             Self {
                 directory,
                 bd,
@@ -128,10 +151,10 @@ mod cases {
         std::fs::create_dir_all(&clone).unwrap();
         std::fs::write(clone.join("draft"), "uncommitted source").unwrap();
         f.admit().await;
-        assert_eq!(f.bd.show(&f.source.id).await.unwrap(), f.source);
+        assert_eq!(f.bd.get(&f.source.id).await.unwrap(), f.source);
         assert!(
             !f.bd
-                .show(&f.source.id)
+                .get(&f.source.id)
                 .await
                 .unwrap()
                 .metadata
@@ -146,9 +169,9 @@ mod cases {
             []
         );
         let ready =
-            f.bd.ready(ReadyOpts {
+            f.bd.ready(Ready {
                 parent: Some(f.root.clone()),
-                ..ReadyOpts::default()
+                ..Ready::default()
             })
             .await
             .unwrap();
@@ -158,9 +181,9 @@ mod cases {
             f.close(blocker).await;
         }
         let ready =
-            f.bd.ready(ReadyOpts {
+            f.bd.ready(Ready {
                 parent: Some(f.root.clone()),
-                ..ReadyOpts::default()
+                ..Ready::default()
             })
             .await
             .unwrap();
@@ -184,7 +207,7 @@ mod cases {
         }
         assert!(!journal.native_held(&f.bd, &f.source).await.unwrap());
         assert!(!journal.blocks_scope(&f.bd, &f.root).await.unwrap());
-        assert_eq!(f.bd.show(&f.source.id).await.unwrap(), f.source);
+        assert_eq!(f.bd.get(&f.source.id).await.unwrap(), f.source);
     }
 
     #[tokio::test]
@@ -192,16 +215,17 @@ mod cases {
         let mut f = Fixture::new().await;
         f.bd.update(
             &f.source.id,
-            UpdateOpts {
+            Update {
                 status: Some(Status::InProgress),
-                ..UpdateOpts::default()
+                ..Update::default()
             },
+            Guard::None,
         )
         .await
         .unwrap();
-        f.source = f.bd.show(&f.source.id).await.unwrap();
+        f.source = f.bd.get(&f.source.id).await.unwrap();
         f.admit().await;
-        let current = f.bd.show(&f.source.id).await.unwrap();
+        let current = f.bd.get(&f.source.id).await.unwrap();
         assert_eq!(current.status, Status::Open);
         assert_eq!(current.notes, f.source.notes);
         assert_eq!(current.metadata, f.source.metadata);
@@ -220,16 +244,17 @@ mod cases {
             }
             f.bd.update(
                 &f.source.id,
-                UpdateOpts {
+                Update {
                     status: Some(status),
-                    add_labels: vec!["loom:blocked".into()],
+                    add_labels: vec![Label::new("loom:blocked").unwrap()],
                     append_notes: Some("human outcome".into()),
-                    ..UpdateOpts::default()
+                    ..Update::default()
                 },
+                Guard::None,
             )
             .await
             .unwrap();
-            let held = f.bd.show(&f.source.id).await.unwrap();
+            let held = f.bd.get(&f.source.id).await.unwrap();
             if status != Status::Closed {
                 for blocker in &f.blockers {
                     f.close(blocker).await;
@@ -240,13 +265,14 @@ mod cases {
                 .refresh_native_waits(&f.bd, Some(&f.root), None)
                 .await
                 .unwrap();
-            assert_eq!(f.bd.show(&f.source.id).await.unwrap(), held);
+            assert_eq!(f.bd.get(&f.source.id).await.unwrap(), held);
         }
     }
 
     #[tokio::test]
     async fn current_graph_does_not_require_a_removed_historical_dependency() {
-        let f = Fixture::new().await;
+        // Dependency removal is a native adapter edge, not a Store operation.
+        let f = Fixture::<BdClient<IsolatedBeads>>::new_native().await;
         f.admit().await;
         let output = IsolatedBeads::attach(f.directory.path())
             .run(
@@ -267,7 +293,7 @@ mod cases {
         f.close(&f.blockers[1]).await;
         f.refresh().await;
         assert!(!f.journal().blocks_scope(&f.bd, &f.root).await.unwrap());
-        assert_eq!(f.bd.show(&f.source.id).await.unwrap(), f.source);
+        assert_eq!(f.bd.get(&f.source.id).await.unwrap(), f.source);
     }
 
     #[tokio::test]
@@ -275,18 +301,19 @@ mod cases {
         let f = Fixture::new().await;
         f.bd.update(
             &f.source.id,
-            UpdateOpts {
+            Update {
                 status: Some(Status::Blocked),
-                set_metadata: vec![(KEY.into(), "{}".into())],
-                ..UpdateOpts::default()
+                set_metadata: [(KEY.into(), "{}".into())].into(),
+                ..Update::default()
             },
+            Guard::None,
         )
         .await
         .unwrap();
-        let before = f.bd.show(&f.source.id).await.unwrap();
+        let before = f.bd.get(&f.source.id).await.unwrap();
         assert!(f.journal().admit_native_wait(&f.bd, &before).await.is_err());
         assert!(f.journal().native_held(&f.bd, &before).await.is_err());
-        assert_eq!(f.bd.show(&f.source.id).await.unwrap(), before);
+        assert_eq!(f.bd.get(&f.source.id).await.unwrap(), before);
     }
 
     #[tokio::test]
@@ -307,10 +334,12 @@ mod cases {
             }
             f.bd.update(
                 &f.source.id,
-                UpdateOpts {
-                    set_metadata: vec![(KEY.into(), serde_json::to_string(&record).unwrap())],
-                    ..UpdateOpts::default()
+                Update {
+                    set_metadata: [(KEY.into(), serde_json::to_string(&record).unwrap().into())]
+                        .into(),
+                    ..Update::default()
                 },
+                Guard::None,
             )
             .await
             .unwrap();
@@ -331,7 +360,7 @@ mod cases {
                     )
                     .unwrap();
             }
-            let before = f.bd.show(&f.source.id).await.unwrap();
+            let before = f.bd.get(&f.source.id).await.unwrap();
             let records = journal
                 .db()
                 .unwrap()
@@ -344,7 +373,7 @@ mod cases {
                     .unwrap()
             );
             assert!(!journal.blocks_scope(&f.bd, &f.root).await.unwrap());
-            assert_eq!(f.bd.show(&f.source.id).await.unwrap(), before);
+            assert_eq!(f.bd.get(&f.source.id).await.unwrap(), before);
             assert_eq!(
                 journal
                     .db()
@@ -377,23 +406,25 @@ mod cases {
 
     #[tokio::test]
     async fn native_wait_restart_reconciles_lost_claim_release_ack() {
-        let mut f = Fixture::new().await;
-        f.bd.update(
+        let mut f = Fixture::<BdClient<IsolatedBeads>>::new_native().await;
+        Store::update(
+            &f.bd,
             &f.source.id,
-            UpdateOpts {
+            Update {
                 status: Some(Status::InProgress),
-                ..UpdateOpts::default()
+                ..Update::default()
             },
+            Guard::None,
         )
         .await
         .unwrap();
-        f.source = f.bd.show(&f.source.id).await.unwrap();
+        f.source = f.bd.get(&f.source.id).await.unwrap();
         let bd = BdClient::with_runner(LostAck {
             native: IsolatedBeads::attach(f.directory.path()),
             armed: Arc::new(AtomicBool::new(true)),
         });
         assert!(f.journal().admit_native_wait(&bd, &f.source).await.is_err());
-        assert_eq!(f.bd.show(&f.source.id).await.unwrap().status, Status::Open);
+        assert_eq!(f.bd.get(&f.source.id).await.unwrap().status, Status::Open);
         let restarted = DecisionWaitJournal::new(f.directory.path());
         assert_eq!(
             restarted

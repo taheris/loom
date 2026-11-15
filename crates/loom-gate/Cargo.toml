@@ -1,10 +1,20 @@
 [package]
 name = "loom-gate"
+autotests = false
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
 license.workspace = true
 publish.workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
+
+# The concurrent-cache fixture reexecutes its exact libtest entry point.
+[[test]]
+name = "cache"
+path = "tests/cache.rs"
 
 [features]
 # Inherent Linux user-service/device acceptance, executed by test-native-units.

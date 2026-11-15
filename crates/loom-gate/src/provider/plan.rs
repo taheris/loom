@@ -199,6 +199,7 @@ impl Registry {
             if !matches!(
                 candidate,
                 Candidate::HermeticNix { .. }
+                    | Candidate::NativeProcess { .. }
                     | Candidate::TrackedRust {
                         execution: super::wire::Rust {
                             checker: super::wire::RustChecker::Library { .. },

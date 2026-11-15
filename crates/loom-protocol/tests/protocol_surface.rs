@@ -6,7 +6,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use loom_events::identifier::SpecLabel;
 use loom_protocol::gate::{
@@ -15,7 +15,7 @@ use loom_protocol::gate::{
 };
 
 fn workspace_root() -> PathBuf {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let manifest_dir = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR"));
     manifest_dir
         .parent()
         .and_then(|p| p.parent())
@@ -96,7 +96,7 @@ fn walk_output_fields_private_only_constructor_is_from_stdout() {
     assert_eq!(walk.finding_errors(), []);
 
     let _guard = loom_test_support::compile_fixture::lock(
-        Path::new(env!("CARGO_MANIFEST_DIR")),
+        loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR")),
         env!("CARGO_PKG_NAME"),
     )
     .unwrap();
@@ -106,7 +106,7 @@ fn walk_output_fields_private_only_constructor_is_from_stdout() {
 #[test]
 fn malformed_finding_failure_requires_parsed_context_fields() {
     let _guard = loom_test_support::compile_fixture::lock(
-        Path::new(env!("CARGO_MANIFEST_DIR")),
+        loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR")),
         env!("CARGO_PKG_NAME"),
     )
     .unwrap();

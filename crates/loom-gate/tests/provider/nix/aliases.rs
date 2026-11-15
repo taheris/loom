@@ -1,5 +1,5 @@
 use super::{Definition, Outcome, Registry, context, fixture, name, native_project, write};
-use crate::plan::offered;
+use crate::provider::plan::offered;
 
 #[tokio::test]
 async fn actual_native_aliases_share_but_equal_commands_with_distinct_graphs_do_not() {
@@ -8,11 +8,17 @@ async fn actual_native_aliases_share_but_equal_commands_with_distinct_graphs_do_
     native_project(&dir, "", true, true);
     let original = std::fs::read_to_string(dir.path().join("flake.nix"))
         .unwrap()
-        .replace("x86_64-linux", &platform);
+        .replace("x86_64-linux", &platform)
+        .replace(
+            "checked.check {",
+            "checked.check { runtime = \"native-process\";",
+        );
     let aliases = format!(
         r#"
     checks.{platform}.alias = self.checks.{platform}.heading;
+    packages.{platform}.alias = self.checks.{platform}.heading;
     checks.{platform}.distinct = checked.check {{
+      runtime = "native-process";
       resources = [ source ];
       build = sources: builtins.derivation {{
         inherit (self.checks.{platform}.heading) system builder args;
@@ -34,21 +40,22 @@ async fn actual_native_aliases_share_but_equal_commands_with_distinct_graphs_do_
     write(
         dir.path(),
         "specs/example/tests.md",
-        "## Success Criteria\n- Accounting [check](accounting)\n- First [test](first)\n- Alias [test](second)\n- Distinct [test](third)\n",
+        "## Success Criteria\n- Accounting [check](accounting)\n- First [test](first)\n- Alias [test](second)\n- Package alias [test](second-package)\n- Distinct [test](third)\n",
     );
     let (snapshot, inventory) = context(&dir);
     let mut definitions = vec![offered(&inventory, &snapshot)];
-    for (target, attribute) in [
-        ("first", "heading"),
-        ("second", "alias"),
-        ("third", "distinct"),
+    for (target, kind, attribute) in [
+        ("first", "check", "heading"),
+        ("second", "check", "alias"),
+        ("second-package", "package", "alias"),
+        ("third", "check", "distinct"),
     ] {
         definitions.push(
             Definition::hermetic_baseline(
                 &snapshot,
                 &inventory,
                 name(target),
-                &name(&format!("nix:check:flake.nix:{platform}:{attribute}")),
+                &name(&format!("nix:{kind}:flake.nix:{platform}:{attribute}")),
             )
             .unwrap(),
         );
@@ -57,9 +64,12 @@ async fn actual_native_aliases_share_but_equal_commands_with_distinct_graphs_do_
     let alias = definitions[2].nix_graph().unwrap();
     assert_ne!(first.identity(), alias.identity());
     assert_eq!(first.derivation(), alias.derivation());
+    let package = definitions[3].nix_graph().unwrap();
+    assert_ne!(first.identity(), package.identity());
+    assert_eq!(first.derivation(), package.derivation());
     assert_ne!(
         first.derivation(),
-        definitions[3].nix_graph().unwrap().derivation()
+        definitions[4].nix_graph().unwrap().derivation()
     );
     let registry = Registry::new(&snapshot, definitions).unwrap();
     let plan = registry.admit(&snapshot, &inventory).unwrap();
@@ -80,14 +90,17 @@ async fn actual_native_aliases_share_but_equal_commands_with_distinct_graphs_do_
             .collect::<Result<Vec<_>, _>>()
             .unwrap(),
     ] {
-        assert_eq!(observations.len(), 3);
+        assert_eq!(observations.len(), 4);
         assert_eq!(observations[0].observed().target(), &name("first"));
         assert_eq!(observations[1].observed().target(), &name("second"));
-        assert_eq!(observations[2].observed().target(), &name("third"));
+        assert_eq!(observations[2].observed().target(), &name("second-package"));
+        assert_eq!(observations[3].observed().target(), &name("third"));
         assert_eq!(observations[0].shared_with(), None);
         assert_eq!(observations[1].shared_with(), Some(&name("first")));
-        assert_eq!(observations[2].shared_with(), None);
+        assert_eq!(observations[2].shared_with(), Some(&name("first")));
+        assert_eq!(observations[3].shared_with(), None);
         assert_eq!(observations[0].duration(), observations[1].duration());
+        assert_eq!(observations[0].duration(), observations[2].duration());
         for observed in observations {
             assert_eq!(observed.owners().len(), 1);
             assert_eq!(observed.observed().outcome(), &Outcome::Pass);

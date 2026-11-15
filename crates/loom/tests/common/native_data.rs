@@ -32,7 +32,7 @@ fn copy_tree(source: &Path, destination: &Path) {
 
 pub fn fixture(variable: &str, package: &str) -> tempfile::TempDir {
     let source = std::env::var_os(variable).unwrap_or_else(|| {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let root = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR")).join("../..");
         let attribute = format!(
             ".#packages.{}.{package}",
             loom_gate::runner::result::current_platform()

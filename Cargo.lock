@@ -2675,6 +2675,7 @@ dependencies = [
  "loom-walk",
  "loom-workflow",
  "nix",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
@@ -2967,6 +2968,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "loom-verification"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "regex",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "toml",
+ "walkdir",
+]
+
+[[package]]
 name = "loom-walk"
 version = "0.1.0"
 dependencies = [
@@ -2974,6 +2991,7 @@ dependencies = [
  "displaydoc",
  "loom-driver",
  "loom-gate",
+ "loom-test-support",
  "proc-macro2",
  "pulldown-cmark",
  "serde",
@@ -2998,6 +3016,7 @@ dependencies = [
  "loom-driver",
  "loom-events",
  "loom-gate",
+ "loom-issues",
  "loom-llm",
  "loom-protocol",
  "loom-render",

@@ -1,0 +1,29 @@
+[package]
+name = "catalogue-reuse"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+optional_beta = { path = "optional_beta", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+catalogue-member = { path = "member", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+platform_windows = { path = "platform_windows", optional = true }
+
+[workspace]
+members = ["member", "optional_beta", "platform_windows"]
+
+[features]
+default = ["alpha"]
+alpha = []
+beta = []
+
+[[example]]
+name = "sample"
+test = true
+
+[profile.dev]
+debug = 0
+incremental = false

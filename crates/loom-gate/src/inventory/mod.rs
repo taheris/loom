@@ -164,11 +164,14 @@ impl Inventory {
         snapshot: &Snapshot,
         platform: crate::scope::Platform,
     ) -> Result<Self, Error> {
-        let staged = snapshot.stage()?;
+        let rust_staged = snapshot.stage()?;
         let mut subjects = BTreeMap::new();
-        let compilation = rust::discover(snapshot, staged.path(), &mut subjects)?;
+        let compilation = rust::discover(snapshot, rust_staged.path(), &mut subjects)?;
         discover_context(snapshot, &mut subjects)?;
-        let native_graphs = nix::discover(snapshot, staged.path(), &mut subjects, platform)?;
+        // Cargo launchers may initialize generated configuration even for metadata.
+        // Native definitions must consume the captured inputs, not launcher side effects.
+        let native_staged = snapshot.stage()?;
+        let native_graphs = nix::discover(snapshot, native_staged.path(), &mut subjects, platform)?;
         classify_remaining(snapshot, &mut subjects, &compilation)?;
         snapshot.require_current()?;
         let mut inventory = Self::finish(snapshot.identity().clone(), subjects, compilation)?;

@@ -1,7 +1,7 @@
 //! Structural observations for semantic planning probes; parser success is not coverage.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::Result;
 use loom_driver::identifier::SpecLabel;
@@ -11,7 +11,7 @@ use loom_templates::SkillIndexMarkdown;
 use loom_workflow::plan::{PlanPromptInputs, render_prompt};
 
 fn repo_root() -> Result<PathBuf> {
-    Ok(Path::new(env!("CARGO_MANIFEST_DIR"))
+    Ok(loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()?)
 }

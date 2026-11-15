@@ -6,34 +6,56 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
-    use loom_driver::bd::{
-        BdClient, BdError, CommandRunner, CreateOpts, IssueType, ReadyOpts, RunOutput, UpdateOpts,
-    };
+    use loom_driver::bd::{BdClient, BdError, CommandRunner, RunOutput};
     use loom_driver::identifier::BeadId;
     use loom_gate::{IntegrityFinding, Tier};
+    use loom_issues::{
+        memory::Backend,
+        task::{Create, Guard, Kind as IssueType, Label, Ready, Status, Update},
+        tracking::Store,
+    };
 
     use super::super::tests::{IsolatedBeads, children, isolated_client};
     use crate::r#loop::DecisionWaitJournal;
     use crate::mint::integrity::escalate;
     use crate::review::WorkspaceFindingValidator;
 
-    struct Fixture {
+    struct Fixture<T: Store = Backend> {
         directory: tempfile::TempDir,
-        bd: BdClient<IsolatedBeads>,
+        bd: T,
         root: BeadId,
         findings: [IntegrityFinding; 2],
     }
 
-    impl Fixture {
+    impl Fixture<Backend> {
         async fn new() -> Self {
             let directory = tempfile::tempdir().unwrap();
+            loom_driver::git::initialize_snapshot(
+                directory.path(),
+                &loom_driver::clock::SystemClock::new(),
+            )
+            .await
+            .unwrap();
+            Self::with_store(directory, Backend::default()).await
+        }
+    }
+
+    impl Fixture<BdClient<IsolatedBeads>> {
+        async fn new_native() -> Self {
+            let directory = tempfile::tempdir().unwrap();
             let bd = isolated_client(directory.path()).await;
+            Self::with_store(directory, bd).await
+        }
+    }
+
+    impl<T: Store> Fixture<T> {
+        async fn with_store(directory: tempfile::TempDir, bd: T) -> Self {
             let root = bd
-                .create(CreateOpts {
+                .create(Create {
                     title: "driver integrity work root".into(),
-                    issue_type: Some(IssueType::Epic),
-                    labels: vec!["spec:gate".into()],
-                    ..CreateOpts::default()
+                    kind: Some(IssueType::Epic),
+                    labels: vec![Label::new("spec:gate").unwrap()],
+                    ..Create::default()
                 })
                 .await
                 .unwrap();
@@ -98,10 +120,10 @@ mod tests {
         for decision in &snapshots {
             assert!(f.journal().has_disposition(&f.root, &decision.id).unwrap());
         }
-        let root_before = f.bd.show(&f.root).await.unwrap();
+        let root_before = f.bd.get(&f.root).await.unwrap();
         f.escalate(2).await.unwrap();
         assert_eq!(children(&f.bd, &f.root).await, snapshots);
-        assert_eq!(f.bd.show(&f.root).await.unwrap(), root_before);
+        assert_eq!(f.bd.get(&f.root).await.unwrap(), root_before);
         assert_eq!(canonical_files(&f.directory.path().join(".loom")), before);
     }
 
@@ -112,48 +134,55 @@ mod tests {
             f.escalate(1).await.unwrap();
             let decision = children(&f.bd, &f.root).await.remove(0);
             let task =
-                f.bd.create(CreateOpts {
+                f.bd.create(Create {
                     title: "unattributed affected task".into(),
                     parent: Some(f.root.clone()),
                     metadata: acceptance
-                        .map(|value| serde_json::json!({"loom.acceptance":value}).to_string()),
-                    ..CreateOpts::default()
+                        .map(|value| ("loom.acceptance".into(), value.into()))
+                        .into_iter()
+                        .collect(),
+                    ..Create::default()
                 })
                 .await
                 .unwrap();
-            f.bd.dep_add(&task, &decision.id).await.unwrap();
+            f.bd.relate(&task, &decision.id, loom_issues::task::Relation::Blocks)
+                .await
+                .unwrap();
             f.bd.update(
                 &decision.id,
-                UpdateOpts {
-                    set_metadata: vec![(
+                Update {
+                    set_metadata: [(
                         "loom.decision_candidate".into(),
                         serde_json::json!({
                             "version":1,"producer":f.root,"root":f.root,"affected_work":[task]
                         })
-                        .to_string(),
-                    )],
-                    ..UpdateOpts::default()
+                        .to_string()
+                        .into(),
+                    )]
+                    .into(),
+                    ..Update::default()
                 },
+                Guard::None,
             )
             .await
             .unwrap();
             let before = canonical_files(&f.directory.path().join(".loom"));
-            let decision_before = f.bd.show(&decision.id).await.unwrap();
-            let task_before = f.bd.show(&task).await.unwrap();
+            let decision_before = f.bd.get(&decision.id).await.unwrap();
+            let task_before = f.bd.get(&task).await.unwrap();
             let error = f.escalate(2).await.unwrap_err();
             assert!(
                 matches!(error, crate::mint::integrity::Error::Admission(_)),
                 "{error:?}"
             );
             assert_eq!(canonical_files(&f.directory.path().join(".loom")), before);
-            assert_eq!(f.bd.show(&decision.id).await.unwrap(), decision_before);
-            assert_eq!(f.bd.show(&task).await.unwrap(), task_before);
+            assert_eq!(f.bd.get(&decision.id).await.unwrap(), decision_before);
+            assert_eq!(f.bd.get(&task).await.unwrap(), task_before);
             let staged = children(&f.bd, &f.root)
                 .await
                 .into_iter()
                 .find(|bead| bead.issue_type == IssueType::Decision && bead.id != decision.id)
                 .unwrap();
-            assert_eq!(staged.status, loom_driver::bd::Status::Blocked);
+            assert_eq!(staged.status, Status::Blocked);
             assert!(
                 !staged
                     .labels
@@ -181,33 +210,39 @@ mod tests {
             .unwrap();
         f.bd.update(
             &task.id,
-            UpdateOpts {
-                status: Some(loom_driver::bd::Status::InProgress),
-                ..UpdateOpts::default()
+            Update {
+                status: Some(Status::InProgress),
+                ..Update::default()
             },
+            Guard::None,
         )
         .await
         .unwrap();
-        let task = f.bd.show(&task.id).await.unwrap();
+        let task = f.bd.get(&task.id).await.unwrap();
         f.escalate(1).await.unwrap();
         let decision = children(&f.bd, &f.root)
             .await
             .into_iter()
             .find(|bead| bead.issue_type == IssueType::Decision)
             .unwrap();
-        f.bd.dep_add(&task.id, &decision.id).await.unwrap();
+        f.bd.relate(&task.id, &decision.id, loom_issues::task::Relation::Blocks)
+            .await
+            .unwrap();
         f.bd.update(
             &decision.id,
-            UpdateOpts {
-                set_metadata: vec![(
+            Update {
+                set_metadata: [(
                     "loom.decision_candidate".into(),
                     serde_json::json!({
                         "version":1,"producer":f.root,"root":f.root,"affected_work":[task.id]
                     })
-                    .to_string(),
-                )],
-                ..UpdateOpts::default()
+                    .to_string()
+                    .into(),
+                )]
+                .into(),
+                ..Update::default()
             },
+            Guard::None,
         )
         .await
         .unwrap();
@@ -225,33 +260,35 @@ mod tests {
             }
             f.bd.update(
                 &task.id,
-                UpdateOpts {
-                    set_metadata: vec![(key.into(), candidate.to_string())],
-                    ..UpdateOpts::default()
+                Update {
+                    set_metadata: [(key.into(), candidate.to_string().into())].into(),
+                    ..Update::default()
                 },
+                Guard::None,
             )
             .await
             .unwrap();
-            let changed = f.bd.show(&task.id).await.unwrap();
+            let changed = f.bd.get(&task.id).await.unwrap();
             assert!(f.journal().blocks_scope(&f.bd, &f.root).await.is_err());
             assert!(f.escalate(2).await.is_err());
-            assert_eq!(f.bd.show(&task.id).await.unwrap(), changed);
+            assert_eq!(f.bd.get(&task.id).await.unwrap(), changed);
             assert_eq!(canonical_files(&f.directory.path().join(".loom")), before);
             f.bd.update(
                 &task.id,
-                UpdateOpts {
-                    set_metadata: vec![(key.into(), original.into())],
-                    ..UpdateOpts::default()
+                Update {
+                    set_metadata: [(key.into(), original.into())].into(),
+                    ..Update::default()
                 },
+                Guard::None,
             )
             .await
             .unwrap();
         }
         let replacement =
-            f.bd.create(CreateOpts {
+            f.bd.create(Create {
                 title: "different valid finding batch".into(),
                 parent: Some(f.root.clone()),
-                ..CreateOpts::default()
+                ..Create::default()
             })
             .await
             .unwrap();
@@ -265,25 +302,27 @@ mod tests {
         batch["attribution"] = serde_json::json!({(task.id.as_str()): purpose["goals"]});
         f.bd.update(
             &replacement,
-            UpdateOpts {
-                set_metadata: vec![("loom.finding_batch".into(), batch.to_string())],
-                ..UpdateOpts::default()
+            Update {
+                set_metadata: [("loom.finding_batch".into(), batch.to_string().into())].into(),
+                ..Update::default()
             },
+            Guard::None,
         )
         .await
         .unwrap();
         f.bd.update(
             &task.id,
-            UpdateOpts {
-                set_metadata: vec![("loom.acceptance".into(), purpose.to_string())],
-                ..UpdateOpts::default()
+            Update {
+                set_metadata: [("loom.acceptance".into(), purpose.to_string().into())].into(),
+                ..Update::default()
             },
+            Guard::None,
         )
         .await
         .unwrap();
         crate::r#loop::acceptance::resolve(
             &f.bd,
-            &f.bd.show(&task.id).await.unwrap(),
+            &f.bd.get(&task.id).await.unwrap(),
             f.directory.path(),
         )
         .await
@@ -293,13 +332,15 @@ mod tests {
         assert_eq!(canonical_files(&f.directory.path().join(".loom")), before);
         f.bd.update(
             &task.id,
-            UpdateOpts {
-                set_metadata: vec![(
+            Update {
+                set_metadata: [(
                     "loom.acceptance".into(),
-                    task.metadata["loom.acceptance"].as_str().unwrap().into(),
-                )],
-                ..UpdateOpts::default()
+                    task.metadata["loom.acceptance"].clone(),
+                )]
+                .into(),
+                ..Update::default()
             },
+            Guard::None,
         )
         .await
         .unwrap();
@@ -323,34 +364,47 @@ mod tests {
             .unwrap();
         f.bd.update(
             &source.id,
-            UpdateOpts {
-                status: Some(loom_driver::bd::Status::InProgress),
-                ..UpdateOpts::default()
+            Update {
+                status: Some(Status::InProgress),
+                ..Update::default()
             },
+            Guard::None,
         )
         .await
         .unwrap();
-        let source = f.bd.show(&source.id).await.unwrap();
+        let source = f.bd.get(&source.id).await.unwrap();
         f.escalate(1).await.unwrap();
         let decision = children(&f.bd, &f.root)
             .await
             .into_iter()
             .find(|bead| bead.issue_type == IssueType::Decision)
             .unwrap();
-        f.bd.dep_add(&source.id, &decision.id).await.unwrap();
-        let proposal = |affected: &[BeadId]| UpdateOpts {
-            set_metadata: vec![(
+        f.bd.relate(
+            &source.id,
+            &decision.id,
+            loom_issues::task::Relation::Blocks,
+        )
+        .await
+        .unwrap();
+        let proposal = |affected: &[BeadId]| Update {
+            set_metadata: [(
                 "loom.decision_candidate".into(),
                 serde_json::json!({
                     "version":1,"producer":f.root,"root":f.root,"affected_work":affected
                 })
-                .to_string(),
-            )],
-            ..UpdateOpts::default()
+                .to_string()
+                .into(),
+            )]
+            .into(),
+            ..Update::default()
         };
-        f.bd.update(&decision.id, proposal(std::slice::from_ref(&source.id)))
-            .await
-            .unwrap();
+        f.bd.update(
+            &decision.id,
+            proposal(std::slice::from_ref(&source.id)),
+            Guard::None,
+        )
+        .await
+        .unwrap();
         f.escalate(1).await.unwrap();
         let session = |terminal: &str| crate::r#loop::SessionResult::Decoded {
             outcome: loom_driver::agent::SessionOutcome {
@@ -371,17 +425,17 @@ mod tests {
                 &f.journal(),
                 &source,
                 session("LOOM_RETRY: {\"reason\":\"retain unresolved prerequisite\"}"),
-                None,
+                None
             )
             .await
             .unwrap(),
             crate::r#loop::AgentOutcome::Retry { .. }
         ));
         let followup =
-            f.bd.create(CreateOpts {
+            f.bd.create(Create {
                 title: "independently bound follow-up".into(),
                 parent: Some(f.root.clone()),
-                ..CreateOpts::default()
+                ..Create::default()
             })
             .await
             .unwrap();
@@ -406,7 +460,7 @@ mod tests {
             .clone();
         crate::mint::acceptance::admit_follow_up(
             &f.bd,
-            &f.bd.show(&followup).await.unwrap(),
+            &f.bd.get(&followup).await.unwrap(),
             &crate::mint::acceptance::FollowUp {
                 source: source.id.clone(),
                 goals: loom_protocol::acceptance::GoalReferences::new(vec![reference.clone()])
@@ -416,10 +470,13 @@ mod tests {
         )
         .await
         .unwrap();
-        f.bd.dep_add(&followup, &decision.id).await.unwrap();
+        f.bd.relate(&followup, &decision.id, loom_issues::task::Relation::Blocks)
+            .await
+            .unwrap();
         f.bd.update(
             &decision.id,
             proposal(&[source.id.clone(), followup.clone()]),
+            Guard::None,
         )
         .await
         .unwrap();
@@ -431,7 +488,7 @@ mod tests {
                 &f.journal(),
                 &source,
                 session("LOOM_WAITING"),
-                None,
+                None
             )
             .await
             .unwrap(),
@@ -442,22 +499,22 @@ mod tests {
         let before = canonical_files(&f.directory.path().join(".loom"));
         assert!(f.journal().blocks_scope(&f.bd, &f.root).await.is_err());
         assert_eq!(canonical_files(&f.directory.path().join(".loom")), before);
-        let before_wait = f.bd.show(&source.id).await.unwrap();
+        let before_wait = f.bd.get(&source.id).await.unwrap();
         assert!(matches!(
             crate::r#loop::reconcile_session(
                 &f.bd,
                 &f.journal(),
                 &source,
                 session("LOOM_WAITING"),
-                None,
+                None
             )
             .await
             .unwrap(),
             crate::r#loop::AgentOutcome::Waiting { .. }
         ));
         assert!(f.journal().blocks_scope(&f.bd, &f.root).await.unwrap());
-        let waiting = f.bd.show(&source.id).await.unwrap();
-        assert_eq!(waiting.status, loom_driver::bd::Status::Open);
+        let waiting = f.bd.get(&source.id).await.unwrap();
+        assert_eq!(waiting.status, Status::Open);
         assert_eq!(waiting.metadata, before_wait.metadata);
         assert_eq!(waiting.labels, before_wait.labels);
         assert_eq!(waiting.notes, before_wait.notes);
@@ -470,17 +527,14 @@ mod tests {
             []
         );
         assert_eq!(
-            f.bd.dependency_snapshot(&source.id)
-                .await
-                .unwrap()
-                .active_blockers(),
+            f.bd.graph(&source.id).await.unwrap().active_blockers(),
             std::slice::from_ref(&decision.id)
         );
         assert!(
             !f.bd
-                .ready(ReadyOpts {
+                .ready(Ready {
                     parent: Some(f.root.clone()),
-                    ..ReadyOpts::default()
+                    ..Ready::default()
                 })
                 .await
                 .unwrap()
@@ -488,31 +542,32 @@ mod tests {
                 .any(|bead| bead.id == source.id)
         );
         assert_eq!(
-            f.bd.show(&decision.id).await.unwrap().status,
+            f.bd.get(&decision.id).await.unwrap().status,
             decision.status
         );
-        // Native waiting is not a hold; establish an independent hold for the later refusal.
+        // Graph waiting is not a hold; establish an independent hold for the later refusal.
         f.bd.update(
             &source.id,
-            UpdateOpts {
-                status: Some(loom_driver::bd::Status::Blocked),
+            Update {
+                status: Some(Status::Blocked),
                 append_notes: Some("independent human hold".into()),
-                ..UpdateOpts::default()
+                ..Update::default()
             },
+            Guard::None,
         )
         .await
         .unwrap();
         let continuation =
-            f.bd.create(CreateOpts {
+            f.bd.create(Create {
                 title: "later bound follow-up".into(),
                 parent: Some(f.root.clone()),
-                ..CreateOpts::default()
+                ..Create::default()
             })
             .await
             .unwrap();
         crate::mint::acceptance::admit_follow_up(
             &f.bd,
-            &f.bd.show(&continuation).await.unwrap(),
+            &f.bd.get(&continuation).await.unwrap(),
             &crate::mint::acceptance::FollowUp {
                 source: source.id.clone(),
                 goals: loom_protocol::acceptance::GoalReferences::new(vec![reference]).unwrap(),
@@ -521,15 +576,22 @@ mod tests {
         )
         .await
         .unwrap();
-        f.bd.dep_add(&continuation, &decision.id).await.unwrap();
+        f.bd.relate(
+            &continuation,
+            &decision.id,
+            loom_issues::task::Relation::Blocks,
+        )
+        .await
+        .unwrap();
         f.bd.update(
             &decision.id,
             proposal(&[source.id.clone(), followup, continuation]),
+            Guard::None,
         )
         .await
         .unwrap();
         f.escalate(2).await.unwrap();
-        let held_source = f.bd.show(&source.id).await.unwrap();
+        let held_source = f.bd.get(&source.id).await.unwrap();
         let before = canonical_files(&f.directory.path().join(".loom"));
         assert!(matches!(
             crate::r#loop::reconcile_session(
@@ -537,14 +599,14 @@ mod tests {
                 &f.journal(),
                 &source,
                 session("LOOM_WAITING"),
-                None,
+                None
             )
             .await
             .unwrap(),
             crate::r#loop::AgentOutcome::Failure { .. }
         ));
         assert!(f.journal().blocks_scope(&f.bd, &f.root).await.unwrap());
-        assert_eq!(f.bd.show(&source.id).await.unwrap(), held_source);
+        assert_eq!(f.bd.get(&source.id).await.unwrap(), held_source);
         assert_eq!(canonical_files(&f.directory.path().join(".loom")), before);
     }
 
@@ -570,13 +632,13 @@ mod tests {
 
     #[tokio::test]
     async fn integrity_driver_recovers_lost_native_acknowledgement_without_source_rewrite() {
-        let f = Fixture::new().await;
+        let f = Fixture::<BdClient<IsolatedBeads>>::new_native().await;
         let interrupted = Arc::new(AtomicBool::new(false));
         let bd = BdClient::with_runner(LostAcknowledgement {
             native: IsolatedBeads::attach(f.directory.path()),
             interrupted: interrupted.clone(),
         });
-        let root_before = f.bd.show(&f.root).await.unwrap();
+        let root_before = f.bd.get(&f.root).await.unwrap();
         let error = escalate(
             &bd,
             &f.journal(),
@@ -607,7 +669,7 @@ mod tests {
         );
         f.escalate(2).await.unwrap();
         for decision in &staged {
-            let current = f.bd.show(&decision.id).await.unwrap();
+            let current = f.bd.get(&decision.id).await.unwrap();
             assert!(
                 current
                     .labels
@@ -616,7 +678,7 @@ mod tests {
             );
             assert!(f.journal().has_disposition(&f.root, &decision.id).unwrap());
         }
-        assert_eq!(f.bd.show(&f.root).await.unwrap(), root_before);
+        assert_eq!(f.bd.get(&f.root).await.unwrap(), root_before);
         let before = canonical_files(&f.directory.path().join(".loom"));
         f.escalate(2).await.unwrap();
         assert_eq!(canonical_files(&f.directory.path().join(".loom")), before);

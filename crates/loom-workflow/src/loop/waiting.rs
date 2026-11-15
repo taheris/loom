@@ -1,5 +1,5 @@
-use loom_driver::bd::{BdClient, CommandRunner};
 use loom_driver::identifier::BeadId;
+use loom_issues::{task::Status, tracking::Store};
 
 use super::{AgentOutcome, LoopError};
 
@@ -58,8 +58,8 @@ impl WaitPrerequisites {
 /// # Errors
 ///
 /// Returns an error when loop state, agent execution, or gate handling fails.
-pub async fn validate_waiting_outcome<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub async fn validate_waiting_outcome<T: Store>(
+    bd: &T,
     bead: &BeadId,
     outcome: AgentOutcome,
 ) -> Result<AgentOutcome, LoopError> {
@@ -67,11 +67,8 @@ pub async fn validate_waiting_outcome<R: CommandRunner>(
         return Ok(outcome);
     }
 
-    let snapshot = bd.dependency_snapshot(bead).await?;
-    if !matches!(
-        snapshot.status(),
-        loom_driver::bd::Status::Open | loom_driver::bd::Status::InProgress
-    ) {
+    let snapshot = bd.graph(bead).await?;
+    if !matches!(snapshot.status(), Status::Open | Status::InProgress) {
         return Ok(invalid_waiting(&format!(
             "bead {bead} has status {}, expected open or in_progress",
             snapshot.status_label(),
@@ -100,7 +97,7 @@ mod tests {
     use std::ffi::OsString;
     use std::time::Duration;
 
-    use loom_driver::bd::{BdError, RunOutput};
+    use loom_driver::bd::{BdClient, BdError, CommandRunner, RunOutput};
 
     use super::*;
 

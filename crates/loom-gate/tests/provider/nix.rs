@@ -1,5 +1,9 @@
 #[path = "nix/aliases.rs"]
 mod aliases;
+#[path = "nix/preflight.rs"]
+mod preflight;
+#[path = "nix/process.rs"]
+mod process;
 
 use super::{context, contracts, fixture, name, path, write};
 use std::collections::BTreeSet;
@@ -20,7 +24,19 @@ fn bash() -> PathBuf {
         .unwrap()
 }
 
+fn native_text(template: &str) -> String {
+    template.replace(
+        "x86_64-linux",
+        &loom_gate::runner::result::current_platform(),
+    )
+}
+
+fn native_name(template: &str) -> loom_gate::inventory::Name {
+    name(&native_text(template))
+}
+
 pub fn native_project(dir: &TempDir, options: &str, source: bool, pinned: bool) {
+    let system = loom_gate::runner::result::current_platform();
     write(
         dir.path(),
         "verification.nix",
@@ -49,11 +65,11 @@ pub fn native_project(dir: &TempDir, options: &str, source: bool, pinned: bool) 
       filter = path: type: type == "directory" || path == toString (./. + "/README.md");
     }};
   in {{
-    checks.x86_64-linux.heading = checked.check {{
+    checks.{system}.heading = checked.check {{
       resources = [ source ];
       build = sources: builtins.derivation {{
       name = "loom-provider-heading";
-      system = "x86_64-linux";
+      system = "{system}";
       builder = {builder};
       args = [ "-c" "read -r heading < \"$src/README.md\"; [[ \"$heading\" == '# '* ]] && echo success > \"$out\"" ];
       {source}
@@ -480,8 +496,8 @@ fn native_dependency_provenance_is_transitive_but_never_shared_with_unrelated_ro
         "flake.nix",
         &flake
             .replace(
-                "    checks.x86_64-linux.heading",
-                &(wrappers + "    checks.x86_64-linux.heading"),
+                &native_text("    checks.x86_64-linux.heading"),
+                &(wrappers + &native_text("    checks.x86_64-linux.heading")),
             )
             .replace("x86_64-linux", &platform),
     );
@@ -702,6 +718,86 @@ fn batched_native_construction_keeps_distinct_source_partitions() {
 }
 
 #[test]
+fn native_partition_batches_keep_every_isolated_source_set_across_the_batch_boundary() {
+    let dir = fixture();
+    native_project(&dir, "", true, true);
+    let system = loom_gate::runner::result::current_platform();
+    for index in 0..7 {
+        write(
+            dir.path(),
+            &format!("data-{index}/value"),
+            &format!("native partition {index}\n"),
+        );
+        add_sibling_native_check(
+            &dir,
+            &format!("[ (checked.resource {{ root = ./.; origin = \"data-{index}\"; }}) ]"),
+            "",
+        );
+        let flake = std::fs::read_to_string(dir.path().join("flake.nix")).unwrap();
+        write(
+            dir.path(),
+            "flake.nix",
+            &flake.replace(
+                &format!("checks.{system}.second"),
+                &format!("checks.{system}.partition_{index}"),
+            ),
+        );
+    }
+    let (snapshot, inventory) = context(&dir);
+    for index in 0..7 {
+        let subject = name(&format!("nix:check:flake.nix:{system}:partition_{index}"));
+        let definition =
+            Definition::hermetic_baseline(&snapshot, &inventory, subject.clone(), &subject)
+                .unwrap();
+        let origins = definition.nix_graph().unwrap().origins();
+        for sibling in 0..7 {
+            assert_eq!(
+                origins.contains(&path(&format!("data-{sibling}/value"))),
+                sibling == index
+            );
+        }
+    }
+}
+
+#[test]
+fn native_partition_batch_rejects_an_undeclared_read_in_the_last_partition() {
+    let dir = fixture();
+    native_project(&dir, "", true, true);
+    let system = loom_gate::runner::result::current_platform();
+    write(dir.path(), "undeclared.bin", "not an admitted resource\n");
+    for index in 0..7 {
+        write(
+            dir.path(),
+            &format!("data-{index}/value"),
+            &format!("native partition {index}\n"),
+        );
+        let attributes = if index == 6 {
+            "LOOM_UNDECLARED = builtins.pathExists ./undeclared.bin;"
+        } else {
+            ""
+        };
+        add_sibling_native_check(
+            &dir,
+            &format!("[ (checked.resource {{ root = ./.; origin = \"data-{index}\"; }}) ]"),
+            attributes,
+        );
+        let flake = std::fs::read_to_string(dir.path().join("flake.nix")).unwrap();
+        write(
+            dir.path(),
+            "flake.nix",
+            &flake.replace(
+                &format!("checks.{system}.second"),
+                &format!("checks.{system}.partition_{index}"),
+            ),
+        );
+    }
+    let snapshot = loom_gate::inventory::snapshot::Snapshot::discover(dir.path()).unwrap();
+    assert!(
+        matches!(loom_gate::inventory::Inventory::discover(&snapshot), Err(loom_gate::inventory::Error::NativeResources { source, .. }) if matches!(source.as_ref(), NixError::Binding { source, .. } if matches!(source.as_ref(), NixError::Partition)))
+    );
+}
+
+#[test]
 fn batched_native_construction_rejects_an_invalid_later_sibling_atomically() {
     let dir = fixture();
     native_project(&dir, "", true, true);
@@ -734,7 +830,7 @@ async fn independently_constructed_native_aliases_share_the_current_execution_gr
     write(
         dir.path(),
         "flake.nix",
-        &flake.replace("x86_64-linux", foreign),
+        &flake.replace(&loom_gate::runner::result::current_platform(), foreign),
     );
     write(
         dir.path(),
@@ -794,7 +890,7 @@ fn explicit_rust_responsibility_requires_the_actual_fixed_cargo_operation() {
             &snapshot,
             &inventory,
             name("heading"),
-            &name("nix:check:flake.nix:x86_64-linux:heading"),
+            &native_name("nix:check:flake.nix:x86_64-linux:heading"),
             &BTreeSet::from([name("cargo:provider-fixture:lib:provider_fixture")]),
             &BTreeSet::from([duty]),
         );
@@ -822,7 +918,7 @@ fn evaluator_only_native_definitions_do_not_invent_runtime_or_rust_responsibilit
         .join("\n");
     write(dir.path(), "flake.nix", &flake);
     let (snapshot, inventory) = context(&dir);
-    let native = name("nix:check:flake.nix:x86_64-linux:heading");
+    let native = native_name("nix:check:flake.nix:x86_64-linux:heading");
     let definition =
         Definition::hermetic_baseline(&snapshot, &inventory, name("heading"), &native).unwrap();
     assert!(
@@ -920,8 +1016,8 @@ fn a_cargo_responsibility_label_cannot_replace_the_actual_fixed_execution() {
     native_project(&dir, "", true, true);
     let flake = std::fs::read_to_string(dir.path().join("flake.nix")).unwrap();
     write(dir.path(), "flake.nix", &flake.replace(
-        "    checks.x86_64-linux.heading = checked.check",
-        "    checks.x86_64-linux.heading = self.checks.x86_64-linux.actual // { loom = self.checks.x86_64-linux.actual.loom // { cargo = \"build\"; }; };\n    checks.x86_64-linux.actual = checked.check",
+        &native_text("    checks.x86_64-linux.heading = checked.check"),
+        &native_text("    checks.x86_64-linux.heading = self.checks.x86_64-linux.actual // { loom = self.checks.x86_64-linux.actual.loom // { cargo = \"build\"; }; };\n    checks.x86_64-linux.actual = checked.check"),
     ));
     assert!(matches!(failure(&dir), NixError::CargoExecution));
 }
@@ -943,8 +1039,8 @@ fn cargo_phase_text_cannot_authorize_a_different_actual_builder() {
     );
     let flake = std::fs::read_to_string(dir.path().join("flake.nix")).unwrap();
     write(dir.path(), "flake.nix", &flake.replace(
-        "    checks.x86_64-linux.heading = checked.check",
-        "    checks.x86_64-linux.heading = self.checks.x86_64-linux.actual // { loom = self.checks.x86_64-linux.actual.loom // { cargo = \"build\"; }; };\n    checks.x86_64-linux.actual = checked.check",
+        &native_text("    checks.x86_64-linux.heading = checked.check"),
+        &native_text("    checks.x86_64-linux.heading = self.checks.x86_64-linux.actual // { loom = self.checks.x86_64-linux.actual.loom // { cargo = \"build\"; }; };\n    checks.x86_64-linux.actual = checked.check"),
     ));
     assert!(matches!(failure(&dir), NixError::CargoExecution));
 }
@@ -985,8 +1081,8 @@ fn native_baseline_does_not_claim_an_independent_native_output() {
     native_project(&dir, "", true, true);
     let flake = std::fs::read_to_string(dir.path().join("flake.nix")).unwrap();
     write(dir.path(), "flake.nix", &flake.replace(
-        "    checks.x86_64-linux.heading =",
-        "    checks.x86_64-linux.other = self.checks.x86_64-linux.heading;\n    checks.x86_64-linux.heading =",
+        &native_text("    checks.x86_64-linux.heading ="),
+        &native_text("    checks.x86_64-linux.other = self.checks.x86_64-linux.heading;\n    checks.x86_64-linux.heading ="),
     ));
     let platform = use_host_system(&dir);
     let (snapshot, inventory) = context(&dir);
@@ -1025,7 +1121,7 @@ fn definition(
         &snapshot,
         &inventory,
         name("heading"),
-        &name("nix:check:flake.nix:x86_64-linux:heading"),
+        &native_name("nix:check:flake.nix:x86_64-linux:heading"),
         &BTreeSet::from([name("resource:README.md")]),
         &BTreeSet::from([Duty::Document]),
     )?;
@@ -1076,7 +1172,9 @@ fn lazy_discovery_does_not_turn_a_failed_native_definition_into_a_unit() {
     write(
         dir.path(),
         "flake.nix",
-        "{ outputs = { self }: { checks.x86_64-linux.heading = throw \"invalid native execution\"; }; }\n",
+        &native_text(
+            "{ outputs = { self }: { checks.x86_64-linux.heading = throw \"invalid native execution\"; }; }\n",
+        ),
     );
     assert!(
         matches!(failure(&dir), NixError::Query { detail } if detail.contains("invalid native execution"))
@@ -1089,7 +1187,7 @@ fn declared_check_names_do_not_admit_non_derivation_values() {
     write(
         dir.path(),
         "flake.nix",
-        "{ outputs = { self }: { checks.x86_64-linux.heading = 7; }; }\n",
+        &native_text("{ outputs = { self }: { checks.x86_64-linux.heading = 7; }; }\n"),
     );
     assert!(matches!(failure(&dir), NixError::Query { .. }));
 }
@@ -1226,6 +1324,13 @@ fn immutable_tool_artifacts_do_not_authorize_reexecuting_their_impure_build_hist
             "--offline",
             "--json",
             &format!("path:{}#lib.fixtureTool", dir.path().display()),
+            // Prepare an artifact explicitly without claiming a hermetic verifier run.
+            "--option",
+            "sandbox",
+            "false",
+            "--option",
+            "sandbox-fallback",
+            "false",
         ])
         .output()
         .unwrap();
@@ -1328,7 +1433,7 @@ fn a_new_native_check_creates_obligations_without_any_provider_registration() {
             .obligations()
             .iter()
             .any(|obligation| obligation.subject()
-                == &name("nix:check:flake.nix:x86_64-linux:heading")
+                == &native_name("nix:check:flake.nix:x86_64-linux:heading")
                 && obligation.duty() == Duty::Check)
     );
 }
@@ -1436,7 +1541,10 @@ fn native_target_deletion_requires_correcting_its_exact_binding() {
     write(
         dir.path(),
         "flake.nix",
-        &source.replace("checks.x86_64-linux.heading", "checks.x86_64-linux.renamed"),
+        &source.replace(
+            &native_text("checks.x86_64-linux.heading"),
+            &native_text("checks.x86_64-linux.renamed"),
+        ),
     );
     assert!(matches!(definition(&dir), Err(Error::Subject(_))));
 }
@@ -1449,7 +1557,10 @@ fn native_output_system_cannot_disagree_with_its_derivation() {
     write(
         dir.path(),
         "flake.nix",
-        &source.replace("system = \"x86_64-linux\"", "system = \"aarch64-linux\""),
+        &source.replace(
+            &native_text("system = \"x86_64-linux\""),
+            "system = \"unsupported-loom-platform\"",
+        ),
     );
     assert!(matches!(failure(&dir), NixError::System { .. }));
 }
@@ -1462,7 +1573,10 @@ fn valid_unsupported_platform_is_inapplicable_not_an_invalid_contract_or_pass() 
     write(
         dir.path(),
         "flake.nix",
-        &source.replace("x86_64-linux", "unsupported-loom-platform"),
+        &source.replace(
+            &loom_gate::runner::result::current_platform(),
+            "unsupported-loom-platform",
+        ),
     );
     let snapshot = loom_gate::inventory::snapshot::Snapshot::discover(dir.path()).unwrap();
     let inventory =
@@ -1500,7 +1614,7 @@ fn batched_native_queries_retain_exact_target_and_graph_attribution() {
         &snapshot,
         &inventory,
         name("second"),
-        &name("nix:check:flake.nix:x86_64-linux:heading"),
+        &native_name("nix:check:flake.nix:x86_64-linux:heading"),
         &BTreeSet::from([name("resource:README.md")]),
         &BTreeSet::from([Duty::Document]),
     )
@@ -1649,7 +1763,7 @@ fn a_declared_resource_cannot_offer_a_subject_absent_from_its_native_tree() {
             &snapshot,
             &inventory,
             name("heading"),
-            &name("nix:check:flake.nix:x86_64-linux:heading"),
+            &native_name("nix:check:flake.nix:x86_64-linux:heading"),
             &BTreeSet::from([name("resource:other.md")]),
             &BTreeSet::from([Duty::Document])
         ),
@@ -1682,12 +1796,12 @@ fn packages_bind_their_actual_native_derivation_instead_of_a_check_alias() {
         dir.path(),
         "flake.nix",
         &flake.replace(
-            "checks.x86_64-linux.heading",
-            "packages.x86_64-linux.heading",
+            &native_text("checks.x86_64-linux.heading"),
+            &native_text("packages.x86_64-linux.heading"),
         ),
     );
     let (snapshot, inventory) = context(&dir);
-    let native = name("nix:package:flake.nix:x86_64-linux:heading");
+    let native = native_name("nix:package:flake.nix:x86_64-linux:heading");
     assert_eq!(
         inventory
             .subject(&native)
@@ -1714,7 +1828,9 @@ fn app_programs_are_discovered_but_never_become_an_arbitrary_hermetic_bridge() {
     write(
         dir.path(),
         "flake.nix",
-        "{ outputs = { self }: { apps.x86_64-linux.heading = { type = \"app\"; program = \"/host/program\"; }; }; }\n",
+        &native_text(
+            "{ outputs = { self }: { apps.x86_64-linux.heading = { type = \"app\"; program = \"/host/program\"; }; }; }\n",
+        ),
     );
     let (snapshot, inventory) = context(&dir);
     assert!(matches!(
@@ -1722,7 +1838,7 @@ fn app_programs_are_discovered_but_never_become_an_arbitrary_hermetic_bridge() {
             &snapshot,
             &inventory,
             name("heading"),
-            &name("nix:app:flake.nix:x86_64-linux:heading"),
+            &native_name("nix:app:flake.nix:x86_64-linux:heading"),
             &BTreeSet::from([name("resource:README.md")]),
             &BTreeSet::from([Duty::Document])
         ),

@@ -2,8 +2,11 @@
 
 use std::collections::HashSet;
 
-use loom_driver::bd::{BdClient, Bead, CommandRunner, IssueType, Status};
 use loom_driver::identifier::BeadId;
+use loom_issues::{
+    task::{Guard, Kind as IssueType, Record as Bead, Status, Update},
+    tracking::Store,
+};
 
 use super::{
     DecisionWaitJournal, Entry, HOLD_KEY, HOLD_LABEL, LoopError, Phase, Record, disposition::stage,
@@ -26,8 +29,8 @@ enum Producer<'a> {
 ///
 /// # Errors
 /// Rejects omissions, changed provenance and incompatible acceptance before queue effects.
-pub async fn admit_integrity<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub async fn admit_integrity<T: Store>(
+    bd: &T,
     journal: &DecisionWaitJournal,
     expected: &Bead,
     findings: &[(BeadId, loom_protocol::gate::Finding)],
@@ -54,8 +57,8 @@ pub async fn admit_integrity<R: CommandRunner>(
 ///
 /// # Errors
 /// Rejects incomplete inventories and incompatible ownership before queue effects.
-pub async fn admit_todo<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub async fn admit_todo<T: Store>(
+    bd: &T,
     journal: &DecisionWaitJournal,
     expected: &Bead,
     reported: &HashSet<BeadId>,
@@ -73,8 +76,8 @@ pub async fn admit_todo<R: CommandRunner>(
 
 /// Admit the entire contextual set before staging any sibling. Unlike a
 /// discovery-child hold, this disposition never projects a wait onto the source.
-pub(super) async fn admit<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub(super) async fn admit<T: Store>(
+    bd: &T,
     journal: &DecisionWaitJournal,
     expected: &Bead,
     reported: &HashSet<BeadId>,
@@ -82,8 +85,8 @@ pub(super) async fn admit<R: CommandRunner>(
     admit_for(bd, journal, expected, reported, Producer::Task).await
 }
 
-pub(super) async fn admit_waiting<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub(super) async fn admit_waiting<T: Store>(
+    bd: &T,
     journal: &DecisionWaitJournal,
     expected: &Bead,
     reported: &HashSet<BeadId>,
@@ -91,8 +94,8 @@ pub(super) async fn admit_waiting<R: CommandRunner>(
     admit_for(bd, journal, expected, reported, Producer::Waiting).await
 }
 
-async fn admit_for<R: CommandRunner>(
-    bd: &BdClient<R>,
+async fn admit_for<T: Store>(
+    bd: &T,
     journal: &DecisionWaitJournal,
     expected: &Bead,
     reported: &HashSet<BeadId>,
@@ -100,7 +103,7 @@ async fn admit_for<R: CommandRunner>(
 ) -> Result<(), LoopError> {
     super::migration::recover(bd, journal).await?;
     let _guard = journal.acquire(&expected.id).await?;
-    let source = bd.show(&expected.id).await?;
+    let source = bd.get(&expected.id).await?;
     if source.id != expected.id
         || source.parent != expected.parent
         || source.issue_type != expected.issue_type
@@ -171,11 +174,7 @@ async fn admit_for<R: CommandRunner>(
     let decisions = super::inventory(bd, journal, &source, &known).await?;
     let previous_context = previous.as_ref().and_then(|entry| entry.context.as_ref());
     let active_native_wait = previous.as_ref().is_some_and(|entry| entry.native_wait)
-        && !bd
-            .dependency_snapshot(&source.id)
-            .await?
-            .active_blockers()
-            .is_empty();
+        && !bd.graph(&source.id).await?.active_blockers().is_empty();
     let context = match producer {
         Producer::Integrity {
             findings,
@@ -255,12 +254,12 @@ async fn admit_for<R: CommandRunner>(
         journal.save(&entry)?;
         bd.update(
             &source.id,
-            loom_driver::bd::UpdateOpts {
-                if_status: Some(source.status),
-                remove_labels: vec![HOLD_LABEL.into()],
+            Update {
+                remove_labels: vec![crate::tracking::label(HOLD_LABEL)?],
                 unset_metadata: vec![HOLD_KEY.into()],
-                ..loom_driver::bd::UpdateOpts::default()
+                ..Update::default()
             },
+            Guard::Status(source.status),
         )
         .await?;
     }
@@ -274,12 +273,12 @@ async fn admit_for<R: CommandRunner>(
 
 /// Publication reads the current inventory and compares the recorded graph;
 /// this read-only path cannot repair missing or stale admission authority.
-pub(super) async fn audit<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub(super) async fn audit<T: Store>(
+    bd: &T,
     journal: &DecisionWaitJournal,
     entry: &Entry,
 ) -> Result<(), LoopError> {
-    let source = bd.show(&entry.record.source).await?;
+    let source = bd.get(&entry.record.source).await?;
     if source.id != entry.record.source
         || source.issue_type == IssueType::Decision
         || root(bd, &source).await? != entry.record.root
@@ -318,13 +317,13 @@ fn check_projection(source: &Bead) -> Result<(), LoopError> {
     Ok(())
 }
 
-pub(super) async fn recover<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub(super) async fn recover<T: Store>(
+    bd: &T,
     journal: &DecisionWaitJournal,
     bead: &Bead,
     entry: &mut Entry,
 ) -> Result<bool, LoopError> {
-    let source = bd.show(&bead.id).await?;
+    let source = bd.get(&bead.id).await?;
     if source.id != bead.id
         || source.issue_type == IssueType::Decision
         || root(bd, &source).await? != entry.record.root

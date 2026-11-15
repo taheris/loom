@@ -1006,7 +1006,7 @@ letting the entrypoint run the wrong runtime.
   for the configured adapter, including Beads socket/auto-start settings when
   selected and no native database dependency for lightweight test use. This
   grants no host-command bridge or expansion of worker authority.
-  [test?](agent_launch_tracking_access_is_backend_selected_and_authority_bounded)
+  [test](agent_launch_tracking_access_is_backend_selected_and_authority_bounded)
 
 - `LOOM_NATIVE_PREFLIGHT=rust` is an internal driver-owned request for the
   pinned image's native source-feedback preflight before the agent starts. The

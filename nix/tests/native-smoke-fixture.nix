@@ -1,5 +1,12 @@
 # The shipped smoke predicate reads only its declared immutable result, never .git state.
-{ pkgs }:
+{
+  pkgs,
+  runtime ? "native-process",
+}:
+assert builtins.elem runtime [
+  "nix"
+  "native-process"
+];
 let
   checked = import ../verification.nix;
   resources =
@@ -19,6 +26,7 @@ let
       ];
 in
 checked.check {
+  runtime = "native-process";
   inherit resources;
   evaluation = import ../native-context.nix;
   build =
@@ -42,6 +50,7 @@ checked.check {
           hook = checked.resource { root = ./.; origin = "bin/pre-push-checks"; };
         in {
           checks.${pkgs.stdenv.hostPlatform.system}.smoke-result = checked.check {
+            runtime = "${runtime}";
             resources = [ result program hook ];
             evaluation = map (origin: checked.resource { root = ./.; inherit origin; }) [ "flake.nix" "verification.nix" ];
             build = sources: builtins.derivation {

@@ -7,6 +7,12 @@ export RUSTC="$LOOM_TEST_TOOLCHAIN/bin/rustc"
 export RUSTDOC="$LOOM_TEST_TOOLCHAIN/bin/rustdoc"
 export CARGO_BUILD_RUSTC="$RUSTC" CARGO_BUILD_RUSTDOC="$RUSTDOC"
 unset RUSTUP_TOOLCHAIN
+if [[ -z "${NEXTEST_TEST_THREADS:-}" ]]; then
+  : "${LOOM_TEST_SCHEDULING:?the test app must declare its scheduling helper}"
+  NEXTEST_TEST_THREADS=$("$BASH" "$LOOM_TEST_SCHEDULING")
+  export NEXTEST_TEST_THREADS
+fi
+printf 'Native test scheduling: %s threads\n' "$NEXTEST_TEST_THREADS" >&2
 # Test campaigns need useful backtraces, not full local-variable DWARF or an
 # incremental database for every test binary. Assertions/optimisation stay dev/test.
 export CARGO_INCREMENTAL=0
@@ -30,7 +36,41 @@ if [[ -L "$test_root/target" || -L "$test_root/target/acceptance-$context" ]]; t
   printf 'Test target is indirect; refusing to use it.\n' >&2
   exit 78
 fi
-export CARGO_TARGET_DIR="$test_root/target/acceptance-$context"
+if [[ "$(uname -s)" == Linux ]]; then
+  # Source checkouts can be FUSE/virtiofs. Put executing test images on native
+  # storage so Linux's existing immutable-running-image guard can safely share
+  # their content identity. This is reusable output, never cached test evidence.
+  cache="${XDG_CACHE_HOME:-${HOME:?test cache home required}/.cache}/loom/test-targets"
+  if [[ "$cache" != /* ]]; then
+    printf 'Test cache must be absolute.\n' >&2
+    exit 78
+  fi
+  workspace_identity=$(printf '%s\n%s\n' "$(realpath -e -- "$test_root")" "$(stat --format='%d:%i' -- "$test_root")" | sha256sum)
+  workspace_identity=${workspace_identity%% *}
+  export CARGO_TARGET_DIR="$cache/$workspace_identity/acceptance-$context"
+  candidate="$CARGO_TARGET_DIR"
+  while [[ "$candidate" != / ]]; do
+    if [[ -L "$candidate" ]]; then
+      printf 'Test cache is indirect: %s\n' "$candidate" >&2
+      exit 78
+    fi
+    if [[ -e "$candidate" ]]; then
+      if [[ ! -d "$candidate" ]]; then
+        printf 'Test cache ancestor is not a directory: %s\n' "$candidate" >&2
+        exit 78
+      fi
+      read -r owner mode <<< "$(stat --format='%u %a' -- "$candidate")"
+      if [[ "$owner" != "$EUID" && "$owner" != 0 ]] ||
+        (( (8#$mode & 0022) != 0 && (8#$mode & 01000) == 0 )); then
+        printf 'Test cache ancestor is unsafe: %s\n' "$candidate" >&2
+        exit 78
+      fi
+    fi
+    candidate=$(dirname -- "$candidate")
+  done
+else
+  export CARGO_TARGET_DIR="$test_root/target/acceptance-$context"
+fi
 mkdir -p "$CARGO_TARGET_DIR"
 printf 'Test compiler: %s\nTest Cargo: %s\nReusable test target: %s\n' \
   "${compiler_version%%$'\n'*}" "${cargo_version%%$'\n'*}" "$CARGO_TARGET_DIR" >&2

@@ -64,7 +64,7 @@ fn install_bd_shim(dir: &Path) -> PathBuf {
 }
 
 fn mock_script_path(rel: &str) -> PathBuf {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest_dir = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR"));
     for ancestor in manifest_dir.ancestors() {
         let candidate = ancestor.join("tests").join(rel);
         if candidate.is_file() {
@@ -576,7 +576,7 @@ case "${{1:-}} ${{2:-}}" in
                 ;;
             missing-log|incomplete|failed-log|wrong-range|wrong-tree|wrong-config|wrong-log|duplicate-log|changed-tree|changed-verify-log|marker-write-failed|contradictory-output)
                 "$real_loom" --host-key --agent pi "$@"
-                review_log="$(python3 -c 'import datetime,os; t=int(os.environ["LOOM_REVIEW_PHASE_WHEN_MILLIS"])/1000; print(".loom/logs/review/review-"+datetime.datetime.fromtimestamp(t,datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")+".jsonl")')"
+                review_log="$("$review_launcher" --review-log-path)"
                 case "$LOOM_APPLY_STUB_REVIEW" in
                     missing-log) rm "$review_log" ;;
                     incomplete) jq -c 'select(.driver_kind != "gate_run_end")' "$review_log" > "$review_log.tmp"; mv "$review_log.tmp" "$review_log" ;;
@@ -588,7 +588,7 @@ case "${{1:-}} ${{2:-}}" in
                     duplicate-log) cp "$review_log" "$review_log.tmp"; cat "$review_log.tmp" >> "$review_log"; rm "$review_log.tmp" ;;
                     changed-tree) printf 'changed after review\n' > README.md ;;
                     changed-verify-log) printf 'removed verification evidence\n' > "${{LOOM_REVIEW_VERIFIED_LOG:?}}" ;;
-                    marker-write-failed) python3 -c "import sqlite3; c=sqlite3.connect('../state.db'); c.execute(\"CREATE TRIGGER reject_receipt BEFORE INSERT ON workflow_records WHEN NEW.kind='publication-receipt' BEGIN SELECT RAISE(FAIL, 'injected receipt failure'); END\"); c.commit()" ;;
+                    marker-write-failed) "$review_launcher" --reject-publication-receipt ../state.db ;;
                     contradictory-output) printf 'LOOM_CONCERN: {{"summary":"not complete"}}\n' ;;
                 esac
                 ;;

@@ -1,0 +1,18 @@
+version = 4
+
+[[package]]
+name = "catalogue-member"
+version = "0.1.0"
+
+[[package]]
+name = "catalogue-reuse"
+version = "0.1.0"
+dependencies = ["catalogue-member", "optional_beta", "platform_windows"]
+
+[[package]]
+name = "optional_beta"
+version = "0.1.0"
+
+[[package]]
+name = "platform_windows"
+version = "0.1.0"

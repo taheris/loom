@@ -275,29 +275,36 @@ fn fresh_expression(node: &Node, nonce: &str) -> Result<String, Error> {
     ))
 }
 
+fn fresh_recipe(tool: &Path, expression: &str) -> Result<(StorePath, super::pin::Inputs), Error> {
+    let bytes = super::query(
+        tool,
+        &[
+            "eval",
+            "--raw",
+            "--expr",
+            expression,
+            "--offline",
+            "--no-write-lock-file",
+            "--option",
+            "allow-import-from-derivation",
+            "false",
+        ],
+    )?;
+    let requested = StorePath::try_from(String::from_utf8(bytes).map_err(|_| Error::Encoding)?)?;
+    let lease = super::pin::Inputs::acquire(tool, &[requested.clone()].into())?;
+    Ok((requested, lease))
+}
+
 impl super::Graph {
-    pub(super) fn fresh_report(&self) -> Result<(StorePath, super::Nodes), Error> {
+    pub(super) fn fresh_report(
+        &self,
+    ) -> Result<(StorePath, super::Nodes, super::pin::Inputs), Error> {
         let nonce = tempfile::tempdir()?;
         let nonce = nonce.path().to_str().ok_or(Error::Encoding)?;
         let reporter = self.reporter.as_ref().ok_or(Error::Result)?;
         let original = self.nodes.get(reporter).ok_or(Error::Root)?;
         let expression = fresh_expression(original, nonce)?;
-        let bytes = super::query(
-            &self.tool,
-            &[
-                "eval",
-                "--raw",
-                "--expr",
-                &expression,
-                "--offline",
-                "--no-write-lock-file",
-                "--option",
-                "allow-import-from-derivation",
-                "false",
-            ],
-        )?;
-        let requested =
-            StorePath::try_from(String::from_utf8(bytes).map_err(|_| Error::Encoding)?)?;
+        let (requested, lease) = fresh_recipe(&self.tool, &expression)?;
         let nodes = super::read_graph(&self.tool, &requested)?;
         let fresh = nodes.get(&requested).ok_or(Error::Root)?;
         if requested == *reporter
@@ -330,7 +337,7 @@ impl super::Graph {
                 detail: "fresh realization changed the admitted execution contract".into(),
             });
         }
-        Ok((requested, nodes))
+        Ok((requested, nodes, lease))
     }
 }
 

@@ -50,6 +50,11 @@
     reason = "test helper: loud failure on protocol violations is the desired behaviour"
 )]
 
+#[path = "mock-loom-agent/fixture.rs"]
+mod fixture;
+#[path = "mock-loom-agent/replay.rs"]
+mod replay;
+
 use std::env;
 use std::io::{self, BufRead, Write};
 use std::process::ExitCode;
@@ -88,6 +93,14 @@ const FINDING_CONCERN_LINE: &str = concat!(
 )]
 fn main() -> ExitCode {
     let args = env::args().skip(1).collect::<Vec<_>>();
+    match fixture::dispatch(&args) {
+        Ok(Some(code)) => return code,
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("mock agent fixture failed: {error:#}");
+            return ExitCode::FAILURE;
+        }
+    }
     if args == ["beads", "push"] {
         eprintln!("[wrix] beads push (mock)");
         return ExitCode::SUCCESS;

@@ -2,11 +2,13 @@
   pkgs,
   crane,
   src,
-  script ? ./consumer-api.py,
+  verificationTool ? import ../../nix/verification-tool.nix { inherit pkgs; },
 }:
 let
   inherit (pkgs.lib) mapAttrs;
   api = import ../../nix/lib.nix;
+  nativePackage = import ../../nix/native-package.nix;
+  artifact = pkgs.writeText "consumer-native-artifact" "artifact, not isolated execution";
   expression = pkgs.writeText "consumer-cold-evaluation.nix" ''
     let
       pkgs = import ${pkgs.path} { system = "${pkgs.stdenv.hostPlatform.system}"; };
@@ -75,17 +77,26 @@ let
     runtimes.pi = { };
   };
 in
+assert (nativePackage artifact).loom.runtime == "native-process";
+assert builtins.all
+  (runtime: (nativePackage (artifact // { loom = { inherit runtime; }; })).loom.runtime == runtime)
+  [
+    "nix"
+    "native-cgroup"
+    "native-container"
+  ];
 pkgs.runCommand "loom-consumer-api"
   {
     nativeBuildInputs = [
-      pkgs.nix
-      pkgs.python3
+      (pkgs.lib.getBin pkgs.nix)
+      pkgs.coreutils
+      verificationTool
     ];
   }
   ''
     set -euo pipefail
     export HOME="$TMPDIR/home"
     mkdir -p "$HOME"
-    python3 ${script} ${expression} ${manifest} ${manifest.nativePreflight}
+    loom-verification consumer-api ${expression} ${manifest} ${manifest.nativePreflight}
     touch "$out"
   ''

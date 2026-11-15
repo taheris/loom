@@ -6,6 +6,8 @@ let
   checked = import ./verification.nix;
 in
 checked.check {
+  runtime = value.loom.runtime or "native-process";
+  purpose = value.loom.purpose or "artifact";
   resources = [ ];
   evaluation = import ./native-context.nix;
   build = _: value;

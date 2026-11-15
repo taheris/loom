@@ -3,7 +3,10 @@
 use std::path::Path;
 
 use displaydoc::Display;
-use loom_driver::bd::{BdClient, BdError, Bead, CommandRunner};
+use loom_issues::{
+    task::{Kind, Record as Bead},
+    tracking::{Error as TrackingError, Store},
+};
 use loom_protocol::acceptance::{Candidates, METADATA_KEY};
 use thiserror::Error;
 
@@ -13,8 +16,8 @@ pub use loom_protocol::acceptance::dispatch::Acceptance as Resolved;
 
 #[derive(Debug, Display, Error)]
 pub enum Error {
-    /// Beads failed while reading task acceptance
-    Bd(#[from] BdError),
+    /// tracking failed while reading task acceptance
+    Tracking(#[from] TrackingError),
     /// task {0} lacks explicit acceptance; bind criteria or admit finding goals
     Missing(loom_driver::identifier::BeadId),
     /// {0} is not an implementation task; decisions and epics are not worker acceptance
@@ -33,18 +36,14 @@ pub enum Error {
 ///
 /// # Errors
 /// Missing, malformed, unrelated or stale acceptance rejects dispatch without a purpose fallback.
-pub async fn resolve<R: CommandRunner>(
-    bd: &BdClient<R>,
-    task: &Bead,
-    workspace: &Path,
-) -> Result<Resolved, Error> {
-    if task.issue_type != loom_driver::bd::IssueType::Task {
+pub async fn resolve<T: Store>(bd: &T, task: &Bead, workspace: &Path) -> Result<Resolved, Error> {
+    if task.issue_type != Kind::Task {
         return Err(Error::NotTask(task.id.clone()));
     }
     let refreshed;
     let task = if task.metadata.contains_key(remediation::FOLLOW_UP_KEY) {
         remediation::admit_proposal(bd, task, workspace).await?;
-        refreshed = bd.show(&task.id).await?;
+        refreshed = bd.get(&task.id).await?;
         &refreshed
     } else {
         task

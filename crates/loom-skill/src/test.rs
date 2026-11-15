@@ -87,7 +87,7 @@ mod tests {
         assert_eq!(materialized.skills().len(), 1);
 
         let _lease = loom_test_support::compile_fixture::lock(
-            Path::new(env!("CARGO_MANIFEST_DIR")),
+            loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR")),
             env!("CARGO_PKG_NAME"),
         )
         .expect("lock generated compile fixtures");

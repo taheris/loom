@@ -415,8 +415,12 @@ impl<R: CommandRunner> BdClient<R> {
 
     async fn invoke(&self, args: Vec<OsString>) -> Result<Invocation, BdError> {
         let rendered = render_args(&args);
+        let lookup = args.first().is_some_and(|argument| argument == "show");
         let output: RunOutput = self.runner.run(args, self.timeout).await?;
         if !output.success() {
+            if lookup && output.status == 1 && missing_lookup(&output.stdout) {
+                return Err(BdError::ShowEmpty);
+            }
             return Err(BdError::Cli {
                 status: output.status,
                 args: rendered.clone(),
@@ -428,6 +432,46 @@ impl<R: CommandRunner> BdClient<R> {
             args: rendered,
         })
     }
+}
+
+fn missing_lookup(bytes: &[u8]) -> bool {
+    #[derive(Deserialize)]
+    enum LookupCode {
+        #[serde(rename = "no issues found matching the provided IDs")]
+        NotFound,
+    }
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Failure {
+        error: LookupCode,
+        #[serde(default, rename = "hint")]
+        _hint: Option<String>,
+    }
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Envelope {
+        schema_version: u32,
+        data: Failure,
+    }
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Response {
+        Envelope(Envelope),
+        Bare(Failure),
+    }
+    matches!(
+        serde_json::from_slice::<Response>(bytes),
+        Ok(Response::Envelope(Envelope {
+            schema_version: 1,
+            data: Failure {
+                error: LookupCode::NotFound,
+                ..
+            }
+        }) | Response::Bare(Failure {
+            error: LookupCode::NotFound,
+            ..
+        }))
+    )
 }
 
 struct Invocation {

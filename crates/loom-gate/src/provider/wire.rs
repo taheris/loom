@@ -127,6 +127,10 @@ pub struct Nix {
     pub(super) artifact: Digest,
     #[serde(default)]
     pub(super) runtime: super::nix::Runtime,
+    #[serde(default)]
+    pub(super) purpose: super::nix::Purpose,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) process: Option<super::nix::process::Context>,
 }
 
 /// Deserializing any closed variant still leaves a candidate that requires resolution.
@@ -138,6 +142,11 @@ pub enum Candidate {
         execution: Rust,
     },
     HermeticNix {
+        contract: Contract,
+        execution: Nix,
+    },
+    /// Declared local execution, not filesystem/network confinement evidence.
+    NativeProcess {
         contract: Contract,
         execution: Nix,
     },
@@ -160,6 +169,7 @@ impl Candidate {
         match self {
             Self::TrackedRust { contract, .. }
             | Self::HermeticNix { contract, .. }
+            | Self::NativeProcess { contract, .. }
             | Self::SupportedEffect { contract, .. } => contract,
         }
     }
@@ -203,7 +213,7 @@ impl Candidate {
                 ..
             } => Discovery::NativeMetadata,
             Self::TrackedRust { .. } => Discovery::CollectTracked,
-            Self::HermeticNix { .. } => Discovery::ConstructedGraph,
+            Self::HermeticNix { .. } | Self::NativeProcess { .. } => Discovery::ConstructedGraph,
             Self::SupportedEffect { .. } => Discovery::SupportedEffect,
         }
     }
@@ -211,7 +221,7 @@ impl Candidate {
     pub const fn mapping(&self) -> Mapping {
         match self {
             Self::TrackedRust { .. } => Mapping::PerTarget,
-            Self::HermeticNix { .. } => Mapping::DerivationOutput,
+            Self::HermeticNix { .. } | Self::NativeProcess { .. } => Mapping::DerivationOutput,
             Self::SupportedEffect { .. } => Mapping::ExitStatus,
         }
     }
@@ -231,7 +241,18 @@ impl Candidate {
                 ..
             } => BTreeSet::from([Capability::NixMetadata]),
             Self::TrackedRust { .. } => BTreeSet::new(),
+            Self::NativeProcess { execution, .. } => {
+                if matches!(
+                    execution.process,
+                    Some(super::nix::process::Context::LocalAgent { .. })
+                ) {
+                    BTreeSet::from([Capability::NixMetadata])
+                } else {
+                    BTreeSet::from([Capability::NixMetadata, Capability::NixSandbox])
+                }
+            }
             Self::HermeticNix { execution, .. } => match execution.runtime {
+                super::nix::Runtime::NativeProcess => BTreeSet::from([Capability::NixMetadata]),
                 super::nix::Runtime::Nix => BTreeSet::from([Capability::NixSandbox]),
                 super::nix::Runtime::NativeCgroup => {
                     BTreeSet::from([Capability::NixSandbox, Capability::HostKernel])

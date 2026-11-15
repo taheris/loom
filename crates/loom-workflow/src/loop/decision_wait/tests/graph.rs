@@ -1,20 +1,26 @@
 #[cfg(test)]
 mod cases {
+    use super::super::MemoryFixture as Fixture;
     use super::super::*;
+    use loom_issues::task::Relation;
 
     async fn proposal(f: &Fixture, producer: &BeadId, root: &BeadId, affected: &[BeadId]) {
         f.bd.update(
             &f.decisions[0],
-            UpdateOpts {
+            Update {
                 status: Some(Status::Blocked),
-                set_metadata: vec![(
+                set_metadata: [(
                     super::super::super::graph::CANDIDATE_KEY.into(),
-                    serde_json::json!({"version":1,"producer":producer,"root":root,
-                    "affected_work":affected})
-                    .to_string(),
-                )],
-                ..UpdateOpts::default()
+                    serde_json::json!({
+                        "version":1,"producer":producer,"root":root,"affected_work":affected
+                    })
+                    .to_string()
+                    .into(),
+                )]
+                .into(),
+                ..Update::default()
             },
+            Guard::None,
         )
         .await
         .unwrap();
@@ -23,7 +29,9 @@ mod cases {
     #[tokio::test]
     async fn staged_candidate_binds_producer_root_and_actual_native_affected_work() {
         let f = Fixture::new().await;
-        f.bd.dep_add(&f.sibling, &f.decisions[0]).await.unwrap();
+        f.bd.relate(&f.sibling, &f.decisions[0], Relation::Blocks)
+            .await
+            .unwrap();
         proposal(&f, &f.source.id, &f.root, std::slice::from_ref(&f.sibling)).await;
         assert!(matches!(f.admit().await, AgentOutcome::Waiting { .. }));
         let entry = f.journal().load(&f.source.id).unwrap().unwrap();
@@ -40,13 +48,13 @@ mod cases {
             serde_json::json!([f.source.id, f.sibling])
         );
         assert!(
-            f.bd.dependency_snapshot(&f.sibling)
+            f.bd.graph(&f.sibling)
                 .await
                 .unwrap()
                 .active_blockers()
                 .contains(&f.decisions[0])
         );
-        assert_eq!(f.bd.show(&f.source.id).await.unwrap().status, Status::Open);
+        assert_eq!(f.bd.get(&f.source.id).await.unwrap().status, Status::Open);
     }
 
     #[tokio::test]
@@ -66,12 +74,18 @@ mod cases {
             assert!(matches!(f.admit().await, AgentOutcome::Failure { .. }));
             assert!(f.journal().load(&f.source.id).unwrap().is_none());
             for id in &f.decisions {
-                assert!(!f.bd.show(id).await.unwrap().labels.iter().any(|label| {
-                    matches!(
-                        label.as_str(),
-                        "loom:clarify" | "loom:blocked" | "loom:infra"
-                    )
-                }));
+                assert!(
+                    !f.bd
+                        .get(id)
+                        .await
+                        .unwrap()
+                        .labels
+                        .iter()
+                        .any(|label| matches!(
+                            label.as_str(),
+                            "loom:clarify" | "loom:blocked" | "loom:infra"
+                        ))
+                );
             }
         }
     }
@@ -81,10 +95,11 @@ mod cases {
         let f = Fixture::new().await;
         f.bd.update(
             &f.decisions[0],
-            UpdateOpts {
+            Update {
                 status: Some(Status::Blocked),
-                ..UpdateOpts::default()
+                ..Update::default()
             },
+            Guard::None,
         )
         .await
         .unwrap();
@@ -92,20 +107,18 @@ mod cases {
         assert!(f.journal().load(&f.source.id).unwrap().is_none());
         assert!(
             !f.bd
-                .show(&f.decisions[0])
+                .get(&f.decisions[0])
                 .await
                 .unwrap()
                 .labels
                 .iter()
-                .any(|label| {
-                    matches!(
-                        label.as_str(),
-                        "loom:clarify" | "loom:blocked" | "loom:infra"
-                    )
-                })
+                .any(|label| matches!(
+                    label.as_str(),
+                    "loom:clarify" | "loom:blocked" | "loom:infra"
+                ))
         );
         assert_eq!(
-            f.bd.show(&f.decisions[1]).await.unwrap().status,
+            f.bd.get(&f.decisions[1]).await.unwrap().status,
             Status::Open
         );
     }
@@ -120,23 +133,25 @@ mod cases {
         ] {
             f.bd.update(
                 &f.decisions[0],
-                UpdateOpts {
+                Update {
                     status: Some(Status::Blocked),
-                    set_metadata: vec![(
+                    set_metadata: [(
                         super::super::super::graph::CANDIDATE_KEY.into(),
-                        payload.to_string(),
-                    )],
-                    ..UpdateOpts::default()
+                        payload.to_string().into(),
+                    )]
+                    .into(),
+                    ..Update::default()
                 },
+                Guard::None,
             )
             .await
             .unwrap();
-            let before = f.bd.show(&f.decisions[0]).await.unwrap();
+            let before = f.bd.get(&f.decisions[0]).await.unwrap();
             assert!(matches!(f.admit().await, AgentOutcome::Failure { .. }));
             assert!(f.journal().load(&f.source.id).unwrap().is_none());
-            assert_eq!(f.bd.show(&f.decisions[0]).await.unwrap(), before);
+            assert_eq!(f.bd.get(&f.decisions[0]).await.unwrap(), before);
             assert_eq!(
-                f.bd.show(&f.decisions[1]).await.unwrap().status,
+                f.bd.get(&f.decisions[1]).await.unwrap().status,
                 Status::Open
             );
         }
@@ -146,20 +161,22 @@ mod cases {
     async fn foreign_affected_work_rejects_batch_without_rewriting_native_edges() {
         let f = Fixture::new().await;
         let foreign =
-            f.bd.create(CreateOpts {
+            f.bd.create(Create {
                 title: "foreign work".into(),
-                ..CreateOpts::default()
+                ..Create::default()
             })
             .await
             .unwrap();
-        f.bd.dep_add(&foreign, &f.decisions[0]).await.unwrap();
+        f.bd.relate(&foreign, &f.decisions[0], Relation::Blocks)
+            .await
+            .unwrap();
         assert!(matches!(f.admit().await, AgentOutcome::Failure { .. }));
         assert!(f.journal().load(&f.source.id).unwrap().is_none());
         for id in &f.decisions {
-            assert_eq!(f.bd.show(id).await.unwrap().status, Status::Open);
+            assert_eq!(f.bd.get(id).await.unwrap().status, Status::Open);
         }
         assert!(
-            f.bd.dependency_snapshot(&foreign)
+            f.bd.graph(&foreign)
                 .await
                 .unwrap()
                 .active_blockers()
@@ -197,11 +214,11 @@ mod cases {
         assert!(!f.journal().blocks_scope(&f.bd, &f.root).await.unwrap());
         let before = serde_json::to_value(f.journal().load(&f.source.id).unwrap()).unwrap();
         let late =
-            f.bd.create(CreateOpts {
+            f.bd.create(Create {
                 title: "unreported later discovery".into(),
-                issue_type: Some(IssueType::Decision),
+                kind: Some(IssueType::Decision),
                 parent: Some(f.source.id.clone()),
-                ..CreateOpts::default()
+                ..Create::default()
             })
             .await
             .unwrap();
@@ -217,13 +234,14 @@ mod cases {
             &git,
         )
         .await;
-        assert!(matches!(result, Err(LoopError::DecisionWait(ref error))
-            if error.to_string().contains(late.as_str())));
+        assert!(
+            matches!(result, Err(LoopError::DecisionWait(ref error)) if error.to_string().contains(late.as_str()))
+        );
         assert_eq!(
             serde_json::to_value(f.journal().load(&f.source.id).unwrap()).unwrap(),
             before
         );
-        assert_eq!(f.bd.show(&late).await.unwrap().status, Status::Open);
+        assert_eq!(f.bd.get(&late).await.unwrap().status, Status::Open);
     }
 
     #[tokio::test]
@@ -239,7 +257,7 @@ mod cases {
             serde_json::to_value(f.journal().load(&f.source.id).unwrap()).unwrap(),
             before
         );
-        let source = f.bd.show(&f.source.id).await.unwrap();
+        let source = f.bd.get(&f.source.id).await.unwrap();
         f.journal()
             .recover_inventory(&f.bd, Some(&f.root), &SpecLabel::new("loop").unwrap())
             .await
@@ -253,7 +271,7 @@ mod cases {
                 .is_some()
         );
         assert!(!f.journal().blocks_scope(&f.bd, &f.root).await.unwrap());
-        assert_eq!(f.bd.show(&f.source.id).await.unwrap(), source);
+        assert_eq!(f.bd.get(&f.source.id).await.unwrap(), source);
     }
 
     #[tokio::test]
@@ -261,7 +279,9 @@ mod cases {
         let f = Fixture::new().await;
         admit_independent(&f).await;
         let before = serde_json::to_value(f.journal().load(&f.source.id).unwrap()).unwrap();
-        f.bd.dep_add(&f.sibling, &f.decisions[0]).await.unwrap();
+        f.bd.relate(&f.sibling, &f.decisions[0], Relation::Blocks)
+            .await
+            .unwrap();
         assert!(f.journal().blocks_scope(&f.bd, &f.root).await.is_err());
         assert_eq!(
             serde_json::to_value(f.journal().load(&f.source.id).unwrap()).unwrap(),
@@ -279,7 +299,9 @@ mod cases {
             .unwrap()
             .records::<serde_json::Value>(loom_driver::state::RecordKind::DecisionInventory)
             .unwrap();
-        f.bd.dep_add(&f.sibling, &f.decisions[0]).await.unwrap();
+        f.bd.relate(&f.sibling, &f.decisions[0], Relation::Blocks)
+            .await
+            .unwrap();
         assert!(held(&f.bd, &f.journal(), &f.source).await.is_err());
         assert!(matches!(f.admit().await, AgentOutcome::Failure { .. }));
         let after = f

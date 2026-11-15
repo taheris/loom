@@ -12,7 +12,11 @@ if [[ -f "$repo_root/scripts/configure-cargo-patches.sh" ]]; then
     bash "$repo_root/scripts/configure-cargo-patches.sh" "${LOOM_CARGO_PATCHES:-}"
 fi
 
-python3 tests/verify/native-resources.py "$repo_root"
+loom-verification native-resources "$repo_root"
+unset LOOM_TEST_DECLARED_SOURCES_FILE
+export LOOM_NATIVE_RUST_FIXTURE LOOM_NATIVE_SMOKE_FIXTURE
+LOOM_NATIVE_RUST_FIXTURE=$(nix build .#native-rust-fixture --offline --no-substitute --no-link --print-out-paths)
+LOOM_NATIVE_SMOKE_FIXTURE=$(nix build .#native-smoke-fixture --offline --no-substitute --no-link --print-out-paths)
 cargo build --workspace
 mkdir -p "$repo_root/.loom/logs"
 nextest_run_dir=$(mktemp -d "$repo_root/.loom/logs/required-suite.XXXXXXXX")
@@ -22,6 +26,11 @@ export NEXTEST_FAILURE_OUTPUT=immediate-final
 export NEXTEST_STATUS_LEVEL=fail
 export NEXTEST_FINAL_STATUS_LEVEL=fail
 export NEXTEST_SHOW_PROGRESS=none
+if [[ -z "${NEXTEST_TEST_THREADS:-}" ]]; then
+    NEXTEST_TEST_THREADS=$(bash "$repo_root/nix/test-scheduling.sh")
+    export NEXTEST_TEST_THREADS
+fi
+printf 'Native test scheduling: %s threads\n' "$NEXTEST_TEST_THREADS" >&2
 if cargo nextest run --workspace --ignore-default-filter 2>&1 | tee "$nextest_log"; then
     :
 else
@@ -33,4 +42,5 @@ else
     fi
     exit 78
 fi
-nix run .#test-native-units
+# Kernel/container conformance is not an ordinary Loom suite. The pushed-range
+# Gate plan retains separately admitted affected edge obligations.

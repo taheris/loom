@@ -34,7 +34,7 @@ case "$1" in
   bridge-smoke)
     campaigns=(routine bridge-replay)
     ;;
-  model | reference-equivalence | cache-model | witnesses)
+  routine | model | reference-equivalence | cache-model | witnesses)
     : "${LOOM_QUINT_SOURCE:?missing whole-gate model input bundle}"
     exec bash "$LOOM_QUINT_SOURCE/scripts/test-quint-model.sh" "$1"
     ;;

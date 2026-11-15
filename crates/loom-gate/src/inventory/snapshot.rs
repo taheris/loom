@@ -167,7 +167,7 @@ impl Snapshot {
                 return Err(Error::Missing { path: path.clone() });
             }
         }
-        let directory = tempfile::tempdir()?;
+        let directory = staging_directory(&std::env::temp_dir())?;
         for path in paths {
             let bytes = &self.files[path];
             let staged = directory.path().join(path.as_path());
@@ -201,9 +201,29 @@ impl Snapshot {
     }
 }
 
+fn staging_directory(parent: &Path) -> std::io::Result<tempfile::TempDir> {
+    tempfile::tempdir_in(parent.canonicalize()?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn staged_directory_resolves_symlinked_temporary_parent() {
+        let directory = tempfile::tempdir().unwrap();
+        let parent = directory.path().join("actual");
+        std::fs::create_dir(&parent).unwrap();
+        let alias = directory.path().join("alias");
+        std::os::unix::fs::symlink(&parent, &alias).unwrap();
+        let staged = staging_directory(&alias).unwrap();
+        assert_eq!(staged.path(), staged.path().canonicalize().unwrap());
+        assert!(staged.path().starts_with(parent.canonicalize().unwrap()));
+        let staged_path = staged.path().to_path_buf();
+        drop(staged);
+        assert!(!staged_path.exists());
+    }
 
     fn path(value: &str) -> ResourcePath {
         ResourcePath::try_from(PathBuf::from(value)).unwrap()

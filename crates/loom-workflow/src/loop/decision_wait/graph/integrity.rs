@@ -3,8 +3,11 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use loom_driver::bd::{BdClient, Bead, CommandRunner, IssueType};
 use loom_driver::identifier::BeadId;
+use loom_issues::{
+    task::{Kind as IssueType, Record as Bead},
+    tracking::Store,
+};
 use loom_protocol::acceptance::GoalReference;
 use loom_protocol::gate::{Finding, RawFinding};
 use serde::{Deserialize, Serialize};
@@ -63,11 +66,7 @@ impl Context {
             })
     }
 
-    pub(super) async fn recheck<R: CommandRunner>(
-        &self,
-        bd: &BdClient<R>,
-        root: &BeadId,
-    ) -> Result<(), LoopError> {
+    pub(super) async fn recheck<T: Store>(&self, bd: &T, root: &BeadId) -> Result<(), LoopError> {
         for binding in &self.bindings {
             let reference =
                 resolve_goal(bd, root, &binding.task, &binding.finding, &self.workspace).await?;
@@ -83,14 +82,14 @@ impl Context {
     }
 }
 
-async fn resolve_goal<R: CommandRunner>(
-    bd: &BdClient<R>,
+async fn resolve_goal<T: Store>(
+    bd: &T,
     root: &BeadId,
     id: &BeadId,
     finding: &RawFinding,
     workspace: &Path,
 ) -> Result<GoalReference, LoopError> {
-    let task = bd.show(id).await?;
+    let task = bd.get(id).await?;
     if task
         .metadata
         .contains_key(crate::mint::acceptance::FOLLOW_UP_KEY)
@@ -142,8 +141,8 @@ pub(super) fn additive(old: &Decision, current: &Decision) -> bool {
 
 /// Only exact driver-resolved findings can authorize additions; other graph
 /// changes still require explicit repair and never rewrite native edges.
-pub async fn resolve<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub async fn resolve<T: Store>(
+    bd: &T,
     source: &Bead,
     root: &BeadId,
     decisions: &[Bead],

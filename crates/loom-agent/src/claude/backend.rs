@@ -306,7 +306,7 @@ mod tests {
     }
 
     fn mock_claude_path() -> PathBuf {
-        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let manifest_dir = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR"));
         for ancestor in manifest_dir.ancestors() {
             let candidate = ancestor.join("tests/mock-claude/claude.sh");
             if candidate.is_file() {
@@ -343,6 +343,7 @@ mod tests {
             image_source: PathBuf::from("/nix/store/zzz-wrix-test-claude.tar"),
             image_source_kind: Some(loom_driver::agent::ImageSourceKind::NixDescriptor),
             wrix_launcher: None,
+            tracking_access: loom_driver::agent::WorkerTrackingAccess::LauncherManaged,
             profile_config: Some(PathBuf::from(
                 "/nix/store/wrix-test-claude-profile-config.json",
             )),

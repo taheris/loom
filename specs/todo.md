@@ -270,7 +270,7 @@ cursor advancement.
   Beads and lightweight implementations, retaining driver-owned binding writes,
   exact roster/cursor/note guarantees and unrelated metadata. Separate discovery
   or acceptance repair cannot stand in for criterion-bound implementation work.
-  [test?](todo_neutral_tracking_preserves_binding_and_finalization_boundaries)
+  [test](todo_neutral_tracking_preserves_binding_and_finalization_boundaries)
 
 - Serde round-trips the typed criterion-reference metadata without copying
   requirement text, verifier bindings, or verdicts. Malformed identifiers fail

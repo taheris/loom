@@ -2,8 +2,7 @@
 
 use std::path::Path;
 
-#[path = "common/reported.rs"]
-mod reported;
+use super::reported;
 
 #[test]
 fn check_scope_does_not_execute_constructor_owned_system_reports() {

@@ -531,7 +531,7 @@ mod tests {
     const PUSH_RANGE: &str = "origin/main..HEAD";
 
     fn repo_root() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
+        loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR"))
             .ancestors()
             .nth(2)
             .expect("workspace root")

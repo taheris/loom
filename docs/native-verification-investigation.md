@@ -77,6 +77,29 @@ runtime artifacts as project source inputs.
 
 ### Compiler facts and test verdicts are different boundaries
 
+The current dev catalogue compiles against an immutable compiler-only source
+partition. It retains the complete canonical workspace/all-targets inventory and
+compiler target; the build check imports that target and still executes Cargo.
+Production packaging and both separate Clippy configurations remain release
+operations. Targeted archive consumers use the dev seed, but Cargo must rebuild
+when their feature or target configuration differs; those compilations are not
+reported as equivalent reuse.
+
+Runtime documents and fixture data are supplied separately through
+`LOOM_TEST_SOURCE_ROOT`. Shared test helpers resolve current runtime files from
+that root and never fall back to compiler data when a supplied runtime file is
+missing. Embedded inputs and the Nextest list/run wrapper remain compiler
+inputs. Independent Nix identity assertions require unrelated documentation
+changes to preserve the catalogue while changing the runtime execution, and
+Rust/toolchain/patch changes to invalidate compilation. All immutable manifest
+commands use an absolute writable builder-local target, not a source-local one.
+
+Selected execution streams inspect every selected Nix prerequisite frontier
+before their first verifier effect. They report all cold pinned inputs together,
+including package/app/report dependencies, and inspect the actual fresh reporter
+rather than a possibly warm assertion wrapper. This readiness check issues no
+verdict and does not replace current-source validation or per-execution pinning.
+
 The native Rust catalogue companion runs actual Cargo metadata and unfiltered
 Nextest collection. It retains compiler artifacts for the subsequent complete
 native test execution. A prepared catalogue has no caller-listing constructor or
@@ -366,3 +389,63 @@ Evidence, relative to the bead checkout, is retained under
 runs, recovery refs, the archived stash and GC roots remain intact. No hook
 bypass, sandbox fallback, protected-service recovery or broad cleanup was
 performed.
+
+## Namespace-free agent investigation — 2026-11-04
+
+The resumed worker cannot execute strict nested Nix builds. Its inherited Nix
+configuration has sandboxing disabled and fallback enabled; a successful build
+under those defaults is not strict-sandbox acceptance. Explicit strict
+production build, flake check, and native-smoke-beads invocations all reject the
+missing namespace capability. No setting was changed to turn these into passes.
+
+Namespace creation is not intrinsically necessary for source discovery or
+ordinary verifier logic. An experiment compiled the existing
+`tests/smoke/deny-namespaces.c` control and used it to launch real Cargo/Nextest
+processes. The inherited seccomp filter rejects `unshare`, namespace-bearing
+`clone`, and `clone3` (ordinary libc thread creation can use `clone`). An actual
+`unshare -Ur true` control failed with `EPERM`. Under the same restriction, all
+19 selected provider command/frontier/currentness tests passed, as did the
+inventory source-isolation regression using actual Cargo metadata and Nix
+evaluation. This is focused execution evidence, not a full-suite or publication
+receipt. Logs and the compiled restriction are retained in
+`.loom/logs/lm-7ual/namespace-free/` relative to the bead checkout.
+
+The production direction is the existing agent-first execution boundary:
+ordinary behavior runs as native processes using pinned tools, captured sources,
+private fixture state and real process/database boundaries inside the
+already-isolated agent. Fixture preparation must not require rebuilding an inner
+strict Nix sandbox merely to test argument handling, policy, metadata, recovery
+or reporting. Actual Nix sandbox, undeclared-read/network denial, container and
+kernel conformance remain distinct required obligations, executed through the
+trusted driver's admitted affected-capability lane. They cannot be removed by a
+directory filter, reclassified merely because a tool is absent, or counted as
+passed by an ordinary native run. Result admission must retain the actual
+execution environment; a native process result cannot masquerade as a hermetic
+Nix result. The source-isolation repair already makes one such separation
+concrete: inventory discovery is exercised without realizing its compiler
+catalogue or executing a sandbox builder.
+
+A replacement inner sandbox was also investigated rather than assumed: pinned
+nixpkgs supplies Landrun 0.1.17, but its strict probe reports Landlock ABI 0 in
+this worker. Landlock is therefore not an available namespace-free security
+substitute here. No best-effort mode was used. Seccomp filtering alone also does
+not supply Nix's filesystem isolation. The earlier software-kernel experiments
+remain historical; this investigation did not restore automatic VM routing or
+schedule QEMU on ordinary pushes.
+
+The cutover remains tracked in `lm-7ual`. A later complete stock-Nix,
+namespace-denied campaign passed all 3,770 executed tests with the five existing
+ignored cases unchanged. It took 818.660 seconds including 143 seconds of
+compilation: behavioral success, but not latency acceptance. This evidence is
+retained in `native-agent/nextest-final.log` under the bead's log directory and
+does not grant hermetic or publication authority.
+
+The shipped-workspace consumer test previously constructed every optional
+Wrix/system recipe to inspect six Loom bindings. It now reads the real complete
+source-provenance catalogue but constructs only those six roots. Build,
+all-target lint and test still cover every actual Cargo source; production lint
+retains its separate command and input scope. The same production constructor is
+used, without a fake Inventory or fabricated descriptors. Selected-root
+construction must retain dependency provenance, not borrow unrelated inputs. The
+remaining complete-cycle and configured-hook timings must be measured on the
+final candidate before closing the bead.

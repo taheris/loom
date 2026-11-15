@@ -3,9 +3,8 @@
 use std::path::Path;
 use std::process::{Command, Output};
 
+use super::cargo::native_data;
 use anyhow::Context;
-#[path = "common/native_data.rs"]
-mod native_data;
 
 const CLOSED: &str = r#"[{"id":"smoke-test.1","title":"Smoke","status":"closed"}]"#;
 
@@ -52,10 +51,10 @@ printf '%s\n' "$END_TS"
         std::iter::once(fixture.path().to_path_buf()).chain(std::env::split_paths(&path)),
     )?;
     let output = Command::new(loom_test_support::bash_path())
-        .arg(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/smoke/loop.sh"
-        ))
+        .arg(
+            loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/smoke/loop.sh"),
+        )
         .arg(fixture.path().join("loom"))
         .arg(&workspace)
         .args(["smoke-test.1", "100"])
@@ -236,13 +235,12 @@ fn shipped_smoke_probe_checks_its_result_argument_and_preserves_unavailable() {
         .output()
         .unwrap();
     assert!(git.status.success(), "{git:?}");
-    let script = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/smoke/verifier-probe.sh"
-    );
+    let script = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/smoke/verifier-probe.sh");
     let run = || {
         Command::new(loom_test_support::bash_path())
-            .args([script, "loom-smoke-result.txt"])
+            .arg(&script)
+            .arg("loom-smoke-result.txt")
             .current_dir(fixture.path())
             .output()
             .unwrap()
@@ -255,7 +253,8 @@ fn shipped_smoke_probe_checks_its_result_argument_and_preserves_unavailable() {
     .unwrap();
     assert!(run().status.success());
     let wrong = Command::new(loom_test_support::bash_path())
-        .args([script, "unrelated.txt"])
+        .arg(&script)
+        .arg("unrelated.txt")
         .current_dir(fixture.path())
         .output()
         .unwrap();

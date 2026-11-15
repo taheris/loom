@@ -26,6 +26,7 @@ rec {
       loomBin,
       extraPackages ? [ ],
       nativeCargo ? null,
+      verificationSdk ? null,
       profiles ? { inherit (wrixLib.profiles) base rust python; },
       # Back-compat for callers that previously selected the single runtime via
       # `agent` and optionally overrode its package via `agentPkg`. The manifest
@@ -77,10 +78,21 @@ rec {
                 direct = loomBin;
               }
               .${runtime};
+          verificationPreparation =
+            if verificationSdk == null then
+              null
+            else
+              import ./verification-preparation.nix {
+                pkgs = imagePkgs;
+                sdk = verificationSdk;
+              };
           checkedAgent = hiPrio (
             imagePkgs.writeShellScriptBin program ''
               set -euo pipefail
               if [[ "''${LOOM_NATIVE_PREFLIGHT:-}" == rust ]]; then
+                ${imagePkgs.lib.optionalString (verificationPreparation != null) ''
+                  ${verificationPreparation}/bin/prepare-verification check
+                ''}
                 if ${imagePkgs.coreutils}/bin/timeout --kill-after=5s 365s \
                   ${imagePkgs.bash}/bin/bash ${../scripts/worker-native-preflight.sh} \
                   ${escapeShellArg patchConfig} \
@@ -108,8 +120,11 @@ rec {
             {
               profile = workerProfile (
                 profile
-                // optionalAttrs (profileName == "rust" && nativeCargo != null) {
-                  packages = [ nativeCargo ] ++ profile.packages;
+                // optionalAttrs (profileName == "rust") {
+                  packages =
+                    (imagePkgs.lib.optional (nativeCargo != null) nativeCargo)
+                    ++ (imagePkgs.lib.optional (verificationSdk != null) verificationSdk)
+                    ++ profile.packages;
                 }
               );
               agent = runtime;

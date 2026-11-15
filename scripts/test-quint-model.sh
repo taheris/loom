@@ -9,11 +9,11 @@ if [[ "$#" -ne 1 ]]; then
   exit 64
 fi
 case "$1" in
-  model | reference-equivalence | cache-model | witnesses) mode=routine ;;
+  routine | model | reference-equivalence | cache-model | witnesses) mode=routine ;;
   deeper) mode=deeper ;;
   *) printf 'test-quint: unknown model scenario %s\n' "$1" >&2; exit 64 ;;
 esac
-for tool in quint loom-quint-checker loom-quint-witnesses timeout jq sha256sum; do
+for tool in quint loom-quint-checker loom-quint-witnesses loom-verification timeout jq sha256sum; do
   if ! command -v "$tool" >/dev/null; then
     printf 'test-quint: missing provisioned tool %s\n' "$tool" >&2
     exit 1
@@ -28,6 +28,7 @@ if [[ ! -x "$LOOM_QUINT_PACKAGE/share/quint/rust-evaluator-v0.7.1/quint_evaluato
   exit 1
 fi
 cd "$LOOM_QUINT_SOURCE"
+# shellcheck source=scripts/quint-output.sh
 source scripts/quint-output.sh
 plan=specs/gate/campaign.json
 jq -e '
@@ -42,7 +43,7 @@ jq -e '
 ' "$plan" >/dev/null
 identity=$(sha256sum specs/gate/model.qnt specs/gate/witness.qnt specs/gate/README.md "$plan" \
   specs/gate.md specs/verify.md specs/evidence.md specs/simulation.md \
-  scripts/test-quint-model.sh scripts/test-quint.sh scripts/quint-output.sh tests/quint/model-harness.sh tests/quint/mutations.py \
+  scripts/test-quint-model.sh scripts/test-quint.sh scripts/quint-output.sh tests/quint/model-harness.sh "$(command -v loom-verification)" \
   nix/flake/quint.nix nix/quint/tools.nix nix/quint/checker.rs nix/quint/witnesses.rs nix/cargo-home.nix flake.lock | sha256sum)
 identity="${identity%% *}"
 tmp=$(mktemp -d)

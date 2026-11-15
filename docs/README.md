@@ -32,6 +32,10 @@ Ownership boundaries do not require new crates or commands.
   shared per-user trusted-native reservations, conservative accounting and the
   current never-dispatched-only collection boundary.
 
+- [Unattended verification preparation](unattended-verification.md) — retained
+  SDK acquisition before dispatch, offline readiness, and driver-owned network
+  approval.
+
 - [Acceptance storage and recovery](acceptance-storage.md) — pinned compiler
   contexts, reusable test targets, database-only Nix accounting and scoped
   cleanup.

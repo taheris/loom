@@ -15,6 +15,7 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+# shellcheck source=scripts/quint-output.sh
 source "$root/scripts/quint-output.sh"
 
 must_fail() {
@@ -42,7 +43,7 @@ copy_inputs() {
   cp -r "$root/specs/gate" "$tmp/source/specs/"
   cp "$root/specs/gate.md" "$root/specs/verify.md" "$root/specs/evidence.md" "$root/specs/simulation.md" "$tmp/source/specs/"
   cp "$root/scripts/test-quint-model.sh" "$root/scripts/test-quint.sh" "$root/scripts/quint-output.sh" "$tmp/source/scripts/"
-  cp "$root/tests/quint/model-harness.sh" "$root/tests/quint/mutations.py" "$tmp/source/tests/quint/"
+  cp "$root/tests/quint/model-harness.sh" "$tmp/source/tests/quint/"
   cp "$root/nix/flake/quint.nix" "$tmp/source/nix/flake/"
   cp "$root/nix/quint/tools.nix" "$root/nix/quint/checker.rs" "$root/nix/quint/witnesses.rs" "$tmp/source/nix/quint/"
   cp "$root/nix/cargo-home.nix" "$tmp/source/nix/"
@@ -61,11 +62,11 @@ if [[ "$1" == typecheck ]]; then
 fi
 SH
   env PATH="$tmp/bin:$PATH" LOOM_REAL_QUINT="$real_quint" LOOM_QUINT_CAPTURE="$tmp/witness-ir.json" \
-    "$BASH" "$root/scripts/test-quint.sh" reference-equivalence >"$tmp/receipt.json"
+    "$BASH" "$root/scripts/test-quint.sh" routine >"$tmp/receipt.json"
   rm "$tmp/bin/quint"
   # Exercise the stdout framing consumed by Gate, not just whole-document JSON.
   [[ "$(wc -l <"$tmp/receipt.json")" -eq 1 ]]
-  jq -e '.scenario == "reference-equivalence" and .tests == 113 and
+  jq -e '.scenario == "routine" and .tests == 113 and
     .completedSeeds == [42,20250308] and .exhaustive == null and
     .plan.traces == 64 and .plan.steps == 80 and (.identity | length) == 64' "$tmp/receipt.json" >/dev/null
 }
@@ -114,7 +115,7 @@ test_native_witness_runner_matches_cli() {
 }
 
 test_model_mutations() {
-  python3 "$root/tests/quint/mutations.py" "$tmp/witness-ir.json" \
+  loom-verification quint-mutations "$tmp/witness-ir.json" \
     "$LOOM_QUINT_PACKAGE/share/quint/rust-evaluator-v0.7.1/quint_evaluator" "$tmp/failed-mutation-input.json"
 }
 

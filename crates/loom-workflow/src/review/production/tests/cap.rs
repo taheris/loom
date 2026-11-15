@@ -3,38 +3,48 @@ mod admission;
 
 #[cfg(test)]
 mod tests {
-    use loom_driver::bd::{CreateOpts, IssueType, ReadyOpts, Status};
-    use loom_gate::Tier;
-
     use super::super::*;
+    use loom_gate::Tier;
+    use loom_issues::{
+        memory::Backend,
+        task::{Create, Guard, Kind as IssueType, Label, Ready, Relation, Status, Update},
+    };
 
     pub(super) use crate::test_support::{IsolatedBeads, client as isolated_client};
 
-    pub(super) async fn children(bd: &BdClient<IsolatedBeads>, parent: &BeadId) -> Vec<Bead> {
-        bd.list(ListOpts {
-            all: true,
+    pub(super) async fn children<T: loom_issues::tracking::Store>(
+        bd: &T,
+        parent: &BeadId,
+    ) -> Vec<Bead> {
+        bd.query(Query {
             limit: Some(0),
             parent: Some(parent.clone()),
-            ..ListOpts::default()
+            ..Query::default()
         })
         .await
         .expect("children")
+    }
+
+    async fn store(root: &Path) -> Backend {
+        loom_driver::git::initialize_snapshot(root, &loom_driver::clock::SystemClock::new())
+            .await
+            .unwrap();
+        Backend::default()
     }
 
     #[tokio::test]
     async fn integrity_cap_decisions_preserve_full_options_and_partial_resolution() {
         use crate::inbox::{build_queue, parse_options_in};
         use crate::r#loop::{AgentOutcome, validate_waiting_outcome};
-
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        let bd = isolated_client(root).await;
+        let bd = store(root).await;
         let parent = bd
-            .create(CreateOpts {
+            .create(Create {
                 title: "cap root".into(),
-                issue_type: Some(IssueType::Epic),
-                labels: vec!["spec:gate".into()],
-                ..CreateOpts::default()
+                kind: Some(IssueType::Epic),
+                labels: vec![Label::new("spec:gate").unwrap()],
+                ..Create::default()
             })
             .await
             .unwrap();
@@ -107,7 +117,7 @@ mod tests {
         for finding in &findings {
             assert!(recovery_context.contains(&finding.clarify_options().unwrap()));
         }
-        let epic_before = bd.show(&parent).await.unwrap();
+        let epic_before = bd.get(&parent).await.unwrap();
         let mut controller = ProductionReviewController::new(
             bd,
             SpecLabel::new("gate").unwrap(),
@@ -180,11 +190,11 @@ mod tests {
                 provider.description
             );
         }
-        assert_eq!(controller.bd.show(&parent).await.unwrap(), epic_before);
+        assert_eq!(controller.bd.get(&parent).await.unwrap(), epic_before);
         assert_eq!(
             controller
                 .bd
-                .dependency_snapshot(&parent)
+                .graph(&parent)
                 .await
                 .unwrap()
                 .active_blockers(),
@@ -196,14 +206,14 @@ mod tests {
         for decision in [&first, &second] {
             let id = controller
                 .bd
-                .create(CreateOpts {
+                .create(Create {
                     title: "explicitly bound follow-up".into(),
                     parent: Some(parent.clone()),
-                    ..CreateOpts::default()
+                    ..Create::default()
                 })
                 .await
                 .unwrap();
-            let decision_bead = controller.bd.show(decision).await.unwrap();
+            let decision_bead = controller.bd.get(decision).await.unwrap();
             let encoded = decision_bead.metadata["loom.integrity_decision"]
                 .as_str()
                 .unwrap();
@@ -231,7 +241,7 @@ mod tests {
                 .unwrap();
             crate::mint::acceptance::admit_follow_up(
                 &controller.bd,
-                &controller.bd.show(&id).await.unwrap(),
+                &controller.bd.get(&id).await.unwrap(),
                 &crate::mint::acceptance::FollowUp {
                     source: batch,
                     goals: loom_protocol::acceptance::GoalReferences::new(vec![reference]).unwrap(),
@@ -240,20 +250,14 @@ mod tests {
             )
             .await
             .unwrap();
-            controller.bd.dep_add(&id, decision).await.unwrap();
             controller
                 .bd
-                .update(
-                    decision,
-                    UpdateOpts {
-                        set_metadata: vec![("loom.decision_candidate".into(), serde_json::json!({
-                    "version": 1, "producer": parent, "root": parent, "affected_work": [id]
-                }).to_string())],
-                        ..UpdateOpts::default()
-                    },
-                )
+                .relate(&id, decision, Relation::Blocks)
                 .await
                 .unwrap();
+            controller.bd.update(decision, Update {
+                set_metadata: [("loom.decision_candidate".into(), serde_json::json!({"version": 1, "producer": parent, "root": parent, "affected_work": [id]}).to_string().into())].into(), ..Update::default()
+            }, Guard::None).await.unwrap();
             assert!(matches!(
                 validate_waiting_outcome(&controller.bd, &id, AgentOutcome::WaitingRequested)
                     .await
@@ -264,16 +268,17 @@ mod tests {
         }
         let mut bound_remediation = Vec::new();
         for bead in &remediation {
-            bound_remediation.push(controller.bd.show(&bead.id).await.unwrap());
+            bound_remediation.push(controller.bd.get(&bead.id).await.unwrap());
         }
         controller
             .bd
             .update(
                 &first,
-                UpdateOpts {
+                Update {
                     notes: Some("Human chose repair; implementation still required".into()),
-                    ..UpdateOpts::default()
+                    ..Update::default()
                 },
+                Guard::None,
             )
             .await
             .unwrap();
@@ -282,34 +287,34 @@ mod tests {
             .close(&first, Some("human intent resolved"))
             .await
             .unwrap();
-        let answered = controller.bd.show(&first).await.unwrap();
+        let answered = controller.bd.get(&first).await.unwrap();
         controller.apply_integrity_clarify(&findings).await.unwrap();
-        assert_eq!(controller.bd.show(&first).await.unwrap(), answered);
+        assert_eq!(controller.bd.get(&first).await.unwrap(), answered);
         assert_eq!(controller.iteration_count().await.unwrap(), 3);
         let after = children(&controller.bd, &parent).await;
         assert_eq!(build_queue(&after, None, None, true).len(), 4);
         let ready = controller
             .bd
-            .ready(ReadyOpts {
+            .ready(Ready {
                 limit: Some(0),
                 parent: Some(parent.clone()),
-                ..ReadyOpts::default()
+                ..Ready::default()
             })
             .await
             .unwrap();
         assert!(ready.iter().any(|bead| bead.id == work[0]));
         assert!(!ready.iter().any(|bead| bead.id == work[1]));
         assert_eq!(
-            controller.bd.show(&work[0]).await.unwrap().status,
+            controller.bd.get(&work[0]).await.unwrap().status,
             Status::Open
         );
         assert_eq!(
-            controller.bd.show(&second).await.unwrap().status,
+            controller.bd.get(&second).await.unwrap().status,
             Status::Blocked
         );
         for bead in bound_remediation {
             assert_eq!(
-                controller.bd.show(&bead.id).await.unwrap(),
+                controller.bd.get(&bead.id).await.unwrap(),
                 bead,
                 "decision answers cannot resolve remediation"
             );
@@ -346,12 +351,12 @@ mod tests {
         for issue_type in [IssueType::Task, IssueType::Bug] {
             let dir = tempfile::tempdir().unwrap();
             let root = dir.path();
-            let bd = isolated_client(root).await;
+            let bd = store(root).await;
             let parent = bd
-                .create(CreateOpts {
+                .create(Create {
                     title: "cap root".into(),
-                    issue_type: Some(IssueType::Epic),
-                    ..CreateOpts::default()
+                    kind: Some(IssueType::Epic),
+                    ..Create::default()
                 })
                 .await
                 .unwrap();
@@ -371,31 +376,28 @@ mod tests {
                 .unwrap()
                 .resolve(DispatchScope::PushGate, &validator)
                 .unwrap();
-            let record = serde_json::json!({
-                "work_root": parent,
-                "finding": finding.clone().into_raw(),
-                "disposition": "candidate"
-            });
+            let record = serde_json::json!({"work_root": parent, "finding": finding.clone().into_raw(), "disposition": "candidate"});
             let legacy = bd
-                .create(CreateOpts {
+                .create(Create {
                     title: "persisted mislabeled cap candidate".into(),
-                    issue_type: Some(issue_type),
+                    kind: Some(issue_type),
                     status: Some(Status::Blocked),
                     parent: Some(parent.clone()),
                     notes: Some("Human context must survive failed admission".into()),
-                    labels: vec![format!("decision:integrity:{}", finding.hash())],
-                    metadata: Some(
-                        serde_json::json!({
-                            "loom.integrity_decision": serde_json::to_string(&record).unwrap()
-                        })
-                        .to_string(),
-                    ),
-                    ..CreateOpts::default()
+                    labels: vec![
+                        Label::new(format!("decision:integrity:{}", finding.hash())).unwrap(),
+                    ],
+                    metadata: [(
+                        "loom.integrity_decision".into(),
+                        serde_json::to_string(&record).unwrap().into(),
+                    )]
+                    .into(),
+                    ..Create::default()
                 })
                 .await
                 .unwrap();
             let before = children(&bd, &parent).await;
-            let epic_before = bd.show(&parent).await.unwrap();
+            let epic_before = bd.get(&parent).await.unwrap();
             let error = crate::mint::integrity::escalate(
                 &bd,
                 &crate::r#loop::DecisionWaitJournal::new(root),
@@ -412,7 +414,7 @@ mod tests {
                 "{error}"
             );
             assert_eq!(children(&bd, &parent).await, before);
-            assert_eq!(bd.show(&parent).await.unwrap(), epic_before);
+            assert_eq!(bd.get(&parent).await.unwrap(), epic_before);
         }
     }
 
@@ -420,12 +422,12 @@ mod tests {
     async fn integrity_cap_refuses_duplicate_decisions_before_new_queue_effects() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        let bd = isolated_client(root).await;
+        let bd = store(root).await;
         let parent = bd
-            .create(CreateOpts {
+            .create(Create {
                 title: "cap root".into(),
-                issue_type: Some(IssueType::Epic),
-                ..CreateOpts::default()
+                kind: Some(IssueType::Epic),
+                ..Create::default()
             })
             .await
             .unwrap();
@@ -450,17 +452,17 @@ mod tests {
         .await
         .unwrap();
         let existing = children(&bd, &parent).await.remove(0);
-        let existing = bd.show(&existing.id).await.unwrap();
+        let existing = bd.get(&existing.id).await.unwrap();
         let duplicate = bd
-            .create(CreateOpts {
-                issue_type: Some(IssueType::Decision),
+            .create(Create {
+                kind: Some(IssueType::Decision),
                 title: "duplicate indexed decision".into(),
                 status: Some(Status::Blocked),
                 parent: Some(parent.clone()),
                 description: existing.description.clone(),
-                labels: existing.labels.iter().map(ToString::to_string).collect(),
-                metadata: Some(serde_json::to_string(&existing.metadata).unwrap()),
-                ..CreateOpts::default()
+                labels: existing.labels.clone(),
+                metadata: existing.metadata.clone(),
+                ..Create::default()
             })
             .await
             .unwrap();

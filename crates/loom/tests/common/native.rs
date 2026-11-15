@@ -33,6 +33,7 @@ pub fn fixture(system: &str) -> tempfile::TempDir {
         checked = import ./verification.nix;
         source = checked.resource {{ root = ./.; origin = "README.md"; }};
       in {{ checks.{system}.heading = checked.check {{
+        runtime = "native-process";
         resources = [ source ];
         evaluation = map (origin: checked.resource {{ root = ./.; inherit origin; }}) [ "flake.nix" "verification.nix" ];
         build = sources: builtins.derivation {{

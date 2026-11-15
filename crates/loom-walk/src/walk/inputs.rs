@@ -111,6 +111,7 @@ pub(super) const MEMBER_CRATES: &[&str] = &[
     "loom-templates",
     "loom-test-support",
     "loom-walk",
+    "loom-verification",
 ];
 
 /// Obtain input metadata from the same definition used for dispatch.

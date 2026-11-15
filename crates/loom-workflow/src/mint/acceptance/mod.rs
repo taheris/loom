@@ -7,8 +7,11 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use displaydoc::Display;
-use loom_driver::bd::{BdClient, BdError, Bead, CommandRunner, IssueType, Status, UpdateOpts};
 use loom_driver::identifier::BeadId;
+use loom_issues::{
+    task::{Guard, Kind as IssueType, Record as Bead, Status, Update},
+    tracking::{Error as TrackingError, Store},
+};
 use loom_protocol::acceptance::{
     Candidates, FindingHash, GoalReference, GoalReferences, METADATA_KEY, ParseError,
 };
@@ -48,8 +51,8 @@ pub use loom_protocol::acceptance::dispatch::{Goal, Remediation as Resolved};
 
 #[derive(Debug, Display, Error)]
 pub enum Error {
-    /// Beads failed while resolving finding acceptance
-    Bd(#[from] BdError),
+    /// tracking failed while resolving finding acceptance
+    Tracking(#[from] TrackingError),
     /// malformed finding acceptance or batch provenance
     Json(#[from] serde_json::Error),
     /// invalid finding-goal reference set
@@ -92,7 +95,7 @@ pub(super) fn batch_update(
     work_root: &BeadId,
     findings: &[Finding],
     previous: Option<&Bead>,
-) -> Result<UpdateOpts, Error> {
+) -> Result<Update, Error> {
     let mut batch = if let Some(previous) = previous {
         let (batch, _) = assigned_batch(previous)?;
         if batch.work_root != *work_root || previous.id != *task {
@@ -136,15 +139,21 @@ pub(super) fn batch_update(
             .collect(),
     )?;
     batch.attribution.insert(task.clone(), assigned.clone());
-    Ok(UpdateOpts {
-        set_metadata: vec![
-            (BATCH_KEY.into(), serde_json::to_string(&batch)?),
+    Ok(Update {
+        set_metadata: [
+            (
+                BATCH_KEY.into(),
+                serde_json::Value::String(serde_json::to_string(&batch)?),
+            ),
             (
                 METADATA_KEY.into(),
-                serde_json::to_string(&Candidates::Remediation { goals: assigned })?,
+                serde_json::Value::String(serde_json::to_string(&Candidates::Remediation {
+                    goals: assigned,
+                })?),
             ),
-        ],
-        ..UpdateOpts::default()
+        ]
+        .into(),
+        ..Update::default()
     })
 }
 
@@ -152,16 +161,17 @@ pub(super) fn batch_update(
 ///
 /// # Errors
 /// Rejects missing or changed task purpose, attribution and batch membership.
-pub(super) fn promotion_update(task: &Bead) -> Result<UpdateOpts, Error> {
+pub(super) fn promotion_update(task: &Bead) -> Result<Update, Error> {
     let (_, goals) = assigned_batch(task)?;
-    Ok(UpdateOpts {
+    Ok(Update {
         status: Some(Status::Open),
-        remove_labels: vec![super::DEFERRED_LABEL.into()],
-        set_metadata: vec![(
+        remove_labels: vec![crate::tracking::label(super::DEFERRED_LABEL)?],
+        set_metadata: [(
             METADATA_KEY.into(),
-            serde_json::to_string(&Candidates::Remediation { goals })?,
-        )],
-        ..UpdateOpts::default()
+            serde_json::Value::String(serde_json::to_string(&Candidates::Remediation { goals })?),
+        )]
+        .into(),
+        ..Update::default()
     })
 }
 
@@ -196,14 +206,10 @@ fn assigned_batch(task: &Bead) -> Result<(Batch, GoalReferences), Error> {
     Ok((batch, goals))
 }
 
-async fn load_batch<R: CommandRunner>(
-    bd: &BdClient<R>,
-    id: &BeadId,
-    task: &Bead,
-) -> Result<Batch, Error> {
-    let bead = bd.show(id).await?;
+async fn load_batch<T: Store>(bd: &T, id: &BeadId, task: &Bead) -> Result<Batch, Error> {
+    let bead = bd.get(id).await?;
     let batch: Batch = read(&bead, BATCH_KEY)?;
-    let root = bd.show(&batch.work_root).await?;
+    let root = bd.get(&batch.work_root).await?;
     if bead.issue_type != IssueType::Task
         || bead.parent.as_ref() != Some(&batch.work_root)
         || task.issue_type != IssueType::Task
@@ -223,8 +229,8 @@ async fn load_batch<R: CommandRunner>(
 ///
 /// # Errors
 /// Missing membership/attribution, empty evidence, collisions and stale targets reject the whole set.
-pub async fn resolve<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub async fn resolve<T: Store>(
+    bd: &T,
     task: &Bead,
     references: &GoalReferences,
     workspace: &Path,
@@ -238,8 +244,8 @@ enum Coverage {
     Subset,
 }
 
-async fn resolve_references<R: CommandRunner>(
-    bd: &BdClient<R>,
+async fn resolve_references<T: Store>(
+    bd: &T,
     task: &Bead,
     references: &GoalReferences,
     workspace: &Path,
@@ -324,8 +330,8 @@ fn same_goals(left: &GoalReferences, right: &GoalReferences) -> bool {
 ///
 /// # Errors
 /// Rejects ordinary-purpose conversion, unrelated sources, stale targets and incompatible replays.
-pub async fn admit_follow_up<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub async fn admit_follow_up<T: Store>(
+    bd: &T,
     task: &Bead,
     proposal: &FollowUp,
     workspace: &Path,
@@ -347,7 +353,7 @@ pub async fn admit_follow_up<R: CommandRunner>(
             ));
         }
     }
-    let source = bd.show(&proposal.source).await?;
+    let source = bd.get(&proposal.source).await?;
     let Candidates::Remediation { goals: source_refs } = read(&source, METADATA_KEY)? else {
         return Err(Error::Invalid(
             "follow-up source is ordinary implementation work".into(),
@@ -394,25 +400,32 @@ pub async fn admit_follow_up<R: CommandRunner>(
     for (id, batch) in batches {
         bd.update(
             &id,
-            UpdateOpts {
-                set_metadata: vec![(BATCH_KEY.into(), serde_json::to_string(&batch)?)],
-                ..UpdateOpts::default()
+            Update {
+                set_metadata: [(
+                    BATCH_KEY.into(),
+                    serde_json::Value::String(serde_json::to_string(&batch)?),
+                )]
+                .into(),
+                ..Update::default()
             },
+            Guard::None,
         )
         .await?;
     }
     bd.update(
         &task.id,
-        UpdateOpts {
-            set_metadata: vec![(
+        Update {
+            set_metadata: [(
                 METADATA_KEY.into(),
-                serde_json::to_string(&Candidates::Remediation {
+                serde_json::Value::String(serde_json::to_string(&Candidates::Remediation {
                     goals: proposal.goals.clone(),
-                })?,
-            )],
+                })?),
+            )]
+            .into(),
             unset_metadata: vec![FOLLOW_UP_KEY.into()],
-            ..UpdateOpts::default()
+            ..Update::default()
         },
+        Guard::None,
     )
     .await?;
     Ok(())
@@ -422,11 +435,7 @@ pub async fn admit_follow_up<R: CommandRunner>(
 ///
 /// # Errors
 /// Malformed proposals and invalid finding attribution block dispatch.
-pub async fn admit_proposal<R: CommandRunner>(
-    bd: &BdClient<R>,
-    task: &Bead,
-    workspace: &Path,
-) -> Result<(), Error> {
+pub async fn admit_proposal<T: Store>(bd: &T, task: &Bead, workspace: &Path) -> Result<(), Error> {
     let proposal = read(task, FOLLOW_UP_KEY)?;
     admit_follow_up(bd, task, &proposal, workspace).await
 }

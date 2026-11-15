@@ -297,6 +297,7 @@ mod tests {
             image_source: PathBuf::from("/nix/store/zzz-wrix-test-direct.tar"),
             image_source_kind: Some(loom_driver::agent::ImageSourceKind::NixDescriptor),
             wrix_launcher: None,
+            tracking_access: loom_driver::agent::WorkerTrackingAccess::LauncherManaged,
             profile_config: Some(PathBuf::from(
                 "/nix/store/wrix-test-direct-profile-config.json",
             )),

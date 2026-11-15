@@ -583,8 +583,10 @@ for worker feedback.
 <!-- prettier-ignore -->
 - Process death and restart never convert a free lease or missing/reused PID
   into collection authority. Real surviving build processes retain their
-  namespaces until their exact owned process/cgroup generation is confirmed
-  inactive; unknown platform observations retain with diagnostics.
+  namespaces while lifecycle authority is unavailable, including after the
+  descendant finishes; missing platform observations retain with diagnostics.
+  Positive delegated-cgroup reconciliation is an explicit kernel diagnostic,
+  not an ordinary landing prerequisite.
   [system](nix report .#verification-cargo-retention::cargo-retention)
 
 <!-- prettier-ignore -->

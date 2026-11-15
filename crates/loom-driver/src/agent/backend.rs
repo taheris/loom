@@ -40,6 +40,15 @@ pub struct SpawnConfig {
     /// never crosses the Wrix JSON boundary.
     #[serde(skip)]
     pub wrix_launcher: Option<PathBuf>,
+    /// Host-owned adapter composition. In-process tracking cannot be transferred
+    /// to a separate worker; refuse serialization rather than silently selecting Beads.
+    #[serde(
+        default,
+        skip_deserializing,
+        skip_serializing_if = "WorkerTrackingAccess::is_launcher_managed",
+        serialize_with = "WorkerTrackingAccess::serialize_external"
+    )]
+    pub tracking_access: WorkerTrackingAccess,
     /// Wrix `ProfileConfig` path selected from the same manifest entry as
     /// [`SpawnConfig::image_ref`]. Host-side backends pass it as a launcher
     /// flag rather than serializing it into the spawn-config JSON; the
@@ -229,6 +238,50 @@ impl SpawnConfig {
             }
         }
         serde_json::from_value(serde_json::Value::Object(payload))
+    }
+}
+
+/// Tracking access selected by the trusted host adapter composition.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum WorkerTrackingAccess {
+    /// The existing authenticated launcher owns shared tracker transport and secrets.
+    #[default]
+    LauncherManaged,
+    /// Shared handles are valid only inside the current process; no database is required.
+    InProcess,
+}
+
+impl WorkerTrackingAccess {
+    /// Reject external launch when only same-process shared handles are available.
+    ///
+    /// # Errors
+    /// In-process stores cannot be reached by a separately launched worker.
+    pub const fn require_external(self) -> Result<(), ProtocolError> {
+        match self {
+            Self::LauncherManaged => Ok(()),
+            Self::InProcess => Err(ProtocolError::Unsupported),
+        }
+    }
+
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "Serde requires a reference-taking field serialization predicate"
+    )]
+    const fn is_launcher_managed(&self) -> bool {
+        matches!(self, Self::LauncherManaged)
+    }
+
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "Serde passes a reference to the field to its serializer"
+    )]
+    fn serialize_external<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::LauncherManaged => serializer.serialize_unit(),
+            Self::InProcess => Err(serde::ser::Error::custom(
+                "in-process tracking cannot cross an external worker launch boundary",
+            )),
+        }
     }
 }
 
@@ -460,6 +513,7 @@ mod tests {
             image_source: PathBuf::from("/nix/store/zzz-wrix-test.tar"),
             image_source_kind: Some(ImageSourceKind::NixDescriptor),
             wrix_launcher: None,
+            tracking_access: WorkerTrackingAccess::LauncherManaged,
             profile_config: None,
             workspace: PathBuf::from("/workspace"),
             env: vec![("WRIX_AGENT".into(), "pi".into())],
@@ -613,6 +667,38 @@ mod tests {
     }
 
     /// An absent model preserves the wire shape expected by older launchers.
+    #[test]
+    fn in_process_tracking_cannot_be_silently_serialized_as_launcher_managed() {
+        let mut config = sample_config(None);
+        let native = config.to_wrix_json().unwrap();
+        assert!(
+            native["extensions"]["loom"]
+                .get("tracking_access")
+                .is_none()
+        );
+        assert!(config.tracking_access.require_external().is_ok());
+        config.tracking_access = WorkerTrackingAccess::InProcess;
+        assert!(matches!(
+            config.tracking_access.require_external(),
+            Err(ProtocolError::Unsupported)
+        ));
+        assert!(
+            config
+                .to_wrix_json()
+                .unwrap_err()
+                .to_string()
+                .contains("in-process tracking")
+        );
+        assert!(serde_json::to_vec(&config).is_err());
+        assert!(matches!(
+            crate::scratch::runtime::Config::write(
+                Path::new("/must-not-open-tracking-fixture"),
+                &config
+            ),
+            Err(ProtocolError::Unsupported)
+        ));
+    }
+
     #[test]
     fn spawn_config_with_model_none_omits_model_key() {
         let cfg = sample_config(None);

@@ -5,8 +5,7 @@
 use std::path::Path;
 use std::process::{Command, Output};
 
-#[path = "common/checked.rs"]
-mod checked;
+use super::checked;
 use checked::{TARGET, fixture, native, write};
 
 fn command(root: &Path, lane: &str, scope: &[&str]) -> Command {
@@ -531,6 +530,7 @@ source = checked.resource {{
   filter = path: type: type == "directory" || path == toString (./. + "/README.md");
 }};
 in {{ {namespace}.{system}.native = checked.check {{
+      runtime = "native-process";
 resources = [ source ];
 build = sources: builtins.derivation {{
   name = "loom-cli-native-checked"; system = "{system}"; builder = {builder};
@@ -645,6 +645,7 @@ fn hook_configuration_consumer(root: &Path) {
         filter = path: type: type == "directory" || builtins.match ".*[.]nix" (toString path) != null;
       }};
     in {{ checks.{system}.configuration = checked.check {{
+      runtime = "native-process";
       resources = [ runtime ]; evaluation = [ evaluator ];
       build = sources: builtins.derivation {{
         name = "loom-hook-configuration"; system = "{system}";

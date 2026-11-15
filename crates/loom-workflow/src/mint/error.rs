@@ -21,6 +21,9 @@ pub enum MintError {
     /// bd CLI failure while minting findings
     Bd(#[from] BdError),
 
+    /// tracking operation failed while minting findings
+    Tracking(#[from] loom_issues::tracking::Error),
+
     /// spec → epic resolution failed while minting findings
     Resolve(#[from] ResolveError),
 

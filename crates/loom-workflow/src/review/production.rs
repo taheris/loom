@@ -1,6 +1,6 @@
 //! Production [`ReviewController`] used by the `loom review` binary.
 //!
-//! Wires `BdClient` for spec-bead snapshots and clarify,
+//! Wires the configured tracking adapter for snapshots and clarification,
 //! `tokio::process::Command` shell-outs for `git push`, `wrix beads push`, and
 //! the auto-iterate `loom loop` handoff, and a caller-provided dispatch
 //! closure for the reviewer agent invocation. The closure pattern keeps
@@ -23,7 +23,9 @@ use std::time::{Duration, SystemTime};
 
 use askama::Template;
 use loom_driver::agent::{AgentRuntime, ProtocolError, SessionOutcome, SpawnConfig};
-use loom_driver::bd::{BdClient, BdError, Bead, CommandRunner, ListOpts, TokioRunner, UpdateOpts};
+use loom_driver::bd::{BdClient, Bead, TokioRunner};
+#[cfg(test)]
+use loom_driver::bd::{BdError, CommandRunner};
 use loom_driver::clock::{Clock, SystemClock};
 use loom_driver::config::{LoomConfig, Phase, SkillsConfig, SuppressionConfig};
 use loom_driver::git::GitClient;
@@ -40,6 +42,12 @@ use loom_gate::{
     GateSuccess, HandoffEvidence, InputResolver, IntegrityFinding, MarkerProof, TierCwds,
     VerifiedScope, annotation, append_gate_run_lifecycle_events, integrity,
     parse_gate_runs_from_jsonl,
+};
+#[cfg(test)]
+use loom_issues::tracking::Store;
+use loom_issues::{
+    task::{Guard, Query, Update},
+    tracking::{Error as TrackingError, Synchronization},
 };
 use loom_templates::previous_failure::PreviousFailure;
 use loom_templates::review::{ReviewContext, ReviewLane};
@@ -100,15 +108,14 @@ fn pre_commit_config_digest(workspace: &Path) -> Result<String, ReviewError> {
     Ok(blake3::hash(&bytes).to_hex().to_string())
 }
 
-pub struct ProductionReviewController<S, F, R: CommandRunner = TokioRunner>
+pub struct ProductionReviewController<S, F, T: crate::tracking::Adapter = BdClient<TokioRunner>>
 where
     S: Fn(SpawnConfig) -> F + Send + Sync,
     F: std::future::Future<Output = Result<(SessionOutcome, String), ProtocolError>> + Send,
 {
-    bd: BdClient<R>,
+    bd: T,
     label: SpecLabel,
     loom_bin: PathBuf,
-    wrix_bin: PathBuf,
     workspace: PathBuf,
     state: Arc<CacheDb>,
     manifest: Arc<ProfileImageManifest>,
@@ -199,7 +206,7 @@ fn review_dispatch_scope_pin(scope: DispatchScope, range: Option<&str>) -> Strin
     }
 }
 
-impl<S, F, R: CommandRunner> ProductionReviewController<S, F, R>
+impl<S, F, T: crate::tracking::Adapter> ProductionReviewController<S, F, T>
 where
     S: Fn(SpawnConfig) -> F + Send + Sync,
     F: std::future::Future<Output = Result<(SessionOutcome, String), ProtocolError>> + Send,
@@ -217,7 +224,7 @@ where
 
     #[expect(clippy::too_many_arguments, reason = "controller construction surface")]
     pub fn new(
-        bd: BdClient<R>,
+        bd: T,
         label: SpecLabel,
         loom_bin: PathBuf,
         workspace: PathBuf,
@@ -230,7 +237,6 @@ where
             bd,
             label,
             loom_bin,
-            wrix_bin: PathBuf::from("wrix"),
             workspace,
             state,
             manifest,
@@ -278,12 +284,6 @@ where
     #[must_use]
     pub const fn with_agent_runtime(mut self, runtime: AgentRuntime) -> Self {
         self.runtime = runtime;
-        self
-    }
-
-    #[must_use]
-    pub fn with_wrix_bin(mut self, wrix_bin: PathBuf) -> Self {
-        self.wrix_bin = wrix_bin;
         self
     }
 
@@ -429,12 +429,6 @@ where
 
     /// Push gate delegates Beads publication to Wrix, which owns the
     /// server-backed branch synchronization protocol.
-    fn beads_push_command(&self) -> Command {
-        let mut cmd = Command::new(&self.wrix_bin);
-        cmd.current_dir(&self.workspace).arg("beads").arg("push");
-        cmd
-    }
-
     /// Resolve the spec's open epic via `bd find --type=epic
     /// --label=spec:<X> --status=open`. The at-most-one-open-epic-per-spec
     /// invariant collapses resolution into this single query — no state
@@ -522,10 +516,10 @@ where
     async fn build_review_prompt(&self) -> Result<BuiltReviewPrompt, ReviewError> {
         let beads = self
             .bd
-            .list(ListOpts {
+            .query(Query {
                 statuses: Vec::new(),
-                label: Some(self.spec_label_filter()),
-                ..ListOpts::default()
+                label: Some(crate::tracking::label(&self.spec_label_filter())?),
+                ..Query::default()
             })
             .await?;
         let molecule_id = if self.inspection_scope.is_some() {
@@ -808,7 +802,7 @@ fn exit_signal_from_walk(walk: &WalkOutput) -> Option<ExitSignal> {
     }
 }
 
-impl<S, F, R: CommandRunner> ReviewController for ProductionReviewController<S, F, R>
+impl<S, F, T: crate::tracking::Adapter> ReviewController for ProductionReviewController<S, F, T>
 where
     S: Fn(SpawnConfig) -> F + Send + Sync,
     F: std::future::Future<Output = Result<(SessionOutcome, String), ProtocolError>> + Send,
@@ -843,6 +837,7 @@ where
         let skill_session = built_prompt
             .skill_plan
             .materialize(scratch.path(), &self.workspace)?;
+        crate::tracking::configure_worker(&self.bd, &mut spawn_config)?;
         spawn_config.skills = Some(skill_session.registered);
         spawn_config.event_metadata = Some(AgentStartMetadata {
             title: banner,
@@ -950,10 +945,10 @@ where
     async fn list_spec_beads(&mut self) -> Result<Vec<Bead>, ReviewError> {
         let beads = self
             .bd
-            .list(ListOpts {
+            .query(Query {
                 statuses: Vec::new(),
-                label: Some(self.spec_label_filter()),
-                ..ListOpts::default()
+                label: Some(crate::tracking::label(&self.spec_label_filter())?),
+                ..Query::default()
             })
             .await?;
         Ok(beads)
@@ -980,12 +975,13 @@ where
             self.bd
                 .update(
                     &bead.id,
-                    UpdateOpts {
+                    Update {
                         status: Some(loom_driver::bd::Status::Blocked),
-                        add_labels: vec!["loom:blocked".to_string()],
+                        add_labels: vec![crate::tracking::label("loom:blocked")?],
                         notes: Some(push_refusal_note(bead.notes.as_deref(), cause)),
-                        ..UpdateOpts::default()
+                        ..Update::default()
                     },
+                    Guard::None,
                 )
                 .await?;
             self.emit_driver_event(
@@ -1072,7 +1068,9 @@ where
             .resolve_molecule_id()
             .await?
             .ok_or_else(|| ReviewError::NoActiveMolecule(self.label.to_string()))?;
-        let parent = BeadId::new(molecule.as_str()).map_err(BdError::CreateInvalidId)?;
+        let parent = BeadId::new(molecule.as_str()).map_err(|error| TrackingError::Rejected {
+            reason: error.to_string(),
+        })?;
         let validator = WorkspaceFindingValidator::new(&self.workspace);
         crate::mint::integrity::escalate(
             &self.bd,
@@ -1184,20 +1182,15 @@ where
         Ok(())
     }
 
-    async fn beads_push(&mut self) -> Result<(), ReviewError> {
-        let output = self.beads_push_command().output().await?;
-        if !output.status.success() {
-            return Err(ReviewError::BeadsPushFailed(
-                String::from_utf8_lossy(&output.stderr).into_owned(),
-            ));
-        }
+    async fn publish_tracking(&mut self) -> Result<(), ReviewError> {
+        self.bd.synchronize(Synchronization::Publish).await?;
         Ok(())
     }
 
     async fn show_bead(&mut self, id: &BeadId) -> Result<Option<Bead>, ReviewError> {
-        match self.bd.show(id).await {
+        match self.bd.get(id).await {
             Ok(bead) => Ok(Some(bead)),
-            Err(BdError::ShowEmpty) => Ok(None),
+            Err(TrackingError::NotFound { .. }) => Ok(None),
             Err(e) => Err(e.into()),
         }
     }
@@ -1205,9 +1198,9 @@ where
     async fn list_children(&mut self, parent: &BeadId) -> Result<Vec<Bead>, ReviewError> {
         let beads = self
             .bd
-            .list(ListOpts {
+            .query(Query {
                 parent: Some(parent.clone()),
-                ..ListOpts::default()
+                ..Query::default()
             })
             .await?;
         Ok(beads)
@@ -1344,12 +1337,12 @@ mod tests {
     use loom_driver::bd::RunOutput;
     use loom_driver::identifier::MoleculeId;
     use loom_driver::testing::epic_fixture;
-    use std::ffi::OsStr;
     use std::future::Ready;
 
     type SpawnFuture = Ready<Result<(SessionOutcome, String), ProtocolError>>;
     type NoopSpawn = fn(SpawnConfig) -> SpawnFuture;
-    type NoopController = ProductionReviewController<NoopSpawn, SpawnFuture, ScriptedBd>;
+    type NoopController =
+        ProductionReviewController<NoopSpawn, SpawnFuture, loom_issues::memory::Backend>;
 
     fn noop_spawn(_cfg: SpawnConfig) -> SpawnFuture {
         std::future::ready(Ok((
@@ -1662,11 +1655,8 @@ mod tests {
         }
     }
 
-    fn no_beads_bd() -> BdClient<ScriptedBd> {
-        BdClient::with_runner(ScriptedBd::new([
-            ok_stdout(b"[]".to_vec()),
-            ok_stdout(b"[]".to_vec()),
-        ]))
+    fn no_beads_bd() -> loom_issues::memory::Backend {
+        loom_issues::memory::Backend::default()
     }
 
     fn scripted_controller(
@@ -1674,7 +1664,7 @@ mod tests {
         label: &str,
         state: Arc<CacheDb>,
         responses: impl IntoIterator<Item = Vec<u8>>,
-    ) -> ProductionReviewController<NoopSpawn, SpawnFuture, ScriptedBd> {
+    ) -> ProductionReviewController<NoopSpawn, SpawnFuture, BdClient<ScriptedBd>> {
         let manifest = stub_manifest(&workspace);
         ProductionReviewController::new(
             BdClient::with_runner(ScriptedBd::new(responses.into_iter().map(ok_stdout))),
@@ -1703,21 +1693,28 @@ mod tests {
         )
     }
 
-    #[test]
-    fn beads_push_argv_invokes_wrix_beads_push_not_bd_dolt_push() {
+    #[tokio::test]
+    async fn beads_push_argv_invokes_wrix_beads_push_not_bd_dolt_push() {
+        use std::os::unix::fs::PermissionsExt as _;
         let dir = tempfile::tempdir().unwrap();
-        let ctrl = controller(dir.path().to_path_buf());
-        let cmd = ctrl.beads_push_command();
-        let std_cmd = cmd.as_std();
-
+        let program = dir.path().join("wrix");
+        std::fs::write(
+            &program,
+            loom_test_support::bash_script(
+                "set -euo pipefail\n[[ \"$*\" == 'beads push' ]]\npwd > published-from\n",
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let native =
+            BdClient::with_runner(TokioRunner::default().with_publication(&program, dir.path()));
+        native.synchronize(Synchronization::Publish).await.unwrap();
         assert_eq!(
-            std_cmd.get_program(),
-            OsStr::new("wrix"),
-            "push gate must shell out to wrix, not bd",
+            std::fs::read_to_string(dir.path().join("published-from"))
+                .unwrap()
+                .trim(),
+            dir.path().to_str().unwrap()
         );
-        let argv: Vec<&OsStr> = std_cmd.get_args().collect();
-        assert_eq!(argv, [OsStr::new("beads"), OsStr::new("push")]);
-        assert_eq!(std_cmd.get_current_dir(), Some(dir.path()));
     }
 
     #[tokio::test]

@@ -61,6 +61,51 @@ fn repository_files_exclude_only_nontracked_ignored_paths() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn remote_names_preserve_non_origin_remotes_and_errors() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    loom_driver::git::init_test_repo(dir.path())?;
+    assert_eq!(loom_driver::git::read_remote_names(dir.path())?, ["origin"]);
+    git(dir.path(), &["remote", "remove", "origin"])?;
+    assert_eq!(
+        loom_driver::git::read_remote_names(dir.path())?,
+        Vec::<String>::new()
+    );
+    git(
+        dir.path(),
+        &[
+            "remote",
+            "add",
+            "backup",
+            "ssh://example.invalid/repository",
+        ],
+    )?;
+    assert_eq!(loom_driver::git::read_remote_names(dir.path())?, ["backup"]);
+    assert!(loom_driver::git::read_remote_names(&dir.path().join("absent")).is_err());
+    Ok(())
+}
+
+#[test]
+fn fixture_commit_paths_leave_unrelated_files_unstaged() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    loom_driver::git::init_test_repo(dir.path())?;
+    std::fs::write(dir.path().join("selected name"), "selected\n")?;
+    std::fs::write(dir.path().join("unrelated"), "unrelated\n")?;
+    loom_driver::git::commit_paths_in(dir.path(), &["selected name"], "Fixture mutation")?;
+    assert_eq!(
+        git_capture(dir.path(), &["show", "HEAD:selected name"])?,
+        "selected"
+    );
+    assert_eq!(
+        git_capture(dir.path(), &["status", "--porcelain"])?,
+        "?? unrelated"
+    );
+    let head = loom_driver::git::sync_head_commit_sha(dir.path())?;
+    assert!(loom_driver::git::commit_paths_in(dir.path(), &["absent"], "Missing fixture").is_err());
+    assert_eq!(loom_driver::git::sync_head_commit_sha(dir.path())?, head);
+    Ok(())
+}
+
 fn git_command() -> Command {
     let mut command = Command::new("git");
     loom_test_support::scrub_git_local_env(&mut command);

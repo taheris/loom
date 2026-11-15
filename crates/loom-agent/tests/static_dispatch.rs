@@ -70,7 +70,7 @@ fn all_backends_dispatch_through_run_agent() {
 /// → `repo/tests/...`) and the crane build sandbox (the loom workspace
 /// is the staged root, `tests/...` is staged next to it).
 fn mock_pi_path() -> PathBuf {
-    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest_dir = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR"));
     for ancestor in manifest_dir.ancestors() {
         let candidate = ancestor.join("tests/mock-pi/pi.sh");
         if candidate.is_file() {

@@ -11,20 +11,24 @@
   fenix,
   src,
   toolchain ? null,
+  nativeTestInputs ? [ ],
+  nativeTestSources ? [ ],
   cargoToml ? null,
   cargoLock ? null,
   cargoVendorDir ? null,
-  nativeTestInputs ? [ ],
-  nativeTestSources ? [ ],
 }:
 
 let
   inherit (pkgs) lib;
   inherit (lib)
     concatStringsSep
+    getBin
     hasInfix
+    hasPrefix
     hasSuffix
+    removePrefix
     mapAttrsToList
+    optional
     optionalAttrs
     optionalString
     ;
@@ -33,7 +37,19 @@ let
   resolvedToolchain =
     if toolchain != null then toolchain else fenixPkgs.combine [ fenixPkgs.stable.defaultToolchain ];
   craneLib = ((crane.mkLib pkgs).overrideToolchain (_: resolvedToolchain)).overrideScope (
-    import ./nextest-filtering-overlay.nix
+    lib.composeExtensions (import ./nextest-filtering-overlay.nix) (
+      _: previous:
+      optionalAttrs pkgs.stdenv.hostPlatform.isDarwin {
+        mkCargoDerivation =
+          args:
+          previous.mkCargoDerivation (
+            args
+            // {
+              nativeBuildInputs = lib.unique ((args.nativeBuildInputs or [ ]) ++ darwinCompilerHooks);
+            }
+          );
+      }
+    )
   );
 
   # Keep template assets, built-in skills, embedded shell scripts, and snapshots
@@ -44,6 +60,7 @@ let
     || (hasInfix "/loom-templates/templates/" path)
     || (hasInfix "/loom-skill/builtin/" path)
     || (hasInfix "/tests/fixtures/quint/" path)
+    || (hasInfix "/loom-verification/tests/fixtures/" path)
     || (hasSuffix ".sh" path)
     || (hasSuffix ".jsonl" path)
     || (hasSuffix ".snap" path);
@@ -55,18 +72,76 @@ let
     filter = srcFilter;
   };
   cleanedSrc = workspaceSource.path;
+  compilerSource = checked.resource {
+    root = src;
+    name = "loom-test-compiler-source";
+    filter =
+      path: type:
+      let
+        original = if src._isLibCleanSourceWith or false then src.origSrc else src;
+        relative = removePrefix "${toString original}/" path;
+      in
+      type == "directory"
+      || hasPrefix "crates/" relative
+      || builtins.elem relative [
+        "Cargo.toml"
+        "Cargo.lock"
+        "clippy.toml"
+        "rust-toolchain.toml"
+        ".cargo/config.toml"
+        ".config/nextest.toml"
+        ".pre-commit-config.yaml"
+        "nix/verification.nix"
+        "nix/report-supervisor.sh"
+        "nix/private-fixture-tests.sh"
+        "nix/test-scheduling.sh"
+        "nix/flake/apps.nix"
+        "nix/flake/checks.nix"
+        "nix/flake/tests.nix"
+        "nix/native-smoke-nix.nix"
+        "nix/workspace.nix"
+        "bin/pre-push-checks"
+        "scripts/worker-native-preflight.sh"
+        "scripts/run-private-fixture-tests"
+        "scripts/required-test.sh"
+        "tests/fixtures/planning_prompt_interview_modes.md"
+        "tests/fixtures/verifier/sandbox-results.sh"
+        "tests/fixtures/quint/campaign.json"
+        "tests/smoke/spec.md"
+        "tests/mock-pi/pi.sh"
+        "tests/loom/default.nix"
+      ];
+  };
   evaluation = [
     (checked.resource {
       root = src;
       origin = "nix";
     })
   ]
-  ++ lib.optional (builtins.pathExists "${toString src}/rust-toolchain.toml") (
+  ++ optional (builtins.pathExists "${toString src}/rust-toolchain.toml") (
     checked.resource {
       root = src;
       origin = "rust-toolchain.toml";
     }
-  );
+  )
+  # mkDummySrc discovers independent nested workspaces as well as Cargo members.
+  # Retain the real manifest/target inputs when reconstructing compiler graphs.
+  ++
+    optional
+      (
+        let
+          original = if src._isLibCleanSourceWith or false then src.origSrc else src;
+          manifest = "${toString original}/tests/fixtures/catalogue-reuse/Cargo.toml";
+        in
+        builtins.pathExists manifest
+        && (!(src._isLibCleanSourceWith or false) || src.filter manifest "regular")
+      )
+      (
+        checked.resource {
+          root = src;
+          origin = "tests/fixtures/catalogue-reuse";
+        }
+      );
 
   manifestSource = if src._isLibCleanSourceWith or false then src.origSrc else src;
   manifestPath =
@@ -142,17 +217,67 @@ let
         };
       };
 
+  darwinCompilerLibraries = pkgs.runCommand "loom-rustc-driver-libraries" { } ''
+    mkdir -p "$out/lib"
+    for library in ${resolvedToolchain}/lib/librustc_driver-*.dylib; do
+      test -f "$library"
+      ln -s "$library" "$out/lib/$(basename "$library")"
+    done
+  '';
+
+  # Darwin dyld may resolve deduplicated compiler inodes through another store alias.
+  darwinCompilerHooks = optional pkgs.stdenv.hostPlatform.isDarwin (
+    pkgs.makeSetupHook { name = "loom-test-darwin-libraries"; } (
+      pkgs.writeText "loom-test-darwin-libraries.sh" ''
+        export DYLD_LIBRARY_PATH="${darwinCompilerLibraries}/lib"
+      ''
+    )
+  );
+
+  testCompilerHooks =
+    optional pkgs.stdenv.hostPlatform.isLinux (
+      pkgs.makeSetupHook { name = "loom-test-debug-compression"; } (
+        pkgs.writeText "loom-test-debug-compression.sh" ''
+          export NIX_LDFLAGS="''${NIX_LDFLAGS:-} --compress-debug-sections=zlib"
+        ''
+      )
+    )
+    ++ darwinCompilerHooks;
+
   # Preserve the original path for Crane's composed manifest filters. Refiltering
   # an already computed builtins.path fails during cold, read-only evaluation.
-  cargoArtifacts = craneLib.buildDepsOnly (
-    commonArgs
-    // {
-      src = lib.cleanSourceWith {
-        inherit src;
-        name = "loom-cargo-source";
-        filter = srcFilter;
-      };
-    }
+  dependencyArtifacts =
+    CARGO_PROFILE:
+    craneLib.buildDepsOnly (
+      commonArgs
+      // optionalAttrs (CARGO_PROFILE != "release") { inherit CARGO_PROFILE; }
+      # Preserve complete compiler data in Crane's supported archive format;
+      # installing another unpacked target exhausts bounded native stores.
+      // optionalAttrs (CARGO_PROFILE != "release") { installCargoArtifactsMode = "use-zstd"; }
+      // {
+        src = lib.cleanSourceWith {
+          inherit src;
+          name = "loom-cargo-source";
+          filter = srcFilter;
+        };
+      }
+    );
+  cargoArtifacts = dependencyArtifacts "release";
+  testCargoArtifacts = dependencyArtifacts "dev";
+  workspaceLibraries = map (
+    member:
+    let
+      manifest = builtins.fromTOML (builtins.readFile (manifestSource + "/${member}/Cargo.toml"));
+    in
+    manifest.lib.name or (builtins.replaceStrings [ "-" ] [ "_" ] manifest.package.name)
+  ) (builtins.fromTOML (builtins.readFile commonArgs.cargoToml)).workspace.members;
+  writableWorkspaceArtifacts = pkgs.makeSetupHook { name = "loom-writable-workspace-artifacts"; } (
+    pkgs.writeText "loom-writable-workspace-artifacts.sh" ''
+      makeWorkspaceArtifactsWritable() {
+        bash ${./writable-cargo-artifacts.sh} "''${CARGO_TARGET_DIR:-target}" ${lib.escapeShellArgs workspaceLibraries}
+      }
+      preBuildHooks+=(makeWorkspaceArtifactsWritable)
+    ''
   );
 
   # Specs, mock binaries, and any other non-Cargo inputs the tests and
@@ -196,6 +321,7 @@ let
     }) extraResources
   );
   testResources = [ workspaceSource ] ++ extraResources;
+  compilerResources = [ compilerSource ] ++ extraResources;
 
   stagedSrc = pkgs.runCommand "loom-src-with-extras" { } (
     ''
@@ -211,7 +337,8 @@ let
     )
   );
 
-  bin = checked.check {
+  bin = checked.artifact {
+    runtime = "native-process";
     inherit evaluation;
     resources = [ workspaceSource ];
     build =
@@ -220,6 +347,7 @@ let
         commonArgs
         // {
           LOOM_PREK_BIN = "${hookRunner}/bin/prek";
+          LOOM_BUILTIN_SOURCE_ROOT = "${cleanedSrc}/crates/loom-skill";
           inherit cargoArtifacts;
           doCheck = false;
         }
@@ -240,18 +368,22 @@ let
   verificationBuild = checked.cargo {
     inherit craneLib evaluation;
     operation = "build";
-    resources = testResources;
+    runtime = "native-process";
+    resources = [ compilerSource ];
     args = commonArgs // {
       LOOM_PREK_BIN = "${hookRunner}/bin/prek";
-      src = stagedSrc;
+      src = compilerSource.path;
       LOOM_ISSUES_BD_BIN = "${pkgs.beads}/bin/bd";
-      inherit cargoArtifacts;
+      CARGO_PROFILE = "dev";
+      cargoArtifacts = testCompilation;
+      nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ writableWorkspaceArtifacts ];
     };
   };
 
   clippy = checked.cargo {
     inherit craneLib evaluation;
     operation = "lint";
+    runtime = "native-process";
     resources = [ workspaceSource ];
     args = commonArgs // {
       LOOM_PREK_BIN = "${hookRunner}/bin/prek";
@@ -263,6 +395,7 @@ let
   clippyAllTargets = checked.cargo {
     inherit craneLib evaluation;
     operation = "lint-all-targets";
+    runtime = "native-process";
     resources = testResources;
     args = commonArgs // {
       LOOM_PREK_BIN = "${hookRunner}/bin/prek";
@@ -271,34 +404,6 @@ let
       inherit cargoArtifacts;
     };
   };
-
-  checkArgs = commonArgs // {
-    LOOM_PREK_BIN = "${hookRunner}/bin/prek";
-    LOOM_ISSUES_BD_BIN = "${pkgs.beads}/bin/bd";
-    src = stagedSrc;
-    inherit cargoArtifacts;
-    nativeBuildInputs = commonArgs.nativeBuildInputs ++ [
-      pkgs.cacert
-      pkgs.cargo-nextest
-      pkgs.dolt
-      pkgs.flock
-      pkgs.jq
-      pkgs.openssh
-      pkgs.sccache
-    ];
-    GIT_CONFIG_GLOBAL = "${stagedSrc}/tests/fixtures/git/test-gitconfig";
-    SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
-  };
-
-  # Carry explicit metadata/vendor inputs so Crane never reads unrealized stagedSrc.
-  mkCheck =
-    { ... }@overrides:
-    assert !(overrides ? src);
-    checked.check {
-      inherit evaluation;
-      resources = testResources;
-      build = _: craneLib.cargoNextest (checkArgs // overrides);
-    };
 
   nativeSmokeFixture = import ./tests/native-smoke-fixture.nix { inherit pkgs; };
   # Metadata-only query; the supplied compiler closure is rooted below.
@@ -310,24 +415,49 @@ let
     cargoArtifacts = null;
     cargoVendorDir = commonArgs.cargoVendorDir;
   };
-  testInputs = [
-    pkgs.cacert
-    pkgs.cargo-nextest
-    pkgs.dolt
-    pkgs.beads
-    pkgs.flock
-    pkgs.jq
-    pkgs.openssh
-    pkgs.sccache
-    pkgs.nix
-    pkgs.python3
-    hookRunner
-    bin
-  ]
-  ++ nativeTestInputs;
+  testInputs = map getBin (
+    [
+      pkgs.cacert
+      pkgs.cargo-nextest
+      pkgs.dolt
+      pkgs.beads
+      pkgs.flock
+      pkgs.jq
+      pkgs.openssh
+      pkgs.sccache
+      (getBin pkgs.nix)
+      (import ./verification-tool.nix { inherit pkgs; })
+      (getBin pkgs.bash)
+      hookRunner
+      # Integration tests consume the catalogue's actual Cargo-built CLI, not
+      # another release-mode workspace build retained as a runtime dependency.
+    ]
+    ++ nativeTestInputs
+  );
+  # Preparation carries executable/vendor inputs, not the staged test source
+  # graph. Fixtures are cheap offline recipes over these retained tools.
+  preparationInputs = pkgs.closureInfo {
+    rootPaths =
+      testInputs
+      ++ testCompilerHooks
+      ++ queryPackage.nativeBuildInputs
+      ++ queryPackage.buildInputs
+      ++ map lib.getDev (queryPackage.nativeBuildInputs ++ queryPackage.buildInputs)
+      ++ nativeTestSources
+      ++ [
+        queryPackage.stdenv
+        resolvedToolchain
+        pkgs.stdenvNoCC
+        cargoConfig
+        commonArgs.cargoVendorDir
+        cargoArtifacts
+        testCargoArtifacts
+      ];
+  };
   testRegistration = pkgs.closureInfo {
     rootPaths =
       testInputs
+      ++ testCompilerHooks
       ++ queryPackage.nativeBuildInputs
       ++ queryPackage.buildInputs
       ++ [ queryPackage.stdenv ]
@@ -354,25 +484,79 @@ let
         pkgs.stdenvNoCC
         stagedSrc
         cleanedSrc
+        # Re-importing an unregistered source can replace a live test cwd.
+        compilerSource.path
+        testCompilation
         commonArgs.cargoLock
         commonArgs.cargoToml
         cargoConfig
         commonArgs.cargoVendorDir
         cargoArtifacts
+        testCargoArtifacts
         nativeRustFixture
         nativeSmokeFixture
         ./report-supervisor.sh
         ./private-fixture-tests.sh
+        ./test-scheduling.sh
       ];
   };
+
+  checkArgs = commonArgs // {
+    LOOM_PREK_BIN = "${hookRunner}/bin/prek";
+    LOOM_ISSUES_BD_BIN = "${pkgs.beads}/bin/bd";
+    src = stagedSrc;
+    inherit cargoArtifacts;
+    nativeBuildInputs = map getBin (
+      commonArgs.nativeBuildInputs
+      ++ [
+        pkgs.cacert
+        pkgs.cargo-nextest
+        pkgs.dolt
+        pkgs.flock
+        pkgs.jq
+        pkgs.openssh
+        pkgs.sccache
+      ]
+    );
+    GIT_CONFIG_GLOBAL = "${stagedSrc}/tests/fixtures/git/test-gitconfig";
+    SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+  };
+
+  # Carry explicit metadata/vendor inputs so Crane never reads unrealized stagedSrc.
+  mkCheck =
+    { ... }@overrides:
+    assert !(overrides ? src);
+    checked.check {
+      inherit evaluation;
+      resources = testResources;
+      build = _: craneLib.cargoNextest (checkArgs // overrides);
+    };
 
   nextest = checked.cargo {
     inherit craneLib evaluation;
     operation = "test";
-    resources = testResources;
+    runtime = "native-process";
+    resources = compilerResources;
+    compilationInputs =
+      commonArgs.nativeBuildInputs
+      ++ [
+        pkgs.cargo-nextest
+        pkgs.jq
+      ]
+      ++ testCompilerHooks;
     args = checkArgs // {
-      inherit cargoArtifacts;
-      nativeBuildInputs = commonArgs.nativeBuildInputs ++ testInputs;
+      src = compilerSource.path;
+      LOOM_TEST_SOURCE_ROOT = stagedSrc;
+      CARGO_PROFILE = "dev";
+      cargoArtifacts = testCargoArtifacts;
+      nativeBuildInputs =
+        commonArgs.nativeBuildInputs
+        ++ [
+          pkgs.cargo-nextest
+          pkgs.jq
+        ]
+        ++ testCompilerHooks;
+      LOOM_TEST_RUNTIME_PATH = lib.makeBinPath testInputs;
       LOOM_TEST_NIX_REGISTRATION = "${testRegistration}/registration";
       LOOM_TEST_NIX_INPUTS = nativeTestSources;
       LOOM_NATIVE_RUST_FIXTURE = nativeRustFixture;
@@ -381,6 +565,7 @@ let
       SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
     };
   };
+  testCompilation = nextest.compilation;
   nativeRustFixture = import ./tests/native-rust-fixture.nix {
     inherit pkgs crane;
     toolchain = resolvedToolchain;
@@ -395,15 +580,22 @@ in
     clippyAllTargets
     nextest
     cargoArtifacts
+    testCargoArtifacts
+    testCompilerHooks
+    writableWorkspaceArtifacts
+    testCompilation
     cargoConfig
     hookRunner
     craneLib
     stagedSrc
     workspaceSource
+    compilerSource
+    compilerResources
     testResources
+    testRegistration
+    preparationInputs
     checkArgs
     mkCheck
-    testRegistration
     ;
   inherit (commonArgs) cargoToml cargoLock cargoVendorDir;
   toolchain = resolvedToolchain;

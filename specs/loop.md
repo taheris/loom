@@ -611,9 +611,9 @@ mutation permission.
 ## Success Criteria
 
 <!-- prettier-ignore -->
-- The fixed isolated smoke fixture kills its driver after worker output and
-  restarts against the preserved checkout through the real implementation,
-  verification, review, hooks and publication pipeline. [system](nix build .#verification-system-smoke)
+- Native workspace recovery preserves stash and alignment diagnostics across
+  dispatch restart without needing a nested container runtime
+  [test](workspace_recovery_event_records_stash_and_alignment)
 
 - Gate verification rejects a failing project hook and a failing required
   system result, and requires successful current execution after correction.
@@ -990,9 +990,29 @@ mutation permission.
   both `Complete` and `Noop` without projecting a wait onto their producer.
   [test](complete_and_noop_admit_decisions_without_holding_the_producer)
 
-- Zero or partial producer-attributed inventories reject positive terminal proposals
-  before queue mutations and identify every omitted unresolved decision.
-  [test](positive_outcomes_reject_zero_or_partial_inventory_before_queue_effects)
+- `Complete` with zero producer-attributed decisions rejects before queue mutations
+  and identifies every omitted unresolved decision.
+  [test](complete_rejects_zero_inventory_before_queue_effects)
+
+- `Complete` with a partial producer-attributed inventory rejects before queue
+  mutations and identifies every omitted unresolved decision.
+  [test](complete_rejects_partial_inventory_before_queue_effects)
+
+- `Noop` with zero producer-attributed decisions rejects before queue mutations
+  and identifies every omitted unresolved decision.
+  [test](noop_rejects_zero_inventory_before_queue_effects)
+
+- `Noop` with a partial producer-attributed inventory rejects before queue
+  mutations and identifies every omitted unresolved decision.
+  [test](noop_rejects_partial_inventory_before_queue_effects)
+
+- `Waiting` with zero producer-attributed decisions rejects before queue mutations
+  and identifies every omitted unresolved decision.
+  [test](waiting_rejects_zero_inventory_before_queue_effects)
+
+- `Waiting` with a partial producer-attributed inventory rejects before queue
+  mutations and identifies every omitted unresolved decision.
+  [test](waiting_rejects_partial_inventory_before_queue_effects)
 
 - Native source closure cannot bypass persisted decision accounting or
   cause admission to reopen the source.

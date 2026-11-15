@@ -17,7 +17,7 @@ use loom_gate::dispatch::TestScope;
 use loom_gate::scope::CargoMetadataScope;
 
 fn workspace_manifest() -> PathBuf {
-    let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let crate_dir = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR"));
     crate_dir
         .parent()
         .and_then(std::path::Path::parent)

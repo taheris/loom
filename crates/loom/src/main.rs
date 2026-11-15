@@ -3816,7 +3816,9 @@ fn run_sequential_loop_root(
             .with_hook_timeout(config.loom.git_hook_timeout())
             .with_repo_git_policy(repo_git_policy);
     let outcome = runtime.block_on(async move {
-        let bd = BdClient::<loom_driver::bd::TokioRunner>::new();
+        let bd = BdClient::with_runner(
+            loom_driver::bd::TokioRunner::default().with_publication(&wrix_bin, &workspace_buf),
+        );
         let mut controller = ProductionAgentLoopController::new(
             bd,
             label.clone(),
@@ -4984,7 +4986,11 @@ fn run_review(
     let captured_review_stdout = Arc::new(Mutex::new(String::new()));
     let stdout_capture_for_spawn = Arc::clone(&captured_review_stdout);
     let result = runtime.block_on(async move {
-        let bd = BdClient::<loom_driver::bd::TokioRunner>::new();
+        let wrix_bin =
+            std::env::var_os("LOOM_WRIX_BIN").map_or_else(|| PathBuf::from("wrix"), PathBuf::from);
+        let bd = BdClient::with_runner(
+            loom_driver::bd::TokioRunner::default().with_publication(&wrix_bin, &workspace_buf),
+        );
         let controller = ProductionReviewController::new(
             bd,
             label.clone(),

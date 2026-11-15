@@ -10,8 +10,11 @@ use displaydoc::Display;
 use thiserror::Error;
 
 use loom_driver::bd::LabelExt;
-use loom_driver::bd::{BdClient, BdError, CommandRunner, CreateOpts, ListOpts};
 use loom_driver::identifier::{BeadId, MoleculeId, ParseMoleculeIdError, SpecLabel};
+use loom_issues::{
+    task::{Create, Query},
+    tracking::{Error as TrackingError, Store},
+};
 
 pub const SPEC_METADATA_CLOSE_REASON: &str = "spec metadata carrier";
 
@@ -26,8 +29,8 @@ const SPEC_METADATA_STATUSES: [loom_driver::bd::Status; 5] = [
 /// Failures from spec metadata or legacy work-epic resolution.
 #[derive(Debug, Display, Error)]
 pub enum ResolveError {
-    /// bd query failed while resolving the active molecule
-    Bd(#[from] BdError),
+    /// tracking operation failed while resolving the active molecule
+    Tracking(#[from] TrackingError),
     /// active epic carried an invalid molecule id
     InvalidMoleculeId(#[from] ParseMoleculeIdError),
     /// multiple open epics found for spec `{label}`: {ids}; close all but one before re-running
@@ -56,15 +59,15 @@ pub enum SpecEpicAction {
 /// # Errors
 ///
 /// Returns an error when workflow setup, execution, or state validation fails.
-pub async fn ensure_spec_metadata_epic<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub async fn ensure_spec_metadata_epic<T: Store>(
+    bd: &T,
     label: &SpecLabel,
     dry_run: bool,
 ) -> Result<ResolvedSpecEpic, ResolveError> {
     let beads = bd
-        .list(ListOpts {
-            issue_type: Some(loom_driver::bd::IssueType::Epic),
-            label: Some(format!("spec:{}", label.as_str())),
+        .query(Query {
+            kind: Some(loom_driver::bd::IssueType::Epic),
+            label: Some(crate::tracking::label(&format!("spec:{}", label.as_str()))?),
             statuses: SPEC_METADATA_STATUSES.to_vec(),
             ..Default::default()
         })
@@ -80,13 +83,16 @@ pub async fn ensure_spec_metadata_epic<R: CommandRunner>(
         }),
         0 => {
             let bead_id = bd
-                .create(CreateOpts {
+                .create(Create {
                     title: format!("loom spec: {label}"),
                     description: format!("Spec metadata epic for `{label}`."),
-                    issue_type: Some(loom_driver::bd::IssueType::Epic),
+                    kind: Some(loom_driver::bd::IssueType::Epic),
                     priority: Some(loom_driver::bd::Priority::P2),
-                    labels: vec!["loom:spec".to_string(), format!("spec:{label}")],
-                    ..CreateOpts::default()
+                    labels: vec![
+                        crate::tracking::label("loom:spec")?,
+                        crate::tracking::label(&format!("spec:{label}"))?,
+                    ],
+                    ..Create::default()
                 })
                 .await?;
             bd.close(&bead_id, Some(SPEC_METADATA_CLOSE_REASON)).await?;
@@ -123,14 +129,14 @@ pub async fn ensure_spec_metadata_epic<R: CommandRunner>(
 /// # Errors
 ///
 /// Returns an error when workflow setup, execution, or state validation fails.
-pub async fn resolve_open_epic<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub async fn resolve_open_epic<T: Store>(
+    bd: &T,
     label: &SpecLabel,
 ) -> Result<Option<MoleculeId>, ResolveError> {
     let beads = bd
-        .list(ListOpts {
-            issue_type: Some(loom_driver::bd::IssueType::Epic),
-            label: Some(format!("spec:{}", label.as_str())),
+        .query(Query {
+            kind: Some(loom_driver::bd::IssueType::Epic),
+            label: Some(crate::tracking::label(&format!("spec:{}", label.as_str()))?),
             statuses: vec![loom_driver::bd::Status::Open],
             ..Default::default()
         })
@@ -179,8 +185,8 @@ pub struct ResolvedEpic {
 /// # Errors
 ///
 /// Returns an error when workflow setup, execution, or state validation fails.
-pub async fn resolve_or_mint_open_epic<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub async fn resolve_or_mint_open_epic<T: Store>(
+    bd: &T,
     label: &SpecLabel,
     head_commit: &str,
 ) -> Result<ResolvedEpic, ResolveError> {
@@ -191,15 +197,18 @@ pub async fn resolve_or_mint_open_epic<R: CommandRunner>(
             was_minted: false,
         });
     }
-    let metadata = serde_json::json!({ "loom.base_commit": head_commit }).to_string();
     let bead_id = bd
-        .create(CreateOpts {
+        .create(Create {
             title: label.as_str().to_owned(),
             description: String::new(),
-            issue_type: Some(loom_driver::bd::IssueType::Epic),
-            labels: vec![format!("spec:{}", label.as_str())],
-            metadata: Some(metadata),
-            ..CreateOpts::default()
+            kind: Some(loom_driver::bd::IssueType::Epic),
+            labels: vec![crate::tracking::label(&format!("spec:{}", label.as_str()))?],
+            metadata: [(
+                "loom.base_commit".into(),
+                serde_json::Value::String(head_commit.into()),
+            )]
+            .into(),
+            ..Create::default()
         })
         .await?;
     Ok(ResolvedEpic {
@@ -212,7 +221,7 @@ pub async fn resolve_or_mint_open_epic<R: CommandRunner>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use loom_driver::bd::{BdClient, CommandRunner, RunOutput};
+    use loom_driver::bd::{BdClient, BdError, CommandRunner, RunOutput};
     use std::ffi::OsString;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;

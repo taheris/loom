@@ -79,25 +79,13 @@ SH
   printf 'this is not a Quint model\n' >"$tmp/source/tests/fixtures/quint/bridge.qnt"
   must_fail 'Quint returned non-zero' "$LOOM_QUINT_BIN" bridge-replay "$tmp/source"
   cp "$LOOM_QUINT_SOURCE/tests/fixtures/quint/bridge.qnt" "$tmp/source/tests/fixtures/quint/bridge.qnt"
-  python3 - "$tmp/source/tests/fixtures/quint/bridge.qnt" <<'PY'
-import pathlib, sys
-p = pathlib.Path(sys.argv[1])
-p.write_text(p.read_text().replace("accepted' = false", "accepted' = true"))
-PY
+  loom-verification bridge-fault "$tmp/source/tests/fixtures/quint/bridge.qnt" accepted
   must_fail 'State invariant failed' "$LOOM_QUINT_BIN" bridge-replay "$tmp/source"
   cp "$LOOM_QUINT_SOURCE/tests/fixtures/quint/bridge.qnt" "$tmp/source/tests/fixtures/quint/bridge.qnt"
-  python3 - "$tmp/source/tests/fixtures/quint/bridge.qnt" <<'PY'
-import pathlib, sys
-p = pathlib.Path(sys.argv[1])
-p.write_text(p.read_text().replace("replayObserve", "unsupported"))
-PY
+  loom-verification bridge-fault "$tmp/source/tests/fixtures/quint/bridge.qnt" unsupported
   must_fail 'Unimplemented action' "$LOOM_QUINT_BIN" bridge-replay "$tmp/source"
   cp "$LOOM_QUINT_SOURCE/tests/fixtures/quint/bridge.qnt" "$tmp/source/tests/fixtures/quint/bridge.qnt"
-  python3 - "$tmp/source/tests/fixtures/quint/bridge.qnt" <<'PY'
-import pathlib, sys
-p = pathlib.Path(sys.argv[1])
-p.write_text(p.read_text().replace("action replayStep = any { replayObserve }", "action replayStep = all { false, count' = count, accepted' = accepted }"))
-PY
+  loom-verification bridge-fault "$tmp/source/tests/fixtures/quint/bridge.qnt" incomplete
   must_fail 'incomplete trace batch' "$LOOM_QUINT_BIN" bridge-replay "$tmp/source"
   write_script "$tmp/bin/quint" <<'SH'
 set -euo pipefail

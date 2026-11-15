@@ -8,8 +8,9 @@ _: {
     }:
     let
       checked = import ../verification.nix;
-      archive = checked.check {
-        resources = loom.testResources;
+      archive = checked.artifact {
+        runtime = "native-process";
+        resources = [ loom.compilerSource ];
         evaluation = import ../native-context.nix;
         build =
           _:
@@ -17,22 +18,32 @@ _: {
             {
               pname = "loom-cargo-retention-archive";
               version = "1";
-              src = loom.stagedSrc;
-              inherit (loom) cargoArtifacts cargoVendorDir;
+              src = loom.compilerSource.path;
+              inherit (loom) cargoVendorDir;
+              cargoArtifacts = loom.testCompilation;
+              CARGO_PROFILE = "dev";
               LOOM_PREK_BIN = "${loom.hookRunner}/bin/prek";
               LOOM_ISSUES_BD_BIN = "${pkgs.beads}/bin/bd";
               nativeBuildInputs = [
+                loom.writableWorkspaceArtifacts
+              ]
+              ++ map pkgs.lib.getBin [
                 pkgs.cargo-nextest
                 pkgs.bash
                 pkgs.gnutar
                 pkgs.zstd
+                pkgs.jq
               ];
               doCheck = false;
               doInstallCargoArtifacts = false;
-              CARGO_PROFILE_RELEASE_STRIP = "symbols";
+              NIX_NO_SELF_RPATH = 1;
               buildPhaseCargoCommand = ''
-                cargo nextest archive --offline --locked --cargo-profile release \
+                export HOME=$(mktemp -d)
+                export CARGO_TARGET_DIR="$PWD/target"
+                cargo nextest archive --offline --locked --cargo-profile dev \
+                  --manifest-path ${loom.compilerSource.path}/Cargo.toml \
                   -p loom-driver -p loom-workflow --lib --archive-file "$TMPDIR/retention.tar.zst"
+                test ! -e ${loom.compilerSource.path}/target
               '';
               installPhaseCommand = ''
                 mkdir -p "$out"
@@ -66,6 +77,7 @@ _: {
           export CARGO_HOME="$HOME/cargo" CARGO_BUILD_JOBS=1
           export GIT_CONFIG_GLOBAL=${loom.stagedSrc}/tests/fixtures/git/test-gitconfig
           export GIT_CONFIG_SYSTEM=/dev/null
+          export LOOM_TEST_SOURCE_ROOT=${loom.stagedSrc};
           mkdir -p "$CARGO_HOME"
           run_cases() {
             local extract
@@ -75,16 +87,21 @@ _: {
               --ignore-default-filter --test-threads 2 --no-fail-fast "$@"
           }
           status=0
-          run_cases -E 'test(cargo_retention) | test(worker_cargo_target_reuse_honors_policy_before_spawn)' >&2 || status=$?
-          if [[ "$status" == 0 ]]; then
+          target=cargo-retention
+          if [[ $# == 0 ]]; then
+            run_cases -E 'test(cargo_retention) | test(worker_cargo_target_reuse_honors_policy_before_spawn)' >&2 || status=$?
+          elif [[ $# == 1 && "$1" == --kernel ]]; then
+            target=cargo-retention-kernel
             for case in \
               workspace::cargo::lifetime::tests::cases::native_cargo_lifetime_seals_empty_generation_and_cancels_stale_entry \
               workspace::cargo::retention::process::cases::native_cargo_retention_restart_reconciles_owned_process_generations; do
               run_cases --run-ignored only -E "test(=$case)" >&2 || status=$?
             done
+          else
+            exit 64
           fi
           if [[ "$status" == 0 ]]; then pass=true; else pass=false; fi
-          printf '{"target":"cargo-retention","pass":%s,"evidence":"actual compiler archive: ordinary retention plus delegated native lifetime and restart cases; full nextest transcript retained"}\n' "$pass"
+          printf '{"target":"%s","pass":%s,"evidence":"actual compiler archive; full nextest transcript retained; kernel diagnostics require explicit --kernel"}\n' "$target" "$pass"
           exit "$status"
         '';
       };
@@ -98,6 +115,7 @@ _: {
       '';
     in
     {
+      legacyPackages.kernel-cargo-retention = producer;
       packages.cargo-retention-archive = archive;
       packages.verification-cargo-retention = checked.reported {
         inherit system;
@@ -110,7 +128,7 @@ _: {
         parser = "json-lines";
         targets = [ "cargo-retention" ];
         tier = "system";
-        runtime = "native-cgroup";
+        runtime = "native-process";
       };
     };
 }

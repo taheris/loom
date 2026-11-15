@@ -1,5 +1,7 @@
 [package]
 name = "loom"
+# Share integration-test linkage; Nextest still gives every case a fresh process.
+autotests = false
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
@@ -18,6 +20,31 @@ path = "src/bin/bd-shim.rs"
 name = "mock-loom-agent"
 path = "src/bin/mock-loom-agent.rs"
 
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
+
+# Preserve snapshot names and exact child-process entry points.
+[[test]]
+name = "cli_help"
+path = "tests/cli_help.rs"
+
+[[test]]
+name = "gate_cli_scope"
+path = "tests/gate_cli_scope.rs"
+
+[[test]]
+name = "private_cargo_gate"
+path = "tests/private_cargo_gate.rs"
+
+[[test]]
+name = "spawn_dispatch"
+path = "tests/spawn_dispatch.rs"
+
+[[test]]
+name = "tune_cli"
+path = "tests/tune_cli.rs"
+
 [dependencies]
 anyhow = { workspace = true }
 blake3 = { workspace = true }
@@ -33,6 +60,7 @@ loom-walk = { workspace = true }
 loom-workflow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+rusqlite = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

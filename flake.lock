@@ -1,5 +1,24 @@
 {
   "nodes": {
+    "celler-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1791002949,
+        "narHash": "sha256-qDnTXcnV7ZvmGMtpEse+ymr05QuuULtlzroqGrpP8VA=",
+        "ref": "refs/heads/main",
+        "rev": "de7e34848770f3cd274a276e15d3c459fee86f99",
+        "revCount": 673,
+        "submodules": true,
+        "type": "git",
+        "url": "https://github.com/celler-cache/celler.git"
+      },
+      "original": {
+        "rev": "de7e34848770f3cd274a276e15d3c459fee86f99",
+        "submodules": true,
+        "type": "git",
+        "url": "https://github.com/celler-cache/celler.git"
+      }
+    },
     "crane": {
       "locked": {
         "lastModified": 1792350552,
@@ -63,6 +82,26 @@
         "url": "https://github.com/hercules-ci/flake-parts.git"
       }
     },
+    "gorgon-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1781043113,
+        "narHash": "sha256-Jd4E7qN/9pCCYBLxWwHKjrRBt7gTBEZUYzoCAGH1nXg=",
+        "ref": "nix-daemon-2",
+        "rev": "f42f79a9d52787802ccaf23cf67329d32a78184c",
+        "revCount": 434,
+        "submodules": true,
+        "type": "git",
+        "url": "https://codeberg.org/blitz/gorgon.git"
+      },
+      "original": {
+        "ref": "nix-daemon-2",
+        "rev": "f42f79a9d52787802ccaf23cf67329d32a78184c",
+        "submodules": true,
+        "type": "git",
+        "url": "https://codeberg.org/blitz/gorgon.git"
+      }
+    },
     "loom-src": {
       "flake": false,
       "locked": {
@@ -83,10 +122,10 @@
     },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1793706278,
-        "narHash": "sha256-CE1GD35mj//AKYuLNbQJZDelQYWzef5GBpQno9uyNP0=",
+        "lastModified": 1794495034,
+        "narHash": "sha256-E0hYoioqUtM2XmPPvYYpJgdADF5AW9oOoPSEiM9dTHQ=",
         "ref": "nixpkgs-unstable",
-        "rev": "ea9e3ef341e11c193537f674f821a99f9f436729",
+        "rev": "2074cc672349f14240fb7ea90d509e0b643e9dd4",
         "shallow": true,
         "type": "git",
         "url": "https://github.com/NixOS/nixpkgs.git"
@@ -100,6 +139,7 @@
     },
     "root": {
       "inputs": {
+        "celler-src": "celler-src",
         "crane": [
           "wrix",
           "crane"
@@ -109,6 +149,7 @@
           "fenix"
         ],
         "flake-parts": "flake-parts",
+        "gorgon-src": "gorgon-src",
         "nixpkgs": "nixpkgs",
         "treefmt-nix": "treefmt-nix",
         "wrix": "wrix"
@@ -190,10 +231,10 @@
         "treefmt-nix": "treefmt-nix_2"
       },
       "locked": {
-        "lastModified": 1794138412,
-        "narHash": "sha256-cAK7kLYurnNy2i5Z19+7CcGlIRU4qzxKWAnMaFBNUW8=",
+        "lastModified": 1794559738,
+        "narHash": "sha256-Kd7xQ4WmWgzOghrGzoAKPDgS+/buOcOBoeSPzV7lHSc=",
         "ref": "main",
-        "rev": "c75c87a06614c244e2360fd8be9f92186bd3e302",
+        "rev": "0b9889283a54a14acc2604456528e5ca01e3630b",
         "shallow": true,
         "type": "git",
         "url": "https://github.com/taheris/wrix.git"

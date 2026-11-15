@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
 
 use displaydoc::Display;
-use loom_driver::bd::{BdClient, BdError, Bead, UpdateOpts};
+use loom_driver::bd::BdClient;
 use loom_driver::clock::{Clock, SystemClock};
 use loom_driver::config::{LoomConfig, LoomConfigError};
 use loom_driver::git::{
@@ -17,6 +17,10 @@ use loom_driver::logging::phase_log_path;
 use loom_gate::{
     GateRun, GateSuccess, HandoffEvidence, MarkerProof, MintError, VerifiedScope,
     append_gate_run_lifecycle_events, parse_gate_runs_from_jsonl,
+};
+use loom_issues::{
+    task::{Guard, Record as Bead, Update},
+    tracking::{Error as TrackingError, Store},
 };
 use serde_json::json;
 use thiserror::Error;
@@ -46,8 +50,8 @@ pub struct ApplyReport {
 pub enum ApplyError {
     /// config load failed
     Config(#[from] LoomConfigError),
-    /// bd CLI failed during tune apply
-    Bd(#[from] BdError),
+    /// tracking operation failed during tune apply
+    Tracking(#[from] TrackingError),
     /// git step failed during tune apply
     Git(#[from] GitError),
     /// tune proposal `{id}` cannot be applied: {reason}
@@ -164,6 +168,19 @@ async fn apply_proposals_async(
     workspace: &Path,
     proposal_ids: Vec<BeadId>,
 ) -> Result<ApplyReport, ApplyError> {
+    let tracking = BdClient::<loom_driver::bd::TokioRunner>::new();
+    apply_proposals_with_tracking(workspace, &tracking, proposal_ids).await
+}
+
+/// Apply accepted proposals through the selected authoritative tracker.
+///
+/// # Errors
+/// Preserves validation, publication and partial-write failures without claiming rollback.
+pub async fn apply_proposals_with_tracking<T: Store>(
+    workspace: &Path,
+    bd: &T,
+    proposal_ids: Vec<BeadId>,
+) -> Result<ApplyReport, ApplyError> {
     if proposal_ids.is_empty() {
         return Err(ApplyError::EmptyBatch);
     }
@@ -172,8 +189,7 @@ async fn apply_proposals_async(
         GitClient::open_with_integration_branch(workspace, config.loom.integration_branch.clone())?
             .with_hook_timeout(config.loom.git_hook_timeout());
     ensure_integration_clean(&git).await?;
-    let bd = BdClient::<loom_driver::bd::TokioRunner>::new();
-    let proposals = validate_proposals(workspace, &bd, &proposal_ids).await?;
+    let proposals = validate_proposals(workspace, bd, &proposal_ids).await?;
     let pre_tip = git.integration_commit_sha().await?.to_string();
     let log_path = apply_log_path(workspace)?;
     let mut ctx = AttemptContext {
@@ -184,7 +200,7 @@ async fn apply_proposals_async(
     match attempt_batch(&git, &proposals, &mut ctx).await {
         Ok(outcome) => {
             cleanup_branches(&git, &ctx.fetched_branches).await?;
-            mark_applied(&bd, &proposals, &log_path).await?;
+            mark_applied(bd, &proposals, &log_path).await?;
             write_apply_log(
                 &log_path,
                 &json!({
@@ -201,7 +217,7 @@ async fn apply_proposals_async(
         }
         Err(failure) => {
             abort_attempt(&git, &ctx).await?;
-            mark_apply_failed(&bd, &proposals, failure.kind, &failure.detail, &log_path).await?;
+            mark_apply_failed(bd, &proposals, failure.kind, &failure.detail, &log_path).await?;
             Err(ApplyError::BatchFailed {
                 kind: failure.kind.as_str(),
                 detail: failure.detail,
@@ -211,14 +227,14 @@ async fn apply_proposals_async(
     }
 }
 
-async fn validate_proposals(
+async fn validate_proposals<T: Store>(
     workspace: &Path,
-    bd: &BdClient,
+    bd: &T,
     ids: &[BeadId],
 ) -> Result<Vec<Proposal>, ApplyError> {
     let mut proposals = Vec::with_capacity(ids.len());
     for id in ids {
-        let bead = bd.show(id).await?;
+        let bead = bd.get(id).await?;
         match validate_proposal(workspace, bead).await {
             Ok(proposal) => proposals.push(proposal),
             Err(ApplyError::BlockedProposal { id, reason }) => {
@@ -294,20 +310,21 @@ async fn validate_proposal(workspace: &Path, bead: Bead) -> Result<Proposal, App
     })
 }
 
-async fn block_invalid_proposal(
-    bd: &BdClient,
+async fn block_invalid_proposal<T: Store>(
+    bd: &T,
     id: &BeadId,
     reason: &str,
 ) -> Result<(), ApplyError> {
     bd.update(
         id,
-        UpdateOpts {
+        Update {
             status: Some(loom_driver::bd::Status::Blocked),
-            add_labels: vec!["loom:blocked".to_owned()],
+            add_labels: vec![crate::tracking::label("loom:blocked")?],
             notes: Some(format!("tune proposal validation blocked apply: {reason}")),
-            set_metadata: vec![(TUNE_STATE_KEY.to_owned(), "blocked".to_owned())],
-            ..UpdateOpts::default()
+            set_metadata: [(TUNE_STATE_KEY.to_owned(), "blocked".into())].into(),
+            ..Update::default()
         },
+        Guard::None,
     )
     .await?;
     Ok(())
@@ -595,25 +612,27 @@ async fn ensure_integration_clean(git: &GitClient) -> Result<(), ApplyError> {
     Err(ApplyError::IntegrationDirty { detail: porcelain })
 }
 
-async fn mark_applied(
-    bd: &BdClient,
+async fn mark_applied<T: Store>(
+    bd: &T,
     proposals: &[Proposal],
     log_path: &Path,
 ) -> Result<(), ApplyError> {
     for proposal in proposals {
         bd.update(
             &proposal.id,
-            UpdateOpts {
-                remove_labels: vec!["loom:blocked".to_string()],
-                set_metadata: vec![
-                    (TUNE_STATE_KEY.to_string(), "applied".to_string()),
+            Update {
+                remove_labels: vec![crate::tracking::label("loom:blocked")?],
+                set_metadata: [
+                    (TUNE_STATE_KEY.to_string(), "applied".into()),
                     (
                         APPLIED_LOG_KEY.to_string(),
-                        log_path.to_string_lossy().into_owned(),
+                        log_path.to_string_lossy().into_owned().into(),
                     ),
-                ],
-                ..UpdateOpts::default()
+                ]
+                .into(),
+                ..Update::default()
             },
+            Guard::None,
         )
         .await?;
         bd.close(&proposal.id, Some("applied tune proposal"))
@@ -622,8 +641,8 @@ async fn mark_applied(
     Ok(())
 }
 
-async fn mark_apply_failed(
-    bd: &BdClient,
+async fn mark_apply_failed<T: Store>(
+    bd: &T,
     proposals: &[Proposal],
     kind: FailureKind,
     detail: &str,
@@ -646,20 +665,22 @@ async fn mark_apply_failed(
     for proposal in proposals {
         bd.update(
             &proposal.id,
-            UpdateOpts {
+            Update {
                 status: Some(loom_driver::bd::Status::Blocked),
-                add_labels: vec!["loom:blocked".to_string()],
+                add_labels: vec![crate::tracking::label("loom:blocked")?],
                 notes: Some(format!(
                     "tune apply failed ({kind}): {detail}\nlog: {log}",
                     kind = kind.as_str(),
                     log = log_path.display(),
                 )),
-                set_metadata: vec![
-                    (TUNE_STATE_KEY.to_string(), "apply_failed".to_string()),
-                    (APPLY_FAILURE_KEY.to_string(), diagnostic.to_string()),
-                ],
-                ..UpdateOpts::default()
+                set_metadata: [
+                    (TUNE_STATE_KEY.to_string(), "apply_failed".into()),
+                    (APPLY_FAILURE_KEY.to_string(), diagnostic.to_string().into()),
+                ]
+                .into(),
+                ..Update::default()
             },
+            Guard::None,
         )
         .await?;
     }
@@ -807,6 +828,88 @@ mod tests {
     use loom_protocol::gate::ExitSignal;
 
     use super::*;
+
+    #[tokio::test]
+    async fn neutral_inbox_recovery_retains_authority_after_interrupted_blocking_update() {
+        use loom_issues::{
+            memory::{Backend, Fault, Operation, Timing},
+            task::{Create, Label, Status},
+        };
+        for timing in [Timing::BeforeWrite, Timing::AfterWrite] {
+            let directory = tempfile::tempdir().unwrap();
+            let git = loom_driver::git::init_test_repo_with_integration(directory.path()).unwrap();
+            let before = git.integration_commit_sha().await.unwrap();
+            let retained = Backend::default();
+            let id = retained
+                .create(Create {
+                    title: "accepted proposal missing canonical inputs".into(),
+                    labels: vec![Label::new(TUNE_LABEL).unwrap()],
+                    metadata: [
+                        (TUNE_STATE_KEY.into(), "accepted".into()),
+                        ("operator.note".into(), "retain".into()),
+                    ]
+                    .into(),
+                    ..Create::default()
+                })
+                .await
+                .unwrap();
+            retained
+                .inject(Fault {
+                    operation: Operation::Update,
+                    timing,
+                    skip: 0,
+                })
+                .unwrap();
+            let worker = retained.clone();
+            let result =
+                apply_proposals_with_tracking(directory.path(), &worker, vec![id.clone()]).await;
+            match timing {
+                Timing::BeforeWrite => assert!(matches!(
+                    result,
+                    Err(ApplyError::Tracking(TrackingError::Transport { .. }))
+                )),
+                Timing::AfterWrite => assert!(matches!(
+                    result,
+                    Err(ApplyError::Tracking(TrackingError::Uncertain { .. }))
+                )),
+            }
+            drop(worker);
+            let restarted = retained.clone();
+            let current = restarted.get(&id).await.unwrap();
+            assert_eq!(current.metadata["operator.note"], "retain");
+            assert!(!current.metadata.contains_key(APPLIED_LOG_KEY));
+            match timing {
+                Timing::BeforeWrite => {
+                    assert_eq!(current.status, Status::Open);
+                    assert_eq!(current.metadata[TUNE_STATE_KEY], "accepted");
+                    assert!(matches!(
+                        apply_proposals_with_tracking(
+                            directory.path(),
+                            &restarted,
+                            vec![id.clone()]
+                        )
+                        .await,
+                        Err(ApplyError::BlockedProposal { .. })
+                    ));
+                }
+                Timing::AfterWrite => {
+                    assert_eq!(current.status, Status::Blocked);
+                    assert_eq!(current.metadata[TUNE_STATE_KEY], "blocked");
+                    assert!(matches!(
+                        apply_proposals_with_tracking(
+                            directory.path(),
+                            &restarted,
+                            vec![id.clone()]
+                        )
+                        .await,
+                        Err(ApplyError::InvalidProposal { .. })
+                    ));
+                    assert_eq!(restarted.get(&id).await.unwrap(), current);
+                }
+            }
+            assert_eq!(git.integration_commit_sha().await.unwrap(), before);
+        }
+    }
 
     #[test]
     fn tune_apply_review_handoff_requires_resolved_paired_messages() {

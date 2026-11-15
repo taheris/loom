@@ -2483,7 +2483,8 @@ printf '{"inputs":["src/%s.rs"]}\n' "$1""#,
 
     #[test]
     fn multimodal_logging_judge_resolves_real_rubric_and_behavioral_inputs() {
-        let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+        let manifest = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR"));
+        let workspace = manifest
             .ancestors()
             .nth(2)
             .expect("crate is under workspace/crates");

@@ -150,7 +150,7 @@ fn prose_annotation_identity_is_bounded_by_its_paragraph() {
 
 #[test]
 fn workspace_criterion_text_is_independent_of_formatter_comments_and_trailing_sections() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../specs");
+    let root = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR")).join("../../specs");
     let mut inspected = 0;
     for entry in std::fs::read_dir(root).expect("workspace specs") {
         let path = entry.expect("directory entry").path();

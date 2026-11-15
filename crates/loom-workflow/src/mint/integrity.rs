@@ -3,11 +3,12 @@
 use std::collections::BTreeMap;
 
 use displaydoc::Display;
-use loom_driver::bd::{
-    BdClient, BdError, Bead, CommandRunner, CreateOpts, IssueType, ListOpts, Status,
-};
 use loom_driver::identifier::BeadId;
 use loom_gate::IntegrityFinding;
+use loom_issues::{
+    task::{Create, Kind as IssueType, Query, Record as Bead, Status},
+    tracking::{Error as TrackingError, Store},
+};
 use loom_protocol::gate::{
     DispatchScope, Finding, FindingParseError, FindingValidator, RawFinding,
 };
@@ -22,8 +23,8 @@ const LABEL_PREFIX: &str = "decision:integrity:";
 
 #[derive(Debug, Display, Error)]
 pub enum Error {
-    /// Beads operation failed while materializing integrity decisions
-    Bd(#[from] BdError),
+    /// tracking operation failed while materializing integrity decisions
+    Tracking(#[from] TrackingError),
     /// integrity finding does not resolve in the current workspace
     Finding(#[from] FindingParseError),
     /// integrity decision provenance could not be encoded or decoded
@@ -96,8 +97,8 @@ fn check_record(
 /// # Errors
 /// Invalid findings, duplicate/colliding decisions or incompatible provenance
 /// reject admission; successfully staged candidates survive partial I/O failure.
-pub async fn escalate<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub async fn escalate<T: Store>(
+    bd: &T,
     journal: &DecisionWaitJournal,
     parent: &BeadId,
     findings: &[IntegrityFinding],
@@ -125,18 +126,17 @@ pub async fn escalate<R: CommandRunner>(
     if resolved.is_empty() {
         return Ok(());
     }
-    let epic = bd.show(parent).await?;
+    let epic = bd.get(parent).await?;
     if epic.issue_type != IssueType::Epic || epic.status == Status::Closed {
         return Err(Error::Graph(format!(
             "work root {parent} is not a live epic"
         )));
     }
     let children = bd
-        .list(ListOpts {
-            all: true,
+        .query(Query {
             limit: Some(0),
             parent: Some(parent.clone()),
-            ..ListOpts::default()
+            ..Query::default()
         })
         .await?;
     let mut plan = Vec::new();
@@ -152,7 +152,7 @@ pub async fn escalate<R: CommandRunner>(
         let existing = match matches.as_slice() {
             [] => None,
             [bead] => {
-                let snapshot = bd.show(&bead.id).await?;
+                let snapshot = bd.get(&bead.id).await?;
                 check_record(&snapshot, parent, &finding, validator)?;
                 Some(snapshot.id)
             }
@@ -167,22 +167,23 @@ pub async fn escalate<R: CommandRunner>(
     }
     let mut staged = Vec::new();
     for (finding, existing) in plan {
-        let id = if let Some(id) = existing {
-            id
-        } else {
-            let record = Record {
-                work_root: parent.clone(),
-                finding: finding.clone().into_raw(),
-                disposition: Disposition::Candidate,
-            };
-            let mut labels = vec![decision_label(&finding)];
-            labels.extend(finding.bonds().iter().map(|spec| format!("spec:{spec}")));
-            labels.push(format!(
-                "profile:{}",
-                default_profile_for_spec(&finding.bonds()[0])
-            ));
-            bd.create(CreateOpts {
-                issue_type: Some(IssueType::Decision),
+        let id =
+            if let Some(id) = existing {
+                id
+            } else {
+                let record = Record {
+                    work_root: parent.clone(),
+                    finding: finding.clone().into_raw(),
+                    disposition: Disposition::Candidate,
+                };
+                let mut labels = vec![decision_label(&finding)];
+                labels.extend(finding.bonds().iter().map(|spec| format!("spec:{spec}")));
+                labels.push(format!(
+                    "profile:{}",
+                    default_profile_for_spec(&finding.bonds()[0])
+                ));
+                bd.create(Create {
+                kind: Some(IssueType::Decision),
                 status: Some(Status::Blocked),
                 title: format!("Decide integrity repair: {}", finding.id()),
                 description: format!(
@@ -191,24 +192,21 @@ pub async fn escalate<R: CommandRunner>(
                     finding.evidence()
                 ),
                 parent: Some(parent.clone()),
-                metadata: Some(
-                    serde_json::json!({
-                        RECORD_KEY: serde_json::to_string(&record)?,
-                        "loom.decision_candidate": serde_json::to_string(&serde_json::json!({
-                            "version": 1, "producer": parent, "root": parent, "affected_work": []
-                        }))?
-                    })
-                    .to_string(),
-                ),
-                labels,
-                ..CreateOpts::default()
+                metadata: [
+                    (RECORD_KEY.into(), serde_json::to_string(&record)?.into()),
+                    ("loom.decision_candidate".into(), serde_json::to_string(&serde_json::json!({
+                        "version": 1, "producer": parent, "root": parent, "affected_work": []
+                    }))?.into()),
+                ].into(),
+                labels: crate::tracking::labels(labels)?,
+                ..Create::default()
             })
             .await?
-        };
+            };
         staged.push((id, finding));
     }
     for (id, finding) in &staged {
-        check_record(&bd.show(id).await?, parent, finding, validator)?;
+        check_record(&bd.get(id).await?, parent, finding, validator)?;
     }
     admit_integrity(bd, journal, &epic, &staged, workspace).await?;
     Ok(())

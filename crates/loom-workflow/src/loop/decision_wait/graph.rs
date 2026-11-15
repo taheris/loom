@@ -2,8 +2,11 @@
 
 use std::collections::HashSet;
 
-use loom_driver::bd::{BdClient, Bead, CommandRunner, IssueType, Status};
 use loom_driver::identifier::BeadId;
+use loom_issues::{
+    task::{Kind as IssueType, Record as Bead, Status},
+    tracking::Store,
+};
 use serde::{Deserialize, Serialize};
 
 use super::{DecisionWaitError, LoopError, invalid};
@@ -128,8 +131,8 @@ pub(super) fn provenance(decision: &Bead, root: &BeadId) -> Result<BeadId, LoopE
     Ok(proposal.producer)
 }
 
-pub(super) async fn check_reuse<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub(super) async fn check_reuse<T: Store>(
+    bd: &T,
     journal: &super::DecisionWaitJournal,
     source: &Bead,
     decision: &Bead,
@@ -141,7 +144,7 @@ pub(super) async fn check_reuse<R: CommandRunner>(
     if super::migration::historical(journal, decision, &root)? {
         return Ok(());
     }
-    let owner = bd.show(producer).await?;
+    let owner = bd.get(producer).await?;
     if super::root(bd, &owner).await? != root {
         return Err(incompatible("decision producer belongs to another work root").into());
     }
@@ -238,13 +241,13 @@ pub(super) fn candidate(
     Ok(Some(proposal))
 }
 
-async fn check_affected_work<R: CommandRunner>(
-    bd: &BdClient<R>,
+async fn check_affected_work<T: Store>(
+    bd: &T,
     root: &BeadId,
     id: &BeadId,
     source: &Bead,
 ) -> Result<(), LoopError> {
-    let work = bd.show(id).await?;
+    let work = bd.get(id).await?;
     if work.id != *id
         || work.id == *root
         || matches!(work.issue_type, IssueType::Molecule | IssueType::Decision)
@@ -269,7 +272,7 @@ async fn check_affected_work<R: CommandRunner>(
             ))
             .into());
         };
-        current = bd.show(&parent).await?;
+        current = bd.get(&parent).await?;
         if current.id != parent {
             return Err(invalid(format!(
                 "affected work {id} has ambiguous native parent {parent}"
@@ -281,8 +284,8 @@ async fn check_affected_work<R: CommandRunner>(
 
 /// A new handoff may consume an exact additive graph already admitted by its
 /// integrity producer. Read-only publication and recovery never upgrade seals.
-pub(super) async fn readmit_reuse<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub(super) async fn readmit_reuse<T: Store>(
+    bd: &T,
     journal: &super::DecisionWaitJournal,
     source: &Bead,
     root: &BeadId,
@@ -343,8 +346,8 @@ pub(super) async fn readmit_reuse<R: CommandRunner>(
 
 /// Validate every current affected-work edge before the first queue mutation.
 /// Previously admitted decisions may be reused only with the recorded graph.
-pub(super) async fn resolve<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub(super) async fn resolve<T: Store>(
+    bd: &T,
     source: &Bead,
     root: &BeadId,
     decisions: &[Bead],
@@ -365,7 +368,7 @@ pub(super) async fn resolve<R: CommandRunner>(
         if decision.parent.as_ref() == Some(root) && proposal.is_none() && source.id != *root {
             return Err(invalid("work-root decision lacks producer provenance").into());
         }
-        let mut affected_work = bd.blocking_dependents(&decision.id).await?;
+        let mut affected_work = bd.dependents(&decision.id).await?;
         let unique: HashSet<_> = affected_work.iter().collect();
         if unique.len() != affected_work.len() {
             return Err(invalid(format!(

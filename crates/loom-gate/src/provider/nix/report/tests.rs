@@ -350,10 +350,32 @@ fn fresh_recipe_reinstantiation_preserves_actual_native_derivation_fields() {
             .unwrap()
             .as_ref()
             .clone();
-        let fresh_path =
-            evaluate(&super::fresh_expression(&original, "actual-recipe-roundtrip").unwrap());
+        let control_nonce = tempfile::tempdir().unwrap();
+        let unleased = evaluate(
+            &super::fresh_expression(&original, control_nonce.path().to_str().unwrap()).unwrap(),
+        );
+        let store = tool.with_file_name("nix-store");
+        let unprotected =
+            crate::provider::nix::invoke(&store, &["--delete", unleased.as_str()]).unwrap();
+        assert!(unprotected.status.success());
+        assert!(!Path::new(unleased.as_str()).exists());
+        let (fresh_path, lease) = super::fresh_recipe(
+            &tool,
+            &super::fresh_expression(&original, "actual-recipe-roundtrip").unwrap(),
+        )
+        .unwrap();
+        let collection =
+            crate::provider::nix::invoke(&store, &["--delete", fresh_path.as_str()]).unwrap();
+        assert!(!collection.status.success());
+        assert!(Path::new(fresh_path.as_str()).is_file());
         let mut fresh_graph = crate::provider::nix::read_graph(&tool, &fresh_path).unwrap();
         let mut fresh = fresh_graph.remove(&fresh_path).unwrap().as_ref().clone();
+        assert!(
+            fresh
+                .outputs
+                .values()
+                .all(|path| !Path::new(path.as_str()).exists())
+        );
         assert_ne!(original_path, fresh_path);
         assert_eq!(
             fresh.env.remove("LOOM_REPORT_NONCE").as_deref(),
@@ -368,6 +390,7 @@ fn fresh_recipe_reinstantiation_preserves_actual_native_derivation_fields() {
         }
         assert_eq!(original, fresh);
         assert_eq!(original_graph, fresh_graph);
+        drop(lease);
     }
 }
 

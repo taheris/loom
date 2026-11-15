@@ -1,3 +1,4 @@
+use super::MemoryFixture as Fixture;
 use super::*;
 
 #[cfg(test)]
@@ -5,12 +6,12 @@ use super::*;
 async fn foreign_or_wrong_type_references_reject_whole_context_before_effects() {
     let f = Fixture::new().await;
     let foreign =
-        f.bd.create(CreateOpts {
+        f.bd.create(Create {
             title: "foreign decision".into(),
-            issue_type: Some(IssueType::Decision),
+            kind: Some(IssueType::Decision),
             parent: Some(f.sibling.clone()),
             description: BRIEF.into(),
-            ..CreateOpts::default()
+            ..Create::default()
         })
         .await
         .unwrap();
@@ -24,10 +25,10 @@ async fn foreign_or_wrong_type_references_reject_whole_context_before_effects() 
         assert!(matches!(outcome, AgentOutcome::Failure { .. }));
         assert!(f.journal().load(&f.source.id).unwrap().is_none());
         for id in &f.decisions {
-            assert_eq!(f.bd.show(id).await.unwrap().status, Status::Open);
+            assert_eq!(f.bd.get(id).await.unwrap().status, Status::Open);
         }
     }
-    assert_eq!(f.bd.show(&foreign).await.unwrap().status, Status::Open);
+    assert_eq!(f.bd.get(&foreign).await.unwrap().status, Status::Open);
 }
 
 #[cfg(test)]
@@ -74,10 +75,11 @@ async fn current_graph_releases_wait_but_orphaned_projection_blocks_publication(
     // Only an actual orphaned projection, not historical waiting, fences publication.
     f.bd.update(
         &f.source.id,
-        UpdateOpts {
-            set_metadata: vec![(HOLD_KEY.into(), "{}".into())],
-            ..UpdateOpts::default()
+        Update {
+            set_metadata: [(HOLD_KEY.into(), "{}".into())].into(),
+            ..Update::default()
         },
+        Guard::None,
     )
     .await
     .unwrap();
@@ -100,12 +102,12 @@ async fn current_graph_releases_wait_but_orphaned_projection_blocks_publication(
     );
     f.bd.update(
         &f.source.id,
-        UpdateOpts {
-            if_status: Some(Status::Closed),
-            remove_labels: vec![HOLD_LABEL.into()],
+        Update {
+            remove_labels: vec![Label::new(HOLD_LABEL).unwrap()],
             unset_metadata: vec![HOLD_KEY.into()],
-            ..UpdateOpts::default()
+            ..Update::default()
         },
+        Guard::Status(Status::Closed),
     )
     .await
     .unwrap();

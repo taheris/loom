@@ -13,8 +13,7 @@ use loom_gate::gate_outcome::{GateRunStatus, VerifiedScope, parse_gate_runs_from
 use loom_gate::runner::result::current_platform;
 use serde_json::{Value, json};
 
-#[path = "common/reported.rs"]
-mod reported;
+use super::reported;
 fn fixture(policy: bool) -> reported::Fixture {
     let fixture = reported::Fixture::new("check", "json-lines", &["a", "b"]);
     fixture.policy("check", policy);

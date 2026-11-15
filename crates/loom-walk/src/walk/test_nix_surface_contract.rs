@@ -88,8 +88,8 @@ const CONTRACTS: &[FileContract] = &[
             "smokePrekHooks = wrixLib.prekHooks;",
             "fullScript = source \"scripts/full-test.sh\";",
             "requiredScript = source \"scripts/required-test.sh\";",
-            "text = builtins.readFile fullScript.path;",
-            "text = builtins.readFile requiredScript.path;",
+            "text = builtins.readFile ../../scripts/full-test.sh;",
+            "text = builtins.readFile ../../scripts/required-test.sh;",
             "evaluation = [ fullScript ];",
             "evaluation = [ requiredScript ];",
         ],
@@ -237,7 +237,7 @@ mod tests {
         let inputs = (walk.inputs)(root, &crate::walk::WalkInput::default());
         for path in [
             "tests/mock-pi/pi.sh",
-            "tests/smoke/host-gate-test.sh",
+            "scripts/required-test.sh",
             "nix/workspace.nix",
             "nix/flake/checks.nix",
             "nix/native-smoke-nix.nix",

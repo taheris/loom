@@ -3,6 +3,7 @@ final: prev: {
     {
       patches ? [ ],
       preUnpack ? "",
+      buildInputs ? [ ],
       ...
     }:
     {
@@ -10,6 +11,9 @@ final: prev: {
       preUnpack = (import ./cargo-home.nix) + preUnpack;
     }
     // final.lib.optionalAttrs final.stdenv.hostPlatform.isLinux {
+      # The runner regression enables test-only TLS features that the upstream
+      # distributor binary excludes. Keep its system AWS-LC dependency explicit.
+      buildInputs = buildInputs ++ [ final.aws-lc ];
       doCheck = true;
       checkPhase = ''
         runHook preCheck

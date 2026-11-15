@@ -124,7 +124,7 @@ fn fixture() -> TempDir {
         "[package]\nname = 'loom-walk'\nversion = '0.1.0'\nedition = '2024'\n",
     );
     // Native module discovery follows the real checker modules, not a synthetic callback.
-    let sources = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/walk");
+    let sources = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR")).join("src/walk");
     for entry in std::fs::read_dir(sources).unwrap() {
         let entry = entry.unwrap();
         let body = std::fs::read_to_string(entry.path()).unwrap();
@@ -171,10 +171,8 @@ fn fixture() -> TempDir {
 fn complete_fixture() -> TempDir {
     let dir = fixture();
     let root = dir.path();
-    let project = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .unwrap();
+    let manifest = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR"));
+    let project = manifest.ancestors().nth(2).unwrap();
     let acceptance = std::fs::read_to_string(root.join("specs/walks/tests.md")).unwrap();
     std::fs::remove_dir_all(root.join("specs/walks")).unwrap();
     write(root, "specs/walks.md", &acceptance);

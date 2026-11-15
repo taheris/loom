@@ -11,10 +11,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
 
-#[path = "common/cargo.rs"]
-mod cargo;
-#[path = "common/reported.rs"]
-mod reported;
+use super::{cargo, reported};
 
 const TARGETS: [&str; 3] = ["executed", "unavailable", "failed"];
 fn address(target: &str) -> String {

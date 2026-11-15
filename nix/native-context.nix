@@ -22,5 +22,8 @@ in
   "rust-toolchain.toml"
   "Cargo.toml"
   "Cargo.lock"
+  # Crane's dummy workspace scans nested Cargo manifests and inferred targets,
+  # including this independent conformance workspace outside Cargo members.
+  "tests/fixtures/catalogue-reuse"
   ".cargo/config.toml"
 ]

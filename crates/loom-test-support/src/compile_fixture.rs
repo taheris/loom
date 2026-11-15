@@ -7,7 +7,7 @@ use std::path::Path;
 /// # Errors
 ///
 /// Returns an error if Cargo metadata or the kernel lease is unavailable.
-pub fn lock(manifest_directory: &Path, package: &str) -> std::io::Result<std::fs::File> {
+pub fn lock(manifest_directory: impl AsRef<Path>, package: &str) -> std::io::Result<std::fs::File> {
     let output = std::process::Command::new("cargo")
         .args([
             "metadata",
@@ -16,7 +16,7 @@ pub fn lock(manifest_directory: &Path, package: &str) -> std::io::Result<std::fs
             "--no-deps",
             "--manifest-path",
         ])
-        .arg(manifest_directory.join("Cargo.toml"))
+        .arg(manifest_directory.as_ref().join("Cargo.toml"))
         .output()?;
     if !output.status.success() {
         return Err(std::io::Error::other(format!(

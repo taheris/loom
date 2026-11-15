@@ -25,6 +25,7 @@ impl Config {
     /// # Errors
     /// Returns serialization or filesystem errors without including credential values.
     pub fn write(scratch_dir: &Path, config: &SpawnConfig) -> Result<Self, ProtocolError> {
+        config.tracking_access.require_external()?;
         crate::workspace::validate_spawn(config).map_err(std::io::Error::other)?;
         let json = serde_json::to_vec(&config.to_wrix_json()?)?;
         let directory = Directory::open(scratch_dir)?;

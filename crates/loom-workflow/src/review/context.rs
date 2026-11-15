@@ -329,7 +329,7 @@ mod tests {
 
     #[test]
     fn review_rubrics_collect_actual_delivered_guidance_inputs() {
-        let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+        let workspace = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
             .canonicalize()
             .unwrap();

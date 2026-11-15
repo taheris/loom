@@ -13,6 +13,17 @@ async fn issues_shared_contract_round_trips_operations() {
 }
 
 #[tokio::test]
+async fn borrowed_tracking_preserves_operations_coherence_and_guarantees() {
+    let retained = Backend::default();
+    let borrowed = &retained;
+    assert_eq!(borrowed.guarantees(), retained.guarantees());
+    common::round_trip(&borrowed).await;
+    common::coherent_observation(&borrowed).await;
+    common::stale_writers(&borrowed, &retained).await;
+    common::interruptions(&borrowed, |fault| retained.inject(fault).unwrap()).await;
+}
+
+#[tokio::test]
 async fn lightweight_tracking_fixtures_need_no_native_database() {
     let retained = Backend::default();
     let worker = retained.clone();

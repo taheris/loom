@@ -124,19 +124,97 @@ fn rule(input: &WalkInput) -> Verdict {
 }
 
 fn check_flake_checks_omit_compile_surfaces(body: &str, violations: &mut Vec<String>) {
+    let mut assertion = false;
+    let mut command = String::new();
+    let mut line = 0;
     for (idx, raw) in body.lines().enumerate() {
-        let code = code_before_comment(raw);
-        for (offset, token) in code_token_spans(code) {
+        let mut code = code_before_comment(raw).trim();
+        if assertion || code == "assert" || code.starts_with("assert ") {
+            assertion = true;
+            let Some((_, tail)) = code.split_once(';') else {
+                continue;
+            };
+            assertion = false;
+            code = tail;
+        }
+        if command.is_empty() {
+            line = idx + 1;
+        }
+        command.push_str(code.trim_end_matches('\\'));
+        if code.ends_with('\\') {
+            command.push(' ');
+            continue;
+        }
+        for (offset, token) in code_token_spans(&command) {
+            let tail = &command[offset + token.len()..];
             if FORBIDDEN_CHECK_TOKENS.contains(&token)
-                && !is_tool_probe(token, &code[offset + token.len()..])
+                && !is_tool_probe(token, tail)
+                && !is_scoped_archive_command(token, tail)
             {
                 violations.push(format!(
-                    "{CHECKS_REL}:{} flake checks must not expose workspace compile surface `{token}`; run it via `nix run .#test`",
-                    idx + 1,
+                    "{CHECKS_REL}:{line} flake checks must not expose workspace compile surface `{token}`; run it via `nix run .#test`",
                 ));
             }
         }
+        command.clear();
     }
+}
+
+fn is_scoped_archive_command(token: &str, tail: &str) -> bool {
+    if token != "nextest" {
+        return false;
+    }
+    let tail = shell_segment(tail);
+    let words: Vec<_> = tail
+        .split_whitespace()
+        .map(|word| word.trim_matches(['\'', '"']))
+        .collect();
+    if words
+        .iter()
+        .any(|word| matches!(*word, "--workspace" | "--all" | "--all-packages"))
+    {
+        return false;
+    }
+    match words.first().copied() {
+        Some("archive") => words.windows(2).any(|pair| {
+            matches!(pair[0], "-p" | "--package")
+                && !pair[1].is_empty()
+                && pair[1]
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        }),
+        Some("run") => {
+            words.contains(&"--archive-file")
+                && words
+                    .iter()
+                    .any(|word| matches!(*word, "-E" | "--filter-expr"))
+                && tail.contains("test(=")
+        }
+        _ => false,
+    }
+}
+
+fn shell_segment(tail: &str) -> &str {
+    let mut quote = None;
+    let mut escaped = false;
+    for (offset, character) in tail.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if character == '\\' && quote != Some('\'') {
+            escaped = true;
+        } else if quote == Some(character) {
+            quote = None;
+        } else if quote.is_none() {
+            if matches!(character, '\'' | '"') {
+                quote = Some(character);
+            } else if matches!(character, ';' | '|' | '&') {
+                return &tail[..offset];
+            }
+        }
+    }
+    tail
 }
 
 fn check_full_test_app(apps_body: &str, script_body: &str, violations: &mut Vec<String>) {
@@ -198,18 +276,46 @@ fn check_cargo_artifacts_source(body: &str, violations: &mut Vec<String>) {
                     .any(|line| code_before_comment(line).trim() == *expected)
             })
         });
-    if has_shared_artifacts || composed_source {
-        return;
+    let profiled_source = derivation_block(
+        body,
+        "dependencyArtifacts",
+        "CARGO_PROFILE: craneLib.buildDepsOnly",
+    )
+    .is_some_and(|(_, block)| {
+        [
+            "commonArgs",
+            "// optionalAttrs (CARGO_PROFILE != \"release\") { inherit CARGO_PROFILE; }",
+            "src = lib.cleanSourceWith {",
+            "filter = srcFilter;",
+        ]
+        .iter()
+        .all(|expected| has_code_line(&block, expected))
+    });
+    let release_seed =
+        profiled_source && has_code_line(body, "cargoArtifacts = dependencyArtifacts \"release\";");
+    if !(has_shared_artifacts || composed_source || release_seed) {
+        match first_assignment_line(body, "cargoArtifacts") {
+            Some(line) => violations.push(format!(
+                "{WORKSPACE_REL}:{line} cargoArtifacts must be built once with craneLib.buildDepsOnly commonArgs for release",
+            )),
+            None => violations.push(format!(
+                "{WORKSPACE_REL}: cargoArtifacts derivation is missing",
+            )),
+        }
     }
+    if first_assignment_line(body, "testCargoArtifacts").is_some()
+        && !(profiled_source
+            && has_code_line(body, "testCargoArtifacts = dependencyArtifacts \"dev\";"))
+    {
+        violations.push(format!(
+            "{WORKSPACE_REL}: testCargoArtifacts must use the shared dev dependency constructor",
+        ));
+    }
+}
 
-    match first_assignment_line(body, "cargoArtifacts") {
-        Some(line) => violations.push(format!(
-            "{WORKSPACE_REL}:{line} cargoArtifacts must be built once with craneLib.buildDepsOnly commonArgs",
-        )),
-        None => violations.push(format!(
-            "{WORKSPACE_REL}: cargoArtifacts derivation is missing",
-        )),
-    }
+fn has_code_line(body: &str, expected: &str) -> bool {
+    body.lines()
+        .any(|line| code_before_comment(line).trim() == expected)
 }
 
 fn check_workspace_derivation(
@@ -240,12 +346,29 @@ fn check_workspace_derivation(
         return;
     };
 
-    let inherits_cargo_artifacts = block.lines().any(|raw| {
-        code_before_comment(raw)
-            .trim()
-            .contains("inherit cargoArtifacts;")
-    });
-    if !inherits_cargo_artifacts {
+    if required.operation == "test"
+        && (first_assignment_line(body, "testCargoArtifacts").is_some()
+            || has_code_line(&block, "CARGO_PROFILE = \"dev\";"))
+    {
+        if !(has_code_line(&block, "CARGO_PROFILE = \"dev\";")
+            && has_code_line(&block, "cargoArtifacts = testCargoArtifacts;"))
+        {
+            violations.push(format!(
+                "{WORKSPACE_REL}:{line} nextest must use the dev profile and shared testCargoArtifacts cache",
+            ));
+        }
+    } else if required.operation == "build"
+        && has_code_line(body, "testCompilation = nextest.compilation;")
+    {
+        if !(has_code_line(&block, "CARGO_PROFILE = \"dev\";")
+            && has_code_line(&block, "cargoArtifacts = testCompilation;")
+            && has_code_line(&block, "src = compilerSource.path;"))
+        {
+            violations.push(format!(
+                "{WORKSPACE_REL}:{line} verificationBuild must use the exact dev catalogue compiler source and cache",
+            ));
+        }
+    } else if !has_code_line(&block, "inherit cargoArtifacts;") {
         violations.push(format!(
             "{WORKSPACE_REL}:{line} {} must inherit the shared cargoArtifacts cache",
             required.attr,
@@ -271,11 +394,13 @@ fn derivation_block(body: &str, attr: &str, builder: &str) -> Option<(usize, Str
             indentation = raw.len() - raw.trim_start().len();
             head.push_str(value);
         } else if !builder_found {
+            head.push(' ');
             head.push_str(code);
         }
         if !builder_found {
-            let value = head.trim_start_matches(|c: char| c.is_whitespace() || c == '(');
-            if !value.is_empty() {
+            let value = head.split_whitespace().collect::<Vec<_>>().join(" ");
+            let value = value.trim_start_matches(|c: char| c.is_whitespace() || c == '(');
+            if !value.is_empty() && !builder.starts_with(value) {
                 let tail = value.strip_prefix(builder)?;
                 if !tail.starts_with(|c: char| c.is_whitespace() || matches!(c, '(' | '{')) {
                     return None;

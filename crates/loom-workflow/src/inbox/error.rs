@@ -11,6 +11,9 @@ pub enum InboxError {
     /// bd CLI failure while running `loom inbox`
     Bd(#[from] BdError),
 
+    /// tracking operation failed during Inbox
+    Tracking(#[from] loom_issues::tracking::Error),
+
     /// rendering the inbox.md template failed
     Render(#[from] askama::Error),
 

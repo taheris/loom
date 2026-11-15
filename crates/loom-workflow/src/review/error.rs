@@ -29,6 +29,9 @@ pub enum ReviewError {
     /// bd CLI failure during `loom review`
     Bd(#[from] BdError),
 
+    /// tracking operation failed during review
+    Tracking(#[from] loom_issues::tracking::Error),
+
     /// review bead carried an invalid molecule id
     InvalidMoleculeId(#[from] ParseMoleculeIdError),
 
@@ -49,9 +52,6 @@ pub enum ReviewError {
 
     /// `git push` failed: {0}
     GitPushFailed(String),
-
-    /// `wrix beads push` failed after `git push` succeeded: {0}
-    BeadsPushFailed(String),
 
     /// detached HEAD — refuse to push
     DetachedHead,

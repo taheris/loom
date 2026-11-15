@@ -74,6 +74,7 @@ impl Fixture {
     producer = checked.resource {{ root = ./.; origin = "producer.sh"; }};
     records = checked.resource {{ root = ./.; origin = "records"; }};
   in {{ checks.{system}.probe = checked.reported {{
+    runtime = "native-process";
     system = "{system}";
     inherit bash coreutils;
     name = "native-reported-cli-fixture";

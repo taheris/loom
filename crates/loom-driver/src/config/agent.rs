@@ -329,6 +329,7 @@ mod tests {
             image_source: PathBuf::from("/nix/store/wrix-image"),
             image_source_kind: Some(ImageSourceKind::NixDescriptor),
             wrix_launcher: None,
+            tracking_access: crate::agent::WorkerTrackingAccess::LauncherManaged,
             profile_config: None,
             workspace: PathBuf::from("/workspace"),
             env: vec![("WRIX_AGENT".into(), "direct".into())],

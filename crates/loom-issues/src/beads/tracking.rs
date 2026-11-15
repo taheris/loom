@@ -20,6 +20,13 @@ fn translate(error: &BdError, mutation: bool) -> tracking::Error {
     }
 }
 
+fn lookup_error(error: &BdError, id: &task::Id) -> tracking::Error {
+    match error {
+        BdError::ShowEmpty => tracking::Error::NotFound { id: id.clone() },
+        _ => translate(error, false),
+    }
+}
+
 fn check_metadata_numbers(value: &serde_json::Value) -> Result<(), tracking::Error> {
     match value {
         serde_json::Value::Number(number)
@@ -114,14 +121,14 @@ impl<R: CommandRunner> tracking::Store for BdClient<R> {
     async fn get(&self, id: &task::Id) -> Result<task::Record, tracking::Error> {
         self.show(id)
             .await
-            .map_err(|error| translate(&error, false))
+            .map_err(|error| lookup_error(&error, id))
     }
 
     async fn observe(&self, id: &task::Id) -> Result<tracking::Observation, tracking::Error> {
         let (record, graph) = self
             .show_with_dependencies(id)
             .await
-            .map_err(|error| translate(&error, false))?;
+            .map_err(|error| lookup_error(&error, id))?;
         if record.id != *id || record.status != graph.status {
             return Err(tracking::Error::InvalidResponse {
                 reason: "observation source identity or status mismatch".into(),
@@ -221,7 +228,7 @@ impl<R: CommandRunner> tracking::Store for BdClient<R> {
     async fn graph(&self, id: &task::Id) -> Result<task::Graph, tracking::Error> {
         self.dependency_snapshot(id)
             .await
-            .map_err(|error| translate(&error, false))
+            .map_err(|error| lookup_error(&error, id))
     }
 
     async fn dependents(&self, id: &task::Id) -> Result<Vec<task::Id>, tracking::Error> {

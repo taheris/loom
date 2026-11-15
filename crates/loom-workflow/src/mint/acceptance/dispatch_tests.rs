@@ -87,7 +87,7 @@ mod cases {
         }
 
         async fn prepare(&self) -> Preparation {
-            prepare_with_bd(
+            prepare_with_tracking(
                 &self.bd,
                 Request {
                     bead: &self.task,

@@ -11,10 +11,14 @@ use super::{
 use crate::gate_clarify::ClarifyApplyOutcome;
 use loom_driver::agent::AgentKind;
 use loom_driver::bd::LabelExt;
-use loom_driver::bd::{BdClient, Bead, ListOpts, UpdateOpts};
+use loom_driver::bd::{BdClient, Bead};
 use loom_driver::config::LoomTopConfig;
 use loom_driver::git::{GitClient, RepoGitPolicy};
 use loom_driver::identifier::{BeadId, MoleculeId, SpecLabel};
+use loom_issues::{
+    task::{Guard, Query, Ready, Update},
+    tracking::{Error as TrackingError, Store},
+};
 
 /// Resolved invocation inputs, independent of rendering and backend implementation.
 #[derive(Clone)]
@@ -50,9 +54,9 @@ pub(super) struct VerificationRecovery {
     repairs: HashSet<BeadId>,
 }
 
-pub(super) async fn resume_verification_candidates<R: loom_driver::bd::CommandRunner>(
+pub(super) async fn resume_verification_candidates<T: crate::tracking::Adapter>(
     request: &Request,
-    bd: BdClient<R>,
+    bd: T,
     recovery: &mut VerificationRecovery,
 ) -> Result<(HashSet<BeadId>, bool), LoopError> {
     use super::runner::AgentLoopController as _;
@@ -218,20 +222,20 @@ pub(super) async fn resume_verification_candidates<R: loom_driver::bd::CommandRu
     Ok((completed, work))
 }
 
-/// `UpdateOpts` for a parallel-mode `loom:clarify` / `loom:blocked`
+/// Neutral update for a parallel-mode `loom:clarify` / `loom:blocked`
 /// self-report. Pairs `status=blocked` with the terminal label so
 /// `bd ready` excludes the parked bead via its native status filter
 /// (`specs/harness.md` § Labels), mirroring the serial
 /// `apply_clarify_or_blocked` / `apply_blocked` paths. Without the
 /// paired status the escalated bead stays ready and the next
 /// `loom loop` re-dispatches it instead of parking for human resolution.
-fn parallel_park_update(label: &str, notes: Option<String>) -> UpdateOpts {
-    UpdateOpts {
+fn parallel_park_update(label: &str, notes: Option<String>) -> Result<Update, TrackingError> {
+    Ok(Update {
         status: Some(loom_driver::bd::Status::Blocked),
-        add_labels: vec![label.to_string()],
+        add_labels: vec![crate::tracking::label(label)?],
         notes,
-        ..UpdateOpts::default()
-    }
+        ..Update::default()
+    })
 }
 
 /// Run the parallel ready/retry/stabilization loop with the caller's worker transport.
@@ -240,6 +244,27 @@ fn parallel_park_update(label: &str, notes: Option<String>) -> UpdateOpts {
 /// Returns Beads, Git, or gate failures without certifying incomplete work.
 pub async fn run<S, F>(request: Request, spawn: S) -> Result<LoopOutcome, LoopError>
 where
+    S: Fn(WorktreeBead) -> F + Send + Sync + 'static,
+    F: std::future::Future<Output = AgentOutcome> + Send + 'static,
+{
+    let tracking = BdClient::with_runner(
+        loom_driver::bd::TokioRunner::default()
+            .with_publication(&request.wrix_bin, &request.workspace),
+    );
+    run_with_tracking(request, tracking, spawn).await
+}
+
+/// Run parallel production policy against the caller-selected authoritative tracker.
+///
+/// # Errors
+/// Returns tracking, Git, or gate failures without certifying incomplete work.
+pub async fn run_with_tracking<T, S, F>(
+    request: Request,
+    bd: T,
+    spawn: S,
+) -> Result<LoopOutcome, LoopError>
+where
+    T: crate::tracking::Adapter,
     S: Fn(WorktreeBead) -> F + Send + Sync + 'static,
     F: std::future::Future<Output = AgentOutcome> + Send + 'static,
 {
@@ -261,7 +286,6 @@ where
         manifest: _,
     } = request;
     let spawn = Arc::new(spawn);
-    let bd = BdClient::<loom_driver::bd::TokioRunner>::new();
     let git = GitClient::open_with_integration_branch(
         workspace.clone(),
         loom.integration_branch.clone(),
@@ -346,12 +370,8 @@ where
                 }
             }
             if batch_beads.is_empty() {
-                let (recovered, attempted) = resume_verification_candidates(
-                    &recovery_request,
-                    BdClient::<loom_driver::bd::TokioRunner>::new(),
-                    &mut recovery,
-                )
-                .await?;
+                let (recovered, attempted) =
+                    resume_verification_candidates(&recovery_request, &bd, &mut recovery).await?;
                 finished_ids.extend(recovered);
                 for repaired in recovery.repairs.drain() {
                     finished_ids.remove(&repaired);
@@ -408,10 +428,13 @@ where
                         );
                         bd.update(
                             &bead,
-                            UpdateOpts {
-                                add_labels: vec![crate::r#loop::CONFLICT_RETRY_LABEL.to_string()],
-                                ..UpdateOpts::default()
+                            Update {
+                                add_labels: vec![crate::tracking::label(
+                                    crate::r#loop::CONFLICT_RETRY_LABEL,
+                                )?],
+                                ..Update::default()
                             },
+                            Guard::None,
                         )
                         .await?;
                         emit_parallel_route_event(
@@ -458,7 +481,8 @@ where
                                 infra_retry_queue.push_back(retry_bead);
                             }
                             ParallelInfraRoute::Park { diagnostic } => {
-                                bd.update(&bead, parallel_infra_update(&diagnostic)).await?;
+                                bd.update(&bead, parallel_infra_update(&diagnostic)?, Guard::None)
+                                    .await?;
                                 emit_parallel_route_event(
                                     &logs_root,
                                     &label,
@@ -486,8 +510,12 @@ where
                         } else {
                             format!("agent-blocked: {reason}")
                         };
-                        bd.update(&bead, parallel_park_update("loom:blocked", Some(notes)))
-                            .await?;
+                        bd.update(
+                            &bead,
+                            parallel_park_update("loom:blocked", Some(notes))?,
+                            Guard::None,
+                        )
+                        .await?;
                         emit_parallel_route_event(
                             &logs_root,
                             &label,
@@ -512,10 +540,11 @@ where
                         if loom_protocol::gate::options::has_well_formed_block(&question) {
                             bd.update(
                                 &bead,
-                                UpdateOpts {
+                                Update {
                                     notes: Some(question),
-                                    ..UpdateOpts::default()
+                                    ..Update::default()
                                 },
+                                Guard::None,
                             )
                             .await?;
                             emit_parallel_route_event(
@@ -576,11 +605,9 @@ where
         };
         if let Some(molecule) = molecule.as_ref() {
             let molecule_bead = BeadId::new(molecule.as_str())?;
-            let molecule_exists = match bd.show(&molecule_bead).await {
+            let molecule_exists = match bd.get(&molecule_bead).await {
                 Ok(_) => true,
-                Err(loom_driver::bd::BdError::ShowEmpty)
-                    if !work_since_gate && last_gate.is_none() =>
-                {
+                Err(TrackingError::NotFound { .. }) if !work_since_gate && last_gate.is_none() => {
                     false
                 }
                 Err(error) => return Err(error.into()),
@@ -598,16 +625,17 @@ where
             if promotion.refused > 0 {
                 bd.update(
                     &molecule_bead,
-                    UpdateOpts {
+                    Update {
                         status: Some(loom_driver::bd::Status::Blocked),
-                        add_labels: vec!["loom:blocked".to_string()],
+                        add_labels: vec![crate::tracking::label("loom:blocked")?],
                         notes: Some(format!(
                             "{}: {}",
                             crate::r#loop::GATE_ROUTING_STRUCTURAL_VIOLATION_CAUSE,
                             promotion.render(),
                         )),
-                        ..UpdateOpts::default()
+                        ..Update::default()
                     },
+                    Guard::None,
                 )
                 .await?;
                 blocked = blocked.saturating_add(1);
@@ -715,8 +743,8 @@ impl ParallelInfraBudget {
     }
 }
 
-pub(super) async fn parallel_ready_batch<R: loom_driver::bd::CommandRunner>(
-    bd: &BdClient<R>,
+pub(super) async fn parallel_ready_batch<T: Store>(
+    bd: &T,
     workspace: &std::path::Path,
     label: &SpecLabel,
     ready_parent: Option<&BeadId>,
@@ -728,13 +756,14 @@ pub(super) async fn parallel_ready_batch<R: loom_driver::bd::CommandRunner>(
         .recover_inventory(bd, ready_parent, label)
         .await?;
     let beads = bd
-        .ready(loom_driver::bd::ReadyOpts {
+        .ready(Ready {
             limit: None,
             label: ready_parent
                 .is_none()
-                .then(|| format!("spec:{}", label.as_str())),
+                .then(|| crate::tracking::label(&format!("spec:{}", label.as_str())))
+                .transpose()?,
             parent: ready_parent.cloned(),
-            exclude_label: vec![],
+            exclude_labels: vec![],
         })
         .await?;
     let mut out = Vec::with_capacity(batch_limit);
@@ -766,20 +795,21 @@ pub(super) async fn parallel_ready_batch<R: loom_driver::bd::CommandRunner>(
     Ok(out)
 }
 
-async fn load_parallel_infra_queue(
-    bd: &BdClient,
+async fn load_parallel_infra_queue<T: Store>(
+    bd: &T,
     label: &SpecLabel,
     ready_parent: Option<&BeadId>,
 ) -> Result<VecDeque<Bead>, LoopError> {
     let beads = bd
-        .list(ListOpts {
+        .query(Query {
             statuses: vec![loom_driver::bd::Status::Blocked],
             label: ready_parent
                 .is_none()
-                .then(|| format!("spec:{}", label.as_str())),
-            label_any: vec!["loom:infra".to_string()],
+                .then(|| crate::tracking::label(&format!("spec:{}", label.as_str())))
+                .transpose()?,
+            label_any: vec![crate::tracking::label("loom:infra")?],
             parent: ready_parent.cloned(),
-            ..ListOpts::default()
+            ..Query::default()
         })
         .await?;
     let mut queue = VecDeque::new();
@@ -800,57 +830,35 @@ async fn load_parallel_infra_queue(
     Ok(queue)
 }
 
-async fn clear_parallel_infra_state(bd: &BdClient, beads: &[Bead]) -> Result<(), LoopError> {
+async fn clear_parallel_infra_state<T: Store>(bd: &T, beads: &[Bead]) -> Result<(), LoopError> {
     for bead in beads {
         if bead.labels.iter().any(loom_driver::bd::Label::is_infra) {
-            bd.update(&bead.id, parallel_clear_infra_update()).await?;
+            bd.update(&bead.id, parallel_clear_infra_update()?, Guard::None)
+                .await?;
         }
     }
     Ok(())
 }
 
-fn parallel_clear_infra_update() -> UpdateOpts {
-    UpdateOpts {
+fn parallel_clear_infra_update() -> Result<Update, TrackingError> {
+    Ok(Update {
         status: Some(loom_driver::bd::Status::Open),
-        remove_labels: vec!["loom:infra".to_string()],
-        ..UpdateOpts::default()
-    }
+        remove_labels: vec![crate::tracking::label("loom:infra")?],
+        ..Update::default()
+    })
 }
 
-fn parallel_infra_update(diagnostic: &InfraDiagnostic) -> UpdateOpts {
-    let mut metadata = vec![
-        ("loom.infra.cause".to_string(), diagnostic.cause.clone()),
-        ("loom.infra.phase".to_string(), "loop".to_string()),
-        (
-            "loom.infra.class".to_string(),
-            diagnostic.infra_class.clone(),
-        ),
-    ];
-    if let Some(first_event_seen) = diagnostic.first_event_seen {
-        metadata.push((
-            "loom.infra.first_event_seen".to_string(),
-            first_event_seen.to_string(),
-        ));
-    }
-    if let Some(attempt) = diagnostic.attempt {
-        metadata.push(("loom.infra.attempt".to_string(), attempt.to_string()));
-    }
-    if let Some(max_attempts) = diagnostic.max_attempts {
-        metadata.push((
-            "loom.infra.max_attempts".to_string(),
-            max_attempts.to_string(),
-        ));
-    }
-    UpdateOpts {
+fn parallel_infra_update(diagnostic: &InfraDiagnostic) -> Result<Update, TrackingError> {
+    Ok(Update {
         status: Some(loom_driver::bd::Status::Blocked),
-        add_labels: vec!["loom:infra".to_string()],
+        add_labels: vec![crate::tracking::label("loom:infra")?],
         append_notes: Some(parallel_diagnostic_notes(
             &diagnostic.cause,
             &diagnostic.error,
         )),
-        set_metadata: metadata,
-        ..UpdateOpts::default()
-    }
+        set_metadata: crate::tracking::infra_metadata(diagnostic),
+        ..Update::default()
+    })
 }
 
 fn parallel_diagnostic_notes(cause: &str, error: &str) -> String {
@@ -900,14 +908,14 @@ mod tests {
     #[test]
     fn parallel_park_pairs_status_blocked_with_label() {
         for label in ["loom:clarify", "loom:blocked"] {
-            let opts = parallel_park_update(label, Some("a-note".to_string()));
+            let opts = parallel_park_update(label, Some("a-note".to_string())).unwrap();
             assert_eq!(
                 opts.status.map(loom_driver::bd::Status::as_str),
                 Some("blocked"),
                 "{label}: must transition status=blocked so `bd ready` excludes it",
             );
             assert!(
-                opts.add_labels.iter().any(|l| l == label),
+                opts.add_labels.iter().any(|l| l.as_str() == label),
                 "{label}: terminal label must be applied: {:?}",
                 opts.add_labels,
             );
@@ -958,44 +966,52 @@ mod tests {
             true,
         );
 
-        let opts = parallel_infra_update(&diagnostic);
+        let opts = parallel_infra_update(&diagnostic).unwrap();
 
         assert_eq!(
             opts.status.map(loom_driver::bd::Status::as_str),
             Some("blocked")
         );
-        assert!(opts.add_labels.iter().any(|label| label == "loom:infra"));
+        assert!(
+            opts.add_labels
+                .iter()
+                .any(|label| label.as_str() == "loom:infra")
+        );
         assert_eq!(
             opts.append_notes.as_deref(),
             Some("infra-interrupted: stream eof"),
         );
         assert_eq!(opts.notes, None);
-        assert!(opts.set_metadata.contains(&(
-            "loom.infra.cause".to_string(),
-            "infra-interrupted".to_string(),
-        )));
-        assert!(opts.set_metadata.contains(&(
-            "loom.infra.first_event_seen".to_string(),
-            "true".to_string(),
-        )));
-        assert!(
-            opts.set_metadata
-                .contains(&("loom.infra.attempt".to_string(), "2".to_string(),))
+        assert_eq!(
+            opts.set_metadata.get("loom.infra.cause"),
+            Some(&serde_json::json!("infra-interrupted"))
         );
-        assert!(
-            opts.set_metadata
-                .contains(&("loom.infra.max_attempts".to_string(), "3".to_string(),))
+        assert_eq!(
+            opts.set_metadata.get("loom.infra.first_event_seen"),
+            Some(&serde_json::json!(true))
+        );
+        assert_eq!(
+            opts.set_metadata.get("loom.infra.attempt"),
+            Some(&serde_json::json!(2))
+        );
+        assert_eq!(
+            opts.set_metadata.get("loom.infra.max_attempts"),
+            Some(&serde_json::json!(3))
         );
     }
 
     #[test]
     fn parallel_clear_infra_update_reopens_and_removes_label() {
-        let opts = parallel_clear_infra_update();
+        let opts = parallel_clear_infra_update().unwrap();
 
         assert_eq!(
             opts.status.map(loom_driver::bd::Status::as_str),
             Some("open")
         );
-        assert!(opts.remove_labels.iter().any(|label| label == "loom:infra"),);
+        assert!(
+            opts.remove_labels
+                .iter()
+                .any(|label| label.as_str() == "loom:infra"),
+        );
     }
 }

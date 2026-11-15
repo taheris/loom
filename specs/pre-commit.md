@@ -204,7 +204,12 @@ Worker profiles retain Nix and execute Nix-dependent hooks in their private
 single-user store. Hooks invoke required tools directly: a missing tool fails
 rather than silently skipping either feedback or publication. Host publication
 must establish required coverage or report the missing capability as blocking.
-Non-Nix hooks run uniformly across host and worker contexts.
+Non-Nix hooks run uniformly across host and worker contexts. Loom's ordinary
+landing definitions require no additional namespace, mount, cgroup delegation or
+user-service authority inside the existing agent boundary. Kernel substrate
+diagnostics are separate explicit entrypoints, not hidden publication duties.
+Actual signed fixture hooks cover success and failure without granting those
+capabilities; native execution never claims kernel-isolation acceptance.
 
 ### Marker integration
 
@@ -477,12 +482,12 @@ consumption.
 - The `pre-push-checks` wrapper exits 0 without execing its argument command
   only when marker validation proves matching tree/config/range and hook
   coverage for the wrapped hook id/entry
-  [test](loom::marker_cli::pre_push_checks_short_circuits_only_on_covered_marker)
+  [test](loom::integration::marker_cli::pre_push_checks_short_circuits_only_on_covered_marker)
 
 - The `pre-push-checks` wrapper execs its argument command when marker
   validation fails because the marker is stale, dirty, config/range- mismatched,
   missing gate-log evidence, or does not cover the wrapped hook
-  [test](loom::marker_cli::pre_push_checks_falls_through_on_uncovered_or_invalid_marker)
+  [test](loom::integration::marker_cli::pre_push_checks_falls_through_on_uncovered_or_invalid_marker)
 
 - The `pre-push-checks` wrapper execs its argument command (does not fail the
   push) when the marker file is absent, so operator-manual pushes from a clone

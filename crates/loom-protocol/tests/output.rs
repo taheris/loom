@@ -812,11 +812,12 @@ mod properties {
 
 #[test]
 fn cargo_metadata_coordinates_workspace_version_and_dependents() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    let root = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
         .parent()
-        .unwrap();
+        .unwrap()
+        .to_path_buf();
     let output = std::process::Command::new("cargo")
         .args(["metadata", "--no-deps", "--locked", "--format-version", "1"])
         .current_dir(root)

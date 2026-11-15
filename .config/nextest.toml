@@ -11,3 +11,14 @@ run-wrapper = 'private-fixtures'
 
 [profile.default]
 default-filter = 'all()'
+
+# Begin whole-workspace Nix construction before short cases can create a long tail.
+[[profile.default.overrides]]
+filter = 'test(=inventory::nix::tests::shipped_workspace_packages_construct_complete_native_graphs_from_captured_definitions)'
+priority = 100
+
+# Long-running backend-driven policy cases should overlap the rest of the suite,
+# not leave an otherwise idle campaign waiting for its final workflow cases.
+[[profile.default.overrides]]
+filter = 'package(=loom-workflow) & binary(=loom_workflow)'
+priority = 99

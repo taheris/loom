@@ -6,7 +6,7 @@
   src,
 }:
 let
-  inherit (pkgs.lib) cleanSourceWith;
+  inherit (pkgs.lib) cleanSourceWith optionals optionalString;
   construct =
     overrides:
     import ../workspace.nix (
@@ -28,6 +28,8 @@ let
       filter = path: _: path != "${toString src}/${relative}";
     };
   baseline = construct { };
+  runtimeTool = pkgs.writeShellScriptBin "runtime-only-control" "exit 1";
+  runtime = construct { nativeTestInputs = [ runtimeTool ]; };
   readme = construct { src = without "README.md"; };
   docs = construct { src = without "docs/README.md"; };
   rust = construct { src = without "crates/loom-gate/src/provider/tracked.rs"; };
@@ -70,12 +72,55 @@ assert baseline.stagedSrc.drvPath != rust.stagedSrc.drvPath;
 assert baseline.cargoArtifacts.drvPath == docs.cargoArtifacts.drvPath;
 assert baseline.bin.drvPath == docs.bin.drvPath;
 assert baseline.stagedSrc.drvPath != docs.stagedSrc.drvPath;
+assert baseline.testCompilation.drvPath == docs.testCompilation.drvPath;
+assert baseline.testCompilation.drvPath == runtime.testCompilation.drvPath;
+assert baseline.testCargoArtifacts.installCargoArtifactsMode == "use-zstd";
+assert baseline.testCompilation.prePatch == ''export CARGO_TARGET_DIR="$out/target"'';
+assert !baseline.testCompilation.doInstallCargoArtifacts;
 assert
-  builtins.readFile baseline.cargoArtifacts.cargoLock == builtins.readFile (src + "/Cargo.lock");
+  baseline.nextest.loom.reporter.prePatch
+  == ''postPatchHooks=("''${postPatchHooks[@]/inheritCargoArtifacts/}")'';
+assert baseline.testCompilation.dontFixup;
+assert baseline.testCompilation.NIX_NO_SELF_RPATH == 1;
+assert baseline.nextest.drvPath != runtime.nextest.drvPath;
+assert builtins.elem "${runtimeTool}/bin" (
+  pkgs.lib.splitString ":" runtime.nextest.LOOM_TEST_RUNTIME_PATH
+);
+assert
+  map toString runtime.nextest.nativeBuildInputs
+  == map toString runtime.testCompilation.nativeBuildInputs;
+assert
+  !(builtins.elem (toString runtimeTool) (map toString runtime.testCompilation.nativeBuildInputs));
+assert baseline.nextest.drvPath != docs.nextest.drvPath;
+assert baseline.testCompilation.drvPath != rust.testCompilation.drvPath;
+assert baseline.testCompilation.drvPath != toolchain.testCompilation.drvPath;
+assert baseline.testCompilation.drvPath != patch.testCompilation.drvPath;
 assert baseline.cargoArtifacts.drvPath != manifest.cargoArtifacts.drvPath;
 assert baseline.cargoArtifacts.drvPath != toolchain.cargoArtifacts.drvPath;
 assert baseline.cargoArtifacts.drvPath != patch.cargoArtifacts.drvPath;
 assert baseline.cargoConfig != patch.cargoConfig;
-pkgs.runCommand "workspace-build-identity" { } ''
-  touch "$out"
-''
+pkgs.runCommand "workspace-build-identity"
+  {
+    nativeBuildInputs = optionals pkgs.stdenv.hostPlatform.isDarwin (
+      baseline.testCompilerHooks ++ [ pkgs.stdenv.cc ]
+    );
+  }
+  ''
+    cmp ${baseline.compilerSource.path}/clippy.toml ${src + "/clippy.toml"}
+    cmp ${baseline.cargoArtifacts.cargoLock} ${src + "/Cargo.lock"}
+    ${optionalString pkgs.stdenv.hostPlatform.isDarwin ''
+      : "''${DYLD_LIBRARY_PATH:?compiler runtime hook was not applied}"
+      test -d "$DYLD_LIBRARY_PATH"
+      for library in "$DYLD_LIBRARY_PATH"/*; do
+        case "$(basename "$library")" in
+          librustc_driver-*.dylib) ;;
+          *) printf 'Unexpected compiler runtime library: %s\n' "$library" >&2; exit 1 ;;
+        esac
+        test "$(readlink "$library")" = "${baseline.toolchain}/lib/$(basename "$library")"
+      done
+      ${baseline.toolchain}/bin/rustc --version
+      ${baseline.toolchain}/bin/rustdoc --version
+      ${pkgs.stdenv.cc}/bin/cc --version
+    ''}
+    touch "$out"
+  ''

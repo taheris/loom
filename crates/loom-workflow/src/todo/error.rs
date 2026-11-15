@@ -127,6 +127,9 @@ pub enum TodoError {
     /// bd client failure during `loom todo`
     Bd(#[from] BdError),
 
+    /// tracking operation failed during Todo
+    Tracking(#[from] loom_issues::tracking::Error),
+
     /// git operation failed during `loom todo`
     Git(#[from] GitError),
 

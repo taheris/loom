@@ -151,7 +151,7 @@ let
             postPatch = (attrs.postPatch or "") + ''
               ${pkgs.buildPackages.perl}/bin/perl lib/build_OID_registry \
                 include/linux/oid_registry.h oid-registry-check.c
-              ${pkgs.buildPackages.python3}/bin/python ${./tests/kernel-oid-registry.py} \
+              ${import ./verification-tool.nix { pkgs = pkgs.buildPackages; }}/bin/loom-verification kernel-oid \
                 include/linux/oid_registry.h oid-registry-check.c
             '';
             outputs = (attrs.outputs or [ "out" ]) ++ [ "fullConfig" ];

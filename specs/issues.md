@@ -167,7 +167,7 @@ using a database or subprocess does not itself make a test host-only.
   use interchangeable tracking operations while retaining their real admission,
   ownership, dedup, scheduling and publication decisions above the adapter. The
   lightweight backend exercises those paths, not replacement policy stubs.
-  [test?](workflow_tracking_substitution_retains_production_policy)
+  [test](workflow_tracking_substitution_retains_production_policy)
 
 - Real worker tool/prompt composition uses backend-neutral task operations;
   substituting a backend does not require bd compatibility or change phase,
@@ -177,7 +177,7 @@ using a database or subprocess does not itself make a test host-only.
 - Production publication uses backend-selected synchronization with existing
   ordering/error behavior; Beads retains shared authoritative worker state and
   no per-task Dolt push/pull, including interrupted/uncertain synchronization.
-  [test?](tracking_publication_sync_preserves_backend_and_workflow_boundaries)
+  [test](tracking_publication_sync_preserves_backend_and_workflow_boundaries)
 
 ## Out of Scope
 

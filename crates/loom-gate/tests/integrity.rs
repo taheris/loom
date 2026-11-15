@@ -159,8 +159,9 @@ fn self_referential_check_annotation_resolves_against_integrity_gate_implementat
 ";
     let parsed = parse_content(&PathBuf::from("specs/gate.md"), md);
 
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let workspace_root = Path::new(manifest_dir)
+    let manifest_dir = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = manifest_dir
+        .as_path()
         .parent()
         .and_then(Path::parent)
         .unwrap()
@@ -185,7 +186,7 @@ fn self_referential_check_annotation_resolves_against_integrity_gate_implementat
 
 #[test]
 fn self_referential_judge_annotation_resolves_against_integrity_source_file() {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let manifest_dir = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR"));
     let integrity_rs = manifest_dir.join("src/integrity.rs");
     assert!(
         integrity_rs.exists(),
@@ -310,7 +311,7 @@ fn synthetic_specs_dir_check_combines_both_directions() {
 
 #[test]
 fn end_to_end_specs_dir_check_combines_both_directions() {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest_dir = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR"));
     let workspace_root = manifest_dir
         .parent()
         .and_then(Path::parent)

@@ -96,10 +96,11 @@ pub trait ReviewController: Send {
     /// [`ReviewError::GitPushFailed`] or [`ReviewError::DetachedHead`].
     fn git_push(&mut self) -> impl std::future::Future<Output = Result<(), ReviewError>> + Send;
 
-    /// `wrix beads push` (Dolt branch sync). Errors map to
-    /// [`ReviewError::BeadsPushFailed`] — `git push` already succeeded by
-    /// the time this runs, so the caller treats this as a separate exit.
-    fn beads_push(&mut self) -> impl std::future::Future<Output = Result<(), ReviewError>> + Send;
+    /// Publish the configured tracking backend after Git succeeds. Tracking
+    /// failures, including uncertain synchronization, remain separate from Git publication.
+    fn publish_tracking(
+        &mut self,
+    ) -> impl std::future::Future<Output = Result<(), ReviewError>> + Send;
 
     /// `exec loom loop -s <label>` for auto-iteration. Implementations
     /// `exec` (replace process) on success; the future resolves only on
@@ -568,7 +569,7 @@ async fn apply_verdict<C: ReviewController>(
                 }
                 return Err(err);
             }
-            controller.beads_push().await?;
+            controller.publish_tracking().await?;
             // Auto-close every epic whose direct children are all closed.
             // Runs *after* both pushes succeed so a push failure cannot
             // leave a closed-locally / open-on-remote epic stranded; on
@@ -842,7 +843,7 @@ mod tests {
             Ok(())
         }
 
-        async fn beads_push(&mut self) -> Result<(), ReviewError> {
+        async fn publish_tracking(&mut self) -> Result<(), ReviewError> {
             self.beads_push_calls += 1;
             Ok(())
         }
@@ -1547,6 +1548,7 @@ mod tests {
                 ReviewError::Protocol(_)
                 | ReviewError::IntegrityDecision(_)
                 | ReviewError::Bd(_)
+                | ReviewError::Tracking(_)
                 | ReviewError::InvalidMoleculeId(_)
                 | ReviewError::Render(_)
                 | ReviewError::Log(_)
@@ -1554,7 +1556,6 @@ mod tests {
                 | ReviewError::ReviewIncomplete(_)
                 | ReviewError::VerifiedScopeMismatch(_)
                 | ReviewError::GitPushFailed(_)
-                | ReviewError::BeadsPushFailed(_)
                 | ReviewError::DetachedHead
                 | ReviewError::RunHandoff(_)
                 | ReviewError::State(_)
@@ -2058,8 +2059,8 @@ mod tests {
             async fn git_push(&mut self) -> Result<(), ReviewError> {
                 Err(ReviewError::GitPushFailed("simulated".into()))
             }
-            async fn beads_push(&mut self) -> Result<(), ReviewError> {
-                self.0.beads_push().await
+            async fn publish_tracking(&mut self) -> Result<(), ReviewError> {
+                self.0.publish_tracking().await
             }
             async fn exec_run(&mut self) -> Result<(), ReviewError> {
                 self.0.exec_run().await

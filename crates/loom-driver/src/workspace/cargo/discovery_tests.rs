@@ -169,8 +169,8 @@ mod cases {
         fs::create_dir(&outside).unwrap();
         fs::write(outside.join("input"), b"protected").unwrap();
         fs::set_permissions(&outside, fs::Permissions::from_mode(0o555)).unwrap();
-        let runner =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/run-private-fixture-tests");
+        let runner = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scripts/run-private-fixture-tests");
         for code in [0, 0, 23, 23] {
             let output = Command::new("bash")
             .arg(&runner)

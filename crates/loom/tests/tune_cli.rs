@@ -28,7 +28,7 @@ fn find_bash() -> PathBuf {
 }
 
 fn mock_pi_path() -> PathBuf {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest_dir = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR"));
     manifest_dir
         .ancestors()
         .map(|ancestor| ancestor.join("tests/mock-pi/pi.sh"))
@@ -82,7 +82,7 @@ fn install_tune_review_wrix(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
 }
 
 fn project_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
+    loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
         .find(|candidate| {
             candidate.join("Cargo.toml").is_file() && candidate.join("specs").is_dir()
@@ -335,11 +335,11 @@ max_changed_files = 2
         git(&workspace, &["add", "."]);
         git(&workspace, &["commit", "-q", "-m", "add fixture"]);
         let (shim, manifest, record) = install_tune_review_wrix(root);
-        let fake = project_root().join("tests/mock-pi/tune-replay.py");
+        let fake = Path::new(env!("CARGO_BIN_EXE_mock-loom-agent"));
         write_file(
             &shim,
             &format!(
-                "#!{}\nset -euo pipefail\nexec python3 '{}' '{}' '{}' \"$@\"\n",
+                "#!{}\nset -euo pipefail\nexec '{}' --tune-replay '{}' '{}' \"$@\"\n",
                 find_bash().display(),
                 fake.display(),
                 record.display(),
@@ -398,12 +398,20 @@ max_changed_files = 2
             .env_remove("LOOM_INSIDE")
             .output()
             .unwrap();
-        assert_success(&output, &["replay clock worker"]);
-        loom_driver::state::CacheDb::open(loom_driver::state::path(&self.workspace))
-            .unwrap()
-            .record::<serde_json::Value>(loom_driver::state::RecordKind::Tune, "lm-replay.1")
-            .unwrap()
-            .unwrap()
+        let manifest = loom_driver::state::CacheDb::open(loom_driver::state::path(&self.workspace))
+            .and_then(|database| {
+                database.record::<serde_json::Value>(
+                    loom_driver::state::RecordKind::Tune,
+                    "lm-replay.1",
+                )
+            });
+        assert!(
+            output.status.success(),
+            "replay clock worker failed: stdout={} stderr={} manifest={manifest:?}",
+            stdout(&output),
+            stderr(&output),
+        );
+        manifest.unwrap().unwrap()
     }
 
     fn starts(&self) -> Vec<serde_json::Value> {
@@ -595,9 +603,28 @@ fn tune_nonzero_replay_cleans_up_and_blocks() {
     fixture.assert_clean();
 }
 
+#[cfg(target_os = "linux")]
+fn replay_process_is_running(pid: u64) -> bool {
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => stat.split_whitespace().nth(2) != Some("Z"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => panic!("cannot observe replay process {pid}: {error}"),
+    }
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn replay_process_is_running(pid: u64) -> bool {
+    let pid = nix::unistd::Pid::from_raw(i32::try_from(pid).unwrap());
+    match nix::sys::signal::kill(pid, None) {
+        Ok(()) => true,
+        Err(nix::errno::Errno::ESRCH) => false,
+        Err(error) => panic!("cannot observe replay process {pid}: {error}"),
+    }
+}
+
 /// Logical budget expiry occurs only after the real mutating launcher and descendant are ready.
 #[tokio::test]
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 async fn tune_wall_timeout_terminates_mutating_launcher_and_descendant() {
     use loom_driver::clock::{Clock, SystemClock};
     let clock = SystemClock::new();
@@ -614,18 +641,9 @@ async fn tune_wall_timeout_terminates_mutating_launcher_and_descendant() {
     for field in ["pid", "child"] {
         let pid = starts[0][field].as_u64().unwrap();
         let deadline = clock.now() + std::time::Duration::from_secs(2);
-        loop {
-            match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
-                Ok(stat) if stat.split_whitespace().nth(2) == Some("Z") => break,
-                result => {
-                    assert!(
-                        clock.now() < deadline,
-                        "{field} is still running: {result:?}"
-                    );
-                    clock.sleep(std::time::Duration::from_millis(10)).await;
-                }
-            }
+        while replay_process_is_running(pid) {
+            assert!(clock.now() < deadline, "{field} {pid} is still running");
+            clock.sleep(std::time::Duration::from_millis(10)).await;
         }
     }
     assert!(!fixture.record.with_extension("escaped").exists());

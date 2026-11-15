@@ -14,7 +14,7 @@
 use std::path::PathBuf;
 
 fn workspace_root() -> PathBuf {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let manifest_dir = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR"));
     manifest_dir
         .parent()
         .and_then(|p| p.parent())

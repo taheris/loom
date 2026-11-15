@@ -33,14 +33,39 @@ use loom_driver::agent::SpawnConfig;
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 
+/// Select the archived CLI when Nextest relocates an integration test.
+fn loom_cli() -> &'static str {
+    static BINARY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    BINARY.get_or_init(|| {
+        std::env::var_os("NEXTEST_BIN_EXE_loom")
+            .map_or_else(
+                || {
+                    std::env::current_exe()
+                        .unwrap()
+                        .parent()
+                        .unwrap()
+                        .parent()
+                        .unwrap()
+                        .join("loom")
+                },
+                PathBuf::from,
+            )
+            .into_os_string()
+            .into_string()
+            .expect("CLI fixture path is UTF-8")
+    })
+}
+
 fn git_command() -> Command {
     let mut command = Command::new("git");
     loom_test_support::scrub_git_local_env(&mut command);
     command
 }
 
-/// Gives host-key fixtures an unsigned Git policy without ambient launcher credentials.
-fn configure_host_key_fixture(command: &mut Command, home: &Path) {
+/// Isolates host-key Git authority and owns a cache outside the fixture repository.
+fn configure_host_key_fixture(command: &mut Command, home: &Path) -> tempfile::TempDir {
+    let cache = tempfile::tempdir().expect("private fixture cache outside the repository");
+    command.env("XDG_CACHE_HOME", cache.path());
     loom_test_support::scrub_git_local_env(command);
     loom_test_support::configure_hermetic_git(command);
     command
@@ -50,6 +75,7 @@ fn configure_host_key_fixture(command: &mut Command, home: &Path) {
         .env_remove("WRIX_SIGNING_KEY")
         .env_remove("GIT_SSH")
         .env_remove("GIT_SSH_COMMAND");
+    cache
 }
 
 /// Bounds startup separately from execution when an owned launcher receipt is supplied.
@@ -140,7 +166,8 @@ fn find_bash() -> PathBuf {
 /// argv (one quoted token per line) and stdin TTY/pipe state into the two
 /// sibling files, copies the `--spawn-config` JSON aside (so the test can
 /// inspect it without racing the temp-file delete), then execs the selected
-/// mock mode or a dedicated process fixture.
+/// mock mode or a dedicated process fixture. Concurrent spawns publish each
+/// captured configuration atomically instead of racing to create one file.
 fn install_wrix_shim(
     dir: &Path,
     argv_file: &Path,
@@ -175,7 +202,9 @@ fn install_wrix_shim(
          prev=''\n\
          for a in \"$@\"; do\n\
              if [[ \"$prev\" == '--spawn-config' ]]; then\n\
-                 cp \"$a\" \"$SPAWN_CONFIG_COPY\"\n\
+                 capture=$(mktemp \"${{SPAWN_CONFIG_COPY}}.XXXXXXXX\")\n\
+                 cp \"$a\" \"$capture\"\n\
+                 mv -f \"$capture\" \"$SPAWN_CONFIG_COPY\"\n\
                  break\n\
              fi\n\
              prev=\"$a\"\n\
@@ -198,6 +227,75 @@ fn install_wrix_shim(
     perm.set_mode(0o755);
     std::fs::set_permissions(&shim, perm).unwrap();
     shim
+}
+
+#[test]
+fn parallel_wrix_capture_publishes_complete_spawn_configurations() {
+    use std::sync::{Arc, Barrier};
+
+    const WORKERS: usize = 16;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let mock = root.join("mock.sh");
+    std::fs::write(&mock, "exit 0\n").unwrap();
+    let capture = root.join("spawn-config.json");
+    let shim = install_wrix_shim(
+        root,
+        &root.join("argv.txt"),
+        &root.join("stdin.txt"),
+        &capture,
+        &mock,
+        "",
+    );
+    for wave in 0..8 {
+        if capture.exists() {
+            std::fs::remove_file(&capture).unwrap();
+        }
+        let expected = (0..WORKERS)
+            .map(|worker| serde_json::json!({"wave": wave, "worker": worker}))
+            .collect::<Vec<_>>();
+        let configs = expected
+            .iter()
+            .enumerate()
+            .map(|(worker, value)| {
+                let path = root.join(format!("input-{worker}.json"));
+                std::fs::write(&path, value.to_string()).unwrap();
+                path
+            })
+            .collect::<Vec<_>>();
+        let barrier = Arc::new(Barrier::new(WORKERS));
+        std::thread::scope(|scope| {
+            let children = configs
+                .iter()
+                .map(|config| {
+                    let barrier = Arc::clone(&barrier);
+                    let shim = &shim;
+                    scope.spawn(move || {
+                        barrier.wait();
+                        Command::new(shim)
+                            .arg("--spawn-config")
+                            .arg(config)
+                            .output()
+                            .unwrap()
+                    })
+                })
+                .collect::<Vec<_>>();
+            for child in children {
+                let output = child.join().unwrap();
+                assert!(
+                    output.status.success(),
+                    "parallel fixture capture failed: {}",
+                    String::from_utf8_lossy(&output.stderr),
+                );
+            }
+        });
+        let actual: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&capture).unwrap()).unwrap();
+        assert!(
+            expected.contains(&actual),
+            "mixed or stale capture: {actual}"
+        );
+    }
 }
 
 fn install_policy_aware_wrix_shim(dir: &Path, delegate: &Path) -> PathBuf {
@@ -363,7 +461,7 @@ fn install_completion_publish_wrix_shim(
 ///   - nix sandbox (crane buildPackage): the loom workspace IS the staged
 ///     root and mock scripts live next to it under `<staged>/tests/`.
 fn locate_mock(rel: &str) -> PathBuf {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest_dir = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR"));
     for ancestor in manifest_dir.ancestors() {
         let candidate = ancestor.join("tests").join(rel);
         if candidate.is_file() {
@@ -680,7 +778,7 @@ fn wrix_spawn_invocation_records_correct_argv() {
         "happy-path",
     );
 
-    let loom_bin = env!("CARGO_BIN_EXE_loom");
+    let loom_bin = loom_cli();
     let output = drive_loom_todo_pi(workspace, &shim, loom_bin);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -793,7 +891,7 @@ fn wrix_spawn_prefers_unprofiled_spawn_launcher_env() {
     let profiled_marker = shim_dir.join("profiled-invoked.txt");
     let profiled_shim = install_failing_wrix_shim(&shim_dir, &profiled_marker);
 
-    let loom_bin = env!("CARGO_BIN_EXE_loom");
+    let loom_bin = loom_cli();
     let output =
         drive_loom_todo_pi_with_spawn_bin(workspace, &profiled_shim, Some(&spawn_shim), loom_bin);
 
@@ -835,7 +933,7 @@ fn wrix_spawn_ignores_manifest_executable_and_uses_caller_pin() {
     let profiled_marker = shim_dir.join("profiled-invoked.txt");
     let profiled_shim = install_failing_wrix_shim(&shim_dir, &profiled_marker);
 
-    let loom_bin = env!("CARGO_BIN_EXE_loom");
+    let loom_bin = loom_cli();
     let output = drive_loom_todo_pi_with_spawn_bin_and_manifest_launcher(
         workspace,
         &raw_spawn_shim,
@@ -885,7 +983,7 @@ fn wrix_spawn_config_includes_configured_sccache_mount_and_env() {
         "happy-path",
     );
 
-    let loom_bin = env!("CARGO_BIN_EXE_loom");
+    let loom_bin = loom_cli();
     let output = drive_loom_todo_pi(workspace, &shim, loom_bin);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -969,7 +1067,7 @@ fn todo_agent_events_render_live_progress() {
         "happy-path",
     );
 
-    let loom_bin = env!("CARGO_BIN_EXE_loom");
+    let loom_bin = loom_cli();
     let output = drive_loom_todo_pi(workspace, &shim, loom_bin);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1102,7 +1200,7 @@ fn loom_loop_bead_writes_per_bead_jsonl_log() {
     path_entries.extend(std::env::split_paths(&path_var));
     let new_path = std::env::join_paths(path_entries).unwrap();
 
-    let loom_bin = env!("CARGO_BIN_EXE_loom");
+    let loom_bin = loom_cli();
     let mut command = Command::new(loom_bin);
     command
         .env("HOME", workspace)
@@ -1112,7 +1210,7 @@ fn loom_loop_bead_writes_per_bead_jsonl_log() {
         .env("GIT_CONFIG_KEY_0", "commit.gpgsign")
         .env("GIT_CONFIG_VALUE_0", "true")
         .env_remove("WRIX_SIGNING_KEY");
-    configure_host_key_fixture(&mut command, workspace);
+    let _cache = configure_host_key_fixture(&mut command, workspace);
     let output = command
         .arg("--workspace")
         .arg(workspace)
@@ -1207,7 +1305,7 @@ fn completed_bead_with_renamed_builtin_source_reaches_publication() {
     let dir = tempfile::tempdir().expect("tempdir");
     let workspace = dir.path();
     init_workspace_repo(workspace);
-    seed_active_spec(workspace, env!("CARGO_BIN_EXE_loom"), "agent");
+    seed_active_spec(workspace, loom_cli(), "agent");
 
     let builtin_root = workspace.join("crates/loom-skill");
     std::fs::create_dir_all(builtin_root.join("src")).expect("create built-in source directory");
@@ -1265,7 +1363,7 @@ fn completed_bead_with_renamed_builtin_source_reaches_publication() {
     let mut path_entries = vec![bd_bin_dir];
     path_entries.extend(std::env::split_paths(&path_var));
     let path = std::env::join_paths(path_entries).expect("join PATH");
-    let loom_bin = env!("CARGO_BIN_EXE_loom");
+    let loom_bin = loom_cli();
     // The fixture isolates the final handoff; only the independently covered
     // per-bead verifier is bypassed, while gate review still runs `loom_bin`.
     let loom_dispatch = shim_dir.join("loom-dispatch");
@@ -1290,7 +1388,7 @@ fn completed_bead_with_renamed_builtin_source_reaches_publication() {
         .env("GIT_CONFIG_KEY_0", "commit.gpgsign")
         .env("GIT_CONFIG_VALUE_0", "true")
         .env_remove("WRIX_SIGNING_KEY");
-    configure_host_key_fixture(&mut command, workspace);
+    let _cache = configure_host_key_fixture(&mut command, workspace);
     let output = command
         .arg("--workspace")
         .arg(workspace)
@@ -1370,9 +1468,10 @@ fn completed_bead_with_renamed_builtin_source_reaches_publication() {
 #[test]
 fn loom_loop_parallel_renders_prefixed_stdout_and_per_bead_logs() {
     let dir = tempfile::tempdir().unwrap();
-    let workspace = dir.path();
+    let workspace_path = dir.path().to_path_buf();
+    let workspace = workspace_path.as_path();
     init_workspace_repo(workspace);
-    seed_active_spec(workspace, env!("CARGO_BIN_EXE_loom"), "agent");
+    seed_active_spec(workspace, loom_cli(), "agent");
 
     let manifest_path = workspace.join("profile-images.json");
     let image_source = workspace.join("base.tar");
@@ -1392,9 +1491,13 @@ fn loom_loop_parallel_renders_prefixed_stdout_and_per_bead_logs() {
 
     let shim_dir = workspace.join("shim");
     std::fs::create_dir_all(&shim_dir).unwrap();
-    let argv_file = shim_dir.join("argv.txt");
-    let stdin_info = shim_dir.join("stdin-info.txt");
-    let spawn_copy = shim_dir.join("spawn-config.json");
+    // Transport captures are mutable runtime data, not published operator source.
+    // One slot may start writing them while its sibling verifies the source tree.
+    let captures = workspace.join(".loom/parallel-wrix-captures");
+    std::fs::create_dir_all(&captures).unwrap();
+    let argv_file = captures.join("argv.txt");
+    let stdin_info = captures.join("stdin-info.txt");
+    let spawn_copy = captures.join("spawn-config.json");
     let shim = install_wrix_shim(
         &shim_dir,
         &argv_file,
@@ -1411,7 +1514,7 @@ fn loom_loop_parallel_renders_prefixed_stdout_and_per_bead_logs() {
     path_entries.extend(std::env::split_paths(&path_var));
     let new_path = std::env::join_paths(path_entries).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_loom"))
+    let output = Command::new(loom_cli())
         .arg("--workspace")
         .arg(workspace)
         .arg("--agent")
@@ -1421,7 +1524,9 @@ fn loom_loop_parallel_renders_prefixed_stdout_and_per_bead_logs() {
         .arg("--parallel")
         .arg("2")
         .arg("--plain")
+        .arg("--trace")
         .arg("lm-active")
+        .env("RUST_LOG", "warn")
         .env("PATH", new_path)
         .env("LOOM_WRIX_BIN", &shim)
         .env("LOOM_WRIX_SPAWN_BIN", &shim)
@@ -1435,6 +1540,14 @@ fn loom_loop_parallel_renders_prefixed_stdout_and_per_bead_logs() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success()
+        || ["lm-para", "lm-parb"]
+            .iter()
+            .any(|bead| !stdout.contains(&format!("[{bead}]")))
+    {
+        eprintln!("Parallel fixture retained at {}", dir.keep().display());
+        eprintln!("Parallel fixture stderr: {stderr}");
+    }
     assert!(
         output.status.success(),
         "parallel loom loop must exit 0 against stubs. stdout={stdout} stderr={stderr}",
@@ -1478,10 +1591,22 @@ fn loom_loop_parallel_renders_prefixed_stdout_and_per_bead_logs() {
                 .any(|run| { run.phase == loom_gate::GatePhase::Review && run.is_success() }),
         "parallel gate success must retain completed verify and review logs: {gate_runs:?}",
     );
+    let source_status = git_command()
+        .arg("-C")
+        .arg(workspace)
+        .args(["status", "--porcelain"])
+        .output()
+        .expect("inspect published operator source");
+    assert!(source_status.status.success(), "{source_status:?}");
+    assert!(
+        source_status.stdout.is_empty(),
+        "parallel transports must not dirty published source: {}",
+        String::from_utf8_lossy(&source_status.stdout),
+    );
     for bead in ["lm-para", "lm-parb"] {
         assert!(
             stdout.contains(&format!("[{bead}]")),
-            "parallel stdout must contain bead prefix for {bead}. stdout={stdout}",
+            "parallel stdout must contain bead prefix for {bead}. stdout={stdout} stderr={stderr}",
         );
     }
 
@@ -1544,6 +1669,8 @@ fn host_key_fixture_isolates_git_and_launcher_authority() {
             "-c",
             r#"set -euo pipefail
 [[ "$HOME" == "$1" ]]
+[[ "$XDG_CACHE_HOME" == "$2" ]]
+printf 'private cache' > "$XDG_CACHE_HOME/receipt"
 [[ "${WRIX_DEPLOY_KEY+x}" != x && "${WRIX_SIGNING_KEY+x}" != x ]]
 [[ "${GIT_SSH+x}" != x && "${GIT_SSH_COMMAND+x}" != x ]]
 [[ "$(git config --get commit.gpgsign)" == false ]]
@@ -1554,6 +1681,7 @@ git cat-file commit HEAD
         ])
         .arg(&home)
         .env("HOME", workspace.join("unused-home"))
+        .env("XDG_CACHE_HOME", workspace.join("hostile-cache"))
         .env("GIT_CONFIG_GLOBAL", &config)
         .env("GIT_CONFIG_SYSTEM", &config)
         .env("GIT_CONFIG_COUNT", "1")
@@ -1565,13 +1693,20 @@ git cat-file commit HEAD
         .env("WRIX_SIGNING_KEY", workspace.join("missing-signing-key"))
         .env("GIT_SSH", "missing-fixture-ssh")
         .env("GIT_SSH_COMMAND", "missing-fixture-ssh");
-    configure_host_key_fixture(&mut command, &home);
+    let cache = configure_host_key_fixture(&mut command, &home);
+    assert!(!cache.path().starts_with(workspace));
+    command.arg(cache.path());
     let output = bounded_output(&mut command, Duration::from_secs(10), None);
     assert!(output.status.success(), "fixture failed: {output:?}");
     let commit = String::from_utf8(output.stdout).unwrap();
     assert!(commit.ends_with("\n\nfixture commit\n"), "{commit}");
     assert!(!commit.lines().any(|line| line.starts_with("gpgsig ")));
     assert_eq!(std::fs::read_to_string(config).unwrap(), hostile_config);
+    assert_eq!(
+        std::fs::read_to_string(cache.path().join("receipt")).unwrap(),
+        "private cache"
+    );
+    assert!(!workspace.join("hostile-cache").exists());
 }
 
 #[test]
@@ -1610,9 +1745,9 @@ fn loom_loop_multiple_task_roots_does_not_rerun_startup_fast_forward() {
     let child_home = workspace.join("home");
     std::fs::create_dir_all(&child_home).unwrap();
 
-    let loom_bin = env!("CARGO_BIN_EXE_loom");
+    let loom_bin = loom_cli();
     let mut command = Command::new(loom_bin);
-    configure_host_key_fixture(&mut command, &child_home);
+    let _cache = configure_host_key_fixture(&mut command, &child_home);
     let output = command
         .arg("--workspace")
         .arg(workspace)
@@ -1805,7 +1940,7 @@ fn loom_gate_review_threads_launcher_keys_to_wrix_spawn() {
     path_entries.extend(std::env::split_paths(&path_var));
     let new_path = std::env::join_paths(path_entries).unwrap();
 
-    let loom_bin = env!("CARGO_BIN_EXE_loom");
+    let loom_bin = loom_cli();
     let output = Command::new(loom_bin)
         .arg("--workspace")
         .arg(workspace)
@@ -2261,7 +2396,7 @@ fn child_stdin_is_a_pipe_not_a_tty() {
         "happy-path",
     );
 
-    let loom_bin = env!("CARGO_BIN_EXE_loom");
+    let loom_bin = loom_cli();
     let output = drive_loom_todo_pi(workspace, &shim, loom_bin);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -2330,7 +2465,7 @@ fn loom_todo_pi_compaction_drives_repin_steer_through_run_agent() {
         "compaction",
     );
 
-    let loom_bin = env!("CARGO_BIN_EXE_loom");
+    let loom_bin = loom_cli();
     let output = drive_loom_todo_pi(workspace, &shim, loom_bin);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -2447,7 +2582,7 @@ fn loom_todo_claude_runs_shutdown_watchdog_through_run_agent() {
         "ignore-stdin",
     );
 
-    let loom_bin = env!("CARGO_BIN_EXE_loom");
+    let loom_bin = loom_cli();
     seed_active_spec(workspace, loom_bin, "agent");
     let new_path = bd_stub_path(workspace, "[]");
     let started = Instant::now();
@@ -2542,7 +2677,7 @@ fn loom_todo_pi_hang_probe_surfaces_handshake_timeout() {
         "",
     );
 
-    let loom_bin = env!("CARGO_BIN_EXE_loom");
+    let loom_bin = loom_cli();
     seed_active_spec(workspace, loom_bin, "agent");
     let new_path = bd_stub_path(workspace, "[]");
     let mut command = Command::new(loom_bin);
@@ -2636,7 +2771,7 @@ fn loom_todo_pi_stall_mid_session_emits_stall_warning() {
 
     let session_ready = workspace.join("stall-session-ready");
     // The process group lets cleanup kill loom and its fixture without leaving stderr open.
-    let loom_bin = env!("CARGO_BIN_EXE_loom");
+    let loom_bin = loom_cli();
     seed_active_spec(workspace, loom_bin, "agent");
     let new_path = bd_stub_path(workspace, "[]");
     let mut child = Command::new(loom_bin)

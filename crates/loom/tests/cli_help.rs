@@ -587,7 +587,8 @@ fn snapshot_name(path: &[String]) -> String {
 
 #[test]
 fn all_cli_help_snapshots() {
-    let snapshot_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots");
+    let snapshot_dir =
+        loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots");
     for path in cli_command_paths() {
         let snapshot_name = snapshot_name(&path);
         let snapshot = std::fs::read_to_string(snapshot_dir.join(&snapshot_name))

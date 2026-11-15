@@ -7,6 +7,8 @@
 
 #[path = "todo_production/acceptance.rs"]
 mod acceptance;
+#[path = "todo_production/tracking.rs"]
+mod tracking;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::OsString;
@@ -629,7 +631,7 @@ fn multi_spec_preflight_responses(base: &str) -> Vec<RunOutput> {
 fn controller<R: CommandRunner + 'static>(
     workspace: &Path,
     runner: R,
-) -> Result<ProductionTodoController<R>> {
+) -> Result<ProductionTodoController<BdClient<R>>> {
     Ok(ProductionTodoController::for_workspace(
         workspace.to_path_buf(),
         Arc::new(CacheDb::open(workspace.join(".loom/state.db"))?),
@@ -1245,7 +1247,12 @@ async fn todo_retries_after_spec_creation_before_close() -> Result<()> {
     let runner = StatefulRunner::new(&base, None);
     runner.state.lock().map_err(|_| anyhow!("lock"))?.fail_close = Some("lm-created".into());
     let mut first = controller(dir.path(), runner.clone())?;
-    assert!(matches!(first.build_session().await, Err(TodoError::Bd(_))));
+    assert!(matches!(
+        first.build_session().await,
+        Err(TodoError::Tracking(
+            loom_issues::tracking::Error::Uncertain { .. }
+        ))
+    ));
     let created = runner.bead("lm-created")?;
     assert_eq!(created.status, "open");
     assert_eq!(
@@ -1837,7 +1844,7 @@ async fn todo_package_model_change_dispatches_and_repins_complete_evidence() -> 
     let mut ctrl = controller(dir.path(), runner.clone())?;
     let shim = dir.path().join("wrix-fixture");
     let receipt = dir.path().join("delivered-evidence");
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+    let fixture = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures/agent/pi-todo-package-compaction.sh");
     let delivered = receipt.clone();
     let summary = SystemClock::new()
@@ -2237,7 +2244,11 @@ async fn assert_atomic_finalization_failure(
         return Err(anyhow!("injected finalization failure was ignored"));
     };
     assert!(
-        matches!(error, TodoError::Bd(_) | TodoError::State(_)),
+        matches!(
+            error,
+            TodoError::Tracking(loom_issues::tracking::Error::Uncertain { .. })
+                | TodoError::State(_)
+        ),
         "compensation should restore state and preserve the source error: {error:?}"
     );
 

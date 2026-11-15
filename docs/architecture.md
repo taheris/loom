@@ -60,6 +60,7 @@ orientation, not another contract owner.
 | `loom-test-support`  | Shared test fixtures and helpers                                                          |
 | `loom-tune`          | Internal tuning registry, case, score, and proposal types                                 |
 | `loom-walk`          | Mechanical source and contract checks consumed by the gate                                |
+| `loom-verification`  | Shared Rust verification, source-partition and provisioning tooling                       |
 | `loom-workflow`      | Phase implementations: `plan`, `todo`, `loop`, `gate`, `inbox`                            |
 
 ## Phases
@@ -113,6 +114,27 @@ private transport/conversion/event path for text and structured output.
 Mechanical style enforcement has one owner in `loom-walk`; its fixtures cover
 both violations and the real workspace, including event sentinels and renderer
 logging-test dependencies.
+
+## Tracking composition
+
+Loop, Todo, Findings, Review and Inbox policy consume the extractable
+`loom_issues::tracking::Store` contract. Admission, attribution, roster checks,
+recovery, compensation and publication decisions stay in the workflow layer.
+Typed lookup absence is distinct from transport failure or uncertain mutation.
+
+Host composition adds `loom_workflow::tracking::Adapter`, not Loom runtime
+policy inside Issues. Production entry points select Beads and explicitly bind
+its publication executable and workspace. Publication pushes Git before asking
+the selected store to synchronize; an uncertain synchronization does not imply
+that Git publication or earlier tracker writes were rolled back. Ordinary worker
+operations use shared authoritative state, without per-task Dolt push/pull.
+
+Lightweight policy fixtures share actual in-process handles and retain state
+across handle replacement, not process restart. Their worker configurations need
+no native database and cannot be serialized or launched as external workers.
+Interactive Inbox likewise refuses that unsupported transfer before launcher or
+image probes. Beads transport, sockets and secrets remain launcher-owned; this
+does not change Darwin socket limitations or establish native live networking.
 
 ## State
 

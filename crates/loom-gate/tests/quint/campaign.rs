@@ -117,7 +117,7 @@ mod tests {
 
     #[test]
     fn seed_change_invalidates_reproducible_identity() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let root = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR")).join("../..");
         let mut plan = Plan::shipped(Mode::Routine).unwrap();
         let identity = plan.identity(&root, Mode::Routine).unwrap();
         assert_eq!(identity, plan.identity(&root, Mode::Routine).unwrap());

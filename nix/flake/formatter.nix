@@ -32,6 +32,7 @@ let
       enable = true;
       excludes = [ ".envrc" ];
     };
+    settings.formatter.shellcheck.options = [ "--external-sources" ];
   };
 in
 {
@@ -53,6 +54,7 @@ in
       treefmt = mkTreefmtConfig rustToolchain;
       checks.treefmt = lib.mkForce (
         checked.check {
+          runtime = "native-process";
           resources = [ source ];
           evaluation =
             map

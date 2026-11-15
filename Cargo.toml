@@ -18,7 +18,21 @@ members = [
     "crates/loom-templates",
     "crates/loom-test-support",
     "crates/loom-walk",
+    "crates/loom-verification",
 ]
+
+# Keep native test executables cheap to link, fingerprint and launch. Backtraces
+# retain line tables; assertions and test coverage are unchanged.
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+debug-assertions = true
+overflow-checks = true
+
+# Freshness checks hash complete executing artifacts. Optimise the hash primitive,
+# not application assertions, so native CLI integration tests stay inexpensive.
+[profile.dev.package.blake3]
+opt-level = 3
 
 [workspace.package]
 edition = "2024"
@@ -29,6 +43,13 @@ publish = false
 
 [workspace.metadata.crane]
 name = "loom"
+
+# The native constructor regression reads this independent Cargo workspace.
+[[workspace.metadata.loom.verify.resource]]
+name = "workspace:catalogue-reuse-fixture"
+directory = "tests/fixtures/catalogue-reuse"
+role = "test-fixture"
+consumers = ["cargo:loom-gate:lib:loom_gate"]
 
 [workspace.dependencies]
 anyhow = "1"

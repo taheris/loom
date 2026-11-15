@@ -108,7 +108,7 @@ impl State {
     fn get(&self, id: &Id) -> Result<&Record, Error> {
         self.records
             .get(id)
-            .ok_or_else(|| rejected(format!("unknown task {id}")))
+            .ok_or_else(|| Error::NotFound { id: id.clone() })
     }
 
     fn graph(&self, id: &Id) -> Result<task::Graph, Error> {

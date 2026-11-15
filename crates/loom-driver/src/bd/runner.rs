@@ -1,4 +1,5 @@
 use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,12 +19,46 @@ use super::{BdError, CommandRunner, RunOutput};
 #[derive(Clone)]
 pub struct TokioRunner {
     clock: Arc<dyn Clock>,
+    publication: Option<Publication>,
+}
+
+#[derive(Clone)]
+struct Publication {
+    program: PathBuf,
+    workspace: PathBuf,
 }
 
 impl TokioRunner {
     /// Build a runner that uses `clock` for the per-call timeout.
     pub fn with_clock(clock: Arc<dyn Clock>) -> Self {
-        Self { clock }
+        Self {
+            clock,
+            publication: None,
+        }
+    }
+
+    /// Select the driver-owned publication transport without changing worker shared-state access.
+    #[must_use]
+    pub fn with_publication(mut self, program: &Path, workspace: &Path) -> Self {
+        self.publication = Some(Publication {
+            program: program.to_path_buf(),
+            workspace: workspace.to_path_buf(),
+        });
+        self
+    }
+
+    fn publication_command(&self) -> Result<Command, BdError> {
+        let publication = self
+            .publication
+            .as_ref()
+            .ok_or_else(|| BdError::Unsupported {
+                reason: "tracking publication transport is not configured".into(),
+            })?;
+        let mut command = Command::new(&publication.program);
+        command
+            .current_dir(&publication.workspace)
+            .args(["beads", "push"]);
+        Ok(command)
     }
 
     async fn run_command(
@@ -69,6 +104,21 @@ impl CommandRunner for TokioRunner {
             cmd.arg(arg);
         }
         self.run_command(&mut cmd, &args, t).await
+    }
+
+    async fn publish(&self, timeout: Duration) -> Result<(), BdError> {
+        let mut command = self.publication_command()?;
+        let args = [OsString::from("beads"), OsString::from("push")];
+        let output = self.run_command(&mut command, &args, timeout).await?;
+        if output.success() {
+            Ok(())
+        } else {
+            Err(BdError::Cli {
+                status: output.status,
+                args: render_args(&args),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            })
+        }
     }
 }
 
@@ -136,6 +186,42 @@ mod tests {
             .await
             .expect("run");
         assert_eq!(result.stdout, b"1");
+    }
+
+    #[tokio::test]
+    async fn publication_requires_explicit_transport_and_keeps_worker_sync_local() {
+        use loom_issues::tracking::{Error, Store, Synchronization};
+        let store = crate::bd::BdClient::with_runner(TokioRunner::default());
+        store
+            .synchronize(Synchronization::SharedState)
+            .await
+            .unwrap();
+        assert!(matches!(
+            store.synchronize(Synchronization::Publish).await,
+            Err(Error::Unsupported { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn publication_uses_selected_workspace_and_preserves_uncertain_nonzero_status() {
+        use loom_issues::tracking::{Error, Store, Synchronization};
+        use std::os::unix::fs::PermissionsExt as _;
+        let workspace = tempfile::tempdir().unwrap();
+        let program = workspace.path().join("wrix");
+        std::fs::write(&program, loom_test_support::bash_script(
+            "set -euo pipefail\n[[ \"$*\" == 'beads push' ]]\nprintf called > publication-called\nexit 17\n"
+        )).unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let runner = TokioRunner::default().with_publication(&program, workspace.path());
+        let store = crate::bd::BdClient::with_runner(runner);
+        assert!(matches!(
+            store.synchronize(Synchronization::Publish).await,
+            Err(Error::Uncertain { .. })
+        ));
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join("publication-called")).unwrap(),
+            "called"
+        );
     }
 
     /// Nonzero process exit is output, not a timeout or spawn failure.

@@ -1,10 +1,25 @@
 [package]
 name = "loom-workflow"
+autotests = false
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
 license.workspace = true
 publish.workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
+
+# Git-policy fixtures reexecute exact libtest entry points in this target.
+[[test]]
+name = "parallel"
+path = "tests/parallel.rs"
+
+# Quint's production bridge compiles and invokes this narrow target directly.
+[[test]]
+name = "todo_production"
+path = "tests/todo_production.rs"
 
 [dependencies]
 askama = { workspace = true }
@@ -13,6 +28,7 @@ loom-agent = { workspace = true }
 loom-driver = { workspace = true }
 loom-events = { workspace = true }
 loom-gate = { workspace = true }
+loom-issues = { workspace = true }
 loom-llm = { workspace = true }
 loom-protocol = { workspace = true }
 loom-render = { workspace = true }

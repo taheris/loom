@@ -425,7 +425,7 @@ An unrelated output cannot borrow another constructor's source membership.
 Wrapping an already constructed result retains its resource and evaluator
 origins. Discovery batches immutable graph facts and shares node storage, never
 outcomes; partition sharing requires the complete effective source and evaluator
-scope. `tests/verify/native-resources.py` independently traverses the native
+scope. `loom-verification native-resources` independently traverses the native
 dependency closure and checks every shipped current-system partition.
 
 Native check, package and app definitions retain evaluation/check obligations
@@ -526,19 +526,49 @@ artifacts and vendoring. Extra test sources are constructed individually, not
 interpolated through a whole-repository store reference. These packages are
 deliberately not added to the fast `checks` tier.
 
+Use `checked.artifact { ... }` for a package whose duty is immutable output
+realization, not running assertions. Its closed `purpose = "artifact"` metadata
+is reconstructed from source and bound into execution identity. Existing outputs
+are pinned and rechecked without rebuilding recipes or demanding cold archived
+build dependencies. Cold outputs still require admitted build inputs. Normal
+`checked.check`, Cargo verification and reports stay fresh; they cannot opt out
+through artifact metadata. App executable-presence checks also remain fresh.
+Wrapping an existing checked value with `native-package.nix` preserves its
+purpose instead of silently downgrading a check. Reproducibility qualification
+uses a real check or an explicit rebuild, not artifact availability.
+
 The fixed compiler-only catalogue companion may reuse its immutable build
 output; its source/phase identity and compiler inventory are still validated.
-That inventory is not a test verdict. Actual test/report roots still execute
+That inventory is not a test verdict. The first catalogue compilation remains
+locked/offline, full-workspace and all-targets. Secondary listings use its owned
+binaries and a separate all-features Cargo graph filtered for the effective
+platform recorded by those binaries. This graph matches Nextest's dependency
+filter context; it does not enable all-features compilation or replace the
+original `cargo.json` compilation facts. Actual test/report roots still execute
 freshly. Within one pure admission pass, aliases share actual graph/resource
 reads, not results. The snapshot, tools and every distinct graph are rechecked
 before effects. Backend-supported extra platforms use the same batched
 construction; unsupported platforms retain their separate applicability
 obligations.
 
-`python3 tests/verify/native-resources.py .` reevaluates all four actual
-workspace derivations from their exact partitions with IFD disabled. The
+`nix run .#verification-tool -- native-resources .` reevaluates all declared
+current-system definitions from their exact partitions with IFD disabled. The
 toolchain still uses the existing manifest URL/hash pin, read directly rather
 than through an evaluator-executed derivation.
+
+For ordinary process behavior inside an existing agent boundary, the same
+`checked.check`, `checked.cargo`, or `checked.reported` constructor can
+explicitly set `runtime = "native-process"`. This produces a distinct
+`native-process` candidate, not a `hermetic-nix` candidate. Source partitioning,
+tool/recipe validation, offline input admission, currentness, fresh reporting
+and real failure propagation remain enforced. Filesystem/network confinement is
+not claimed. An identified local Wrix agent uses only its local Nix store with
+no remote builders; no worker recipe is sent unsandboxed to a host daemon. The
+root-owned agent marker and public SDK-root manifest are fingerprinted into
+execution identity and rechecked before effects. No credentials or protected
+runtime arguments are inspected. Outside that context execution remains
+sandboxed. This is an explicit constructor policy, never a retry after failed
+sandbox execution.
 
 The default Nix profile forces sandboxing with no fallback, extra host paths,
 remote builders or root-output substitution. Valid cold outputs build normally;
@@ -546,10 +576,10 @@ already-realized outputs are checked again rather than accepted as current
 evidence. An unavailable sandbox yields an explicit `unavailable` outcome and a
 nonzero example exit, not a pass or a suggestion to disable sandboxing. A
 different native platform is `inapplicable`, not passing coverage. The fixed
-automated acceptance app `nix run .#test-native-units`, called by the
-required-suite app, first verifies actual workspace resource partitions and then
-runs the fixed `native-isolation` executable. It exercises cold outputs, forced
-warm rebuilding, all output mappings, an undeclared host file and a live
+explicit edge-acceptance app `nix run .#test-native-units`, separate from the
+ordinary required suite, first verifies actual workspace resource partitions and
+then runs the fixed `native-isolation` executable. It exercises cold outputs,
+forced warm rebuilding, all output mappings, an undeclared host file and a live
 disposable loopback fixture inaccessible from the build's network namespace.
 Host controls prove the file exists and the listener is reachable in both
 phases. Missing sandbox capability exits78, never passing or silently skipping.
@@ -597,20 +627,15 @@ not a check with an empty input list:
 
 ```bash
 set -euo pipefail
-python3 - "$project/flake.nix" <<'PY'
-import pathlib, sys
-path = pathlib.Path(sys.argv[1])
-path.write_text(path.read_text().replace('      src = builtins.head sources;\n', ''))
-PY
+source_backup=$(mktemp)
+cp "$project/flake.nix" "$source_backup"
+sed '/^      src = builtins.head sources;$/d' "$source_backup" > "$project/flake.nix"
 if cargo run -p loom-gate --example nix-provider -- "$project" --print-inputs; then
   printf 'unexpected admission of omitted project source\n' >&2
   exit 1
 fi
-python3 - "$project/flake.nix" <<'PY'
-import pathlib, sys
-path = pathlib.Path(sys.argv[1])
-path.write_text(path.read_text().replace('      args = ', '      src = builtins.head sources;\n      args = '))
-PY
+cp "$source_backup" "$project/flake.nix"
+rm "$source_backup"
 cargo run -p loom-gate --example nix-provider -- "$project" --print-inputs
 cargo run -p loom-gate --example nix-provider -- "$project"
 ```

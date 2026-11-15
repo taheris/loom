@@ -81,6 +81,14 @@ pub async fn coherent_observation(store: &impl Store) {
 }
 
 pub async fn round_trip(store: &impl Store) {
+    let missing = Id::new("ct-absentlookup0000000000000000").unwrap();
+    let absent = store.get(&missing).await;
+    assert!(
+        matches!(&absent, Err(Error::NotFound { id }) if id == &missing),
+        "{absent:?}"
+    );
+    assert!(matches!(store.observe(&missing).await, Err(Error::NotFound { id }) if id == missing));
+    assert!(matches!(store.graph(&missing).await, Err(Error::NotFound { id }) if id == missing));
     let root = store
         .create(Create {
             title: "group".into(),

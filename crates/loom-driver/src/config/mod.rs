@@ -698,6 +698,7 @@ agent.backend = "claude"
                 image_source: PathBuf::from("/nix/store/zzz-wrix.tar"),
                 image_source_kind: Some(ImageSourceKind::NixDescriptor),
                 wrix_launcher: None,
+                tracking_access: crate::agent::WorkerTrackingAccess::LauncherManaged,
                 profile_config: None,
                 workspace: PathBuf::from("/workspace"),
                 env: vec![("WRIX_AGENT".into(), "direct".into())],
@@ -839,7 +840,7 @@ reason = "Generated template noise."
 
     #[test]
     fn repo_loom_toml_enables_shared_sccache_for_this_workspace() -> Result<()> {
-        let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let crate_dir = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR"));
         let workspace = crate_dir
             .ancestors()
             .find(|path| path.join("loom.toml").is_file())

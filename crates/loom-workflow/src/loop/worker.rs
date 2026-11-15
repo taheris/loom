@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use loom_driver::agent::{AgentRuntime, SpawnConfig};
-use loom_driver::bd::{BdClient, Bead, CommandRunner};
+use loom_driver::bd::{BdClient, Bead};
 use loom_driver::config::{LoomTopConfig, Phase, SkillsConfig};
 use loom_driver::git::{BeadCloneAlignment, GitClient, GitError};
 use loom_driver::identifier::{ProfileName, SpecLabel};
@@ -133,15 +133,15 @@ pub async fn prepare_workspace(
 /// # Errors
 /// Returns preparation failures; static profile faults are classified rejections.
 pub async fn prepare(request: Request<'_>) -> Result<Preparation, LoopError> {
-    prepare_with_bd(&BdClient::<loom_driver::bd::TokioRunner>::new(), request).await
+    prepare_with_tracking(&BdClient::<loom_driver::bd::TokioRunner>::new(), request).await
 }
 
-/// Prepare workers using the owning driver's Beads transport and current finding context.
+/// Prepare workers using the owning driver's selected tracker and current finding context.
 ///
 /// # Errors
 /// Infrastructure setup errors propagate; invalid declared acceptance is a pre-spawn rejection.
-pub async fn prepare_with_bd<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub async fn prepare_with_tracking<T: crate::tracking::Adapter>(
+    bd: &T,
     request: Request<'_>,
 ) -> Result<Preparation, LoopError> {
     let acceptance = match super::acceptance::resolve(bd, request.bead, request.workspace).await {
@@ -276,6 +276,7 @@ pub async fn prepare_with_bd<R: CommandRunner>(
         Ok(spawn) => spawn,
         Err(error) => return profile_rejection(error, manifest).map(Preparation::Rejected),
     };
+    crate::tracking::configure_worker(bd, &mut spawn)?;
     let native_feedback = manifest.native_preflight(manifest.lookup(&profile, runtime)?)
         == Some(NativePreflight::Rust);
     if native_feedback
@@ -754,6 +755,16 @@ exec "$LOOM_PREFLIGHT_BASH" -euo pipefail -c 'source "$1"; require_tool nix' -- 
 
     #[tokio::test]
     async fn worker_preparation_leaves_tracking_transport_to_launcher() {
+        tracking_preparation_matrix(false).await;
+    }
+
+    #[tokio::test]
+    async fn agent_launch_tracking_access_is_backend_selected_and_authority_bounded() {
+        tracking_preparation_matrix(false).await;
+        tracking_preparation_matrix(true).await;
+    }
+
+    async fn tracking_preparation_matrix(in_process: bool) {
         use std::os::unix::net::UnixListener;
 
         let dir = tempfile::tempdir().unwrap();
@@ -811,7 +822,7 @@ exec "$LOOM_PREFLIGHT_BASH" -euo pipefail -c 'source "$1"; require_tool nix' -- 
                 }
             }
             for runtime in [AgentRuntime::Pi, AgentRuntime::Claude, AgentRuntime::Direct] {
-                let prepared = prepare(Request {
+                let request = Request {
                     bead: &bead,
                     workspace: &workspace,
                     loom_workspace: dir.path(),
@@ -828,13 +839,49 @@ exec "$LOOM_PREFLIGHT_BASH" -euo pipefail -c 'source "$1"; require_tool nix' -- 
                     bead_base: git.head_commit_sha().await.unwrap(),
                     workspace_recovery: None,
                     attempt: 1,
-                })
-                .await
+                };
+                let prepared = if in_process {
+                    prepare_with_tracking(&loom_issues::memory::Backend::default(), request).await
+                } else {
+                    prepare(request).await
+                }
                 .unwrap();
                 let Preparation::Ready(worker) = prepared else {
                     panic!("worker rejected")
                 };
                 assert_eq!(worker.spawn.mounts, Vec::new());
+                let expected = if in_process {
+                    loom_driver::agent::WorkerTrackingAccess::InProcess
+                } else {
+                    loom_driver::agent::WorkerTrackingAccess::LauncherManaged
+                };
+                assert_eq!(worker.spawn.tracking_access, expected);
+                assert_eq!(worker.spawn.to_wrix_json().is_ok(), !in_process);
+                if in_process {
+                    let adapter = loom_issues::memory::Backend::default();
+                    for key in [
+                        "BD_DOLT_AUTO_START",
+                        "BEADS_DOLT_SERVER_SOCKET",
+                        "DOLT_PASSWORD",
+                    ] {
+                        let mut leaked = worker.spawn.clone();
+                        leaked.env.push((key.into(), "fixture-only".into()));
+                        assert!(matches!(
+                            crate::tracking::configure_worker(&adapter, &mut leaked),
+                            Err(loom_driver::agent::ProtocolError::Unsupported)
+                        ));
+                    }
+                    let mut leaked = worker.spawn.clone();
+                    leaked.mounts.push(loom_driver::agent::MountSpec {
+                        host_path: dir.path().join(".wrix/dolt.sock"),
+                        container_path: "/run/wrix-beads/dolt.sock".into(),
+                        read_only: false,
+                    });
+                    assert!(matches!(
+                        crate::tracking::configure_worker(&adapter, &mut leaked),
+                        Err(loom_driver::agent::ProtocolError::Unsupported)
+                    ));
+                }
                 assert!(
                     worker
                         .spawn

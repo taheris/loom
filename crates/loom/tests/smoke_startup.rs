@@ -32,7 +32,8 @@ esac
         )),
     )?;
     std::fs::set_permissions(&wrix, std::fs::Permissions::from_mode(0o755))?;
-    let helper = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/smoke/wait-dolt.sh");
+    let helper = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/smoke/wait-dolt.sh");
     let output = Command::new("bash")
         .arg(helper)
         .arg(wrix)

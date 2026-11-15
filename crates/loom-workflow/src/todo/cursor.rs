@@ -1,6 +1,6 @@
 //! Durable distinction between an uninitialized spec and damaged cursor metadata.
 
-use loom_driver::bd::{Bead, UpdateOpts};
+use loom_issues::task::{Record as Bead, Update};
 use loom_protocol::todo::GitSha;
 
 use super::TodoError;
@@ -48,23 +48,23 @@ impl Cursor {
         matches!(self, Self::Uninitialized)
     }
 
-    pub fn creation_metadata() -> String {
-        serde_json::json!({ STATE_KEY: UNINITIALIZED }).to_string()
+    pub fn creation_metadata() -> std::collections::BTreeMap<String, serde_json::Value> {
+        [(STATE_KEY.into(), UNINITIALIZED.into())].into()
     }
 
-    pub fn update(&self) -> UpdateOpts {
-        let mut update = UpdateOpts::default();
+    pub fn update(&self) -> Update {
+        let mut update = Update::default();
         match self {
             Self::Uninitialized => {
                 update.unset_metadata.push(CURSOR_KEY.into());
                 update
                     .set_metadata
-                    .push((STATE_KEY.into(), UNINITIALIZED.into()));
+                    .insert(STATE_KEY.into(), UNINITIALIZED.into());
             }
             Self::Finalized(sha) => {
                 update
                     .set_metadata
-                    .push((CURSOR_KEY.into(), sha.to_string()));
+                    .insert(CURSOR_KEY.into(), sha.to_string().into());
                 update.unset_metadata.push(STATE_KEY.into());
             }
         }

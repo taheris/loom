@@ -27,10 +27,17 @@ in
   program,
   arguments ? [ ],
   nixRegistration ? null,
-  runtime ? "nix",
+  runtime ? "native-process",
+  fixtureResource ? null,
 }:
 let
+  fixtureSource = if fixtureResource == null then loom.stagedSrc else fixtureResource.path;
+  fixtureResources = if fixtureResource == null then loom.testResources else [ fixtureResource ];
   inherit (pkgs.lib) optional optionalString escapeShellArg;
+  fixtureRunner = checked.resource {
+    root = ../.;
+    origin = "nix/private-fixture-tests.sh";
+  };
   runner = pkgs.writeShellApplication {
     name = "${name}-producer";
     runtimeInputs = [
@@ -66,9 +73,9 @@ let
         ip link set dev lo up
       ''}
       work=$(mktemp -d)
-      export HOME="$work/home"
-      mkdir -p "$HOME" "$work/source"
-      cp -r ${loom.stagedSrc}/. "$work/source/"
+      export HOME="$work/home" XDG_CACHE_HOME="$work/cache"
+      mkdir -p "$HOME" "$XDG_CACHE_HOME" "$work/source"
+      cp -r ${fixtureSource}/. "$work/source/"
       chmod -R u+w "$work/source"
       cd "$work/source"
       export GIT_CONFIG_GLOBAL="$PWD/tests/fixtures/git/test-gitconfig"
@@ -84,7 +91,7 @@ let
           'experimental-features = nix-command flakes' \
           'build-users-group =' \
           'require-sigs = true' \
-          'sandbox = true' \
+          'sandbox = ${if runtime == "native-process" then "false" else "true"}' \
           'sandbox-fallback = false' \
           'allow-import-from-derivation = false' \
           'substituters =' \
@@ -140,7 +147,10 @@ let
       in
       "${kernel}/bin/loom-native-kernel"
     else
-      "${runner}/bin/${name}-producer";
+      pkgs.writeShellScript "${name}-private" ''
+        set -euo pipefail
+        exec ${pkgs.bash}/bin/bash ${fixtureRunner.path} --test-process ${runner}/bin/${name}-producer
+      '';
 in
 checked.reported {
   inherit
@@ -151,7 +161,7 @@ checked.reported {
     ;
   bash = pkgs.bash;
   coreutils = pkgs.coreutils;
-  resources = loom.testResources;
+  resources = fixtureResources ++ optional (runtime != "native-container") fixtureRunner;
   program = execution;
   parser = "json-lines";
   targets = [ name ];

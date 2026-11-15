@@ -71,26 +71,23 @@ or native test is not required. [Verifier inputs](#verifier-inputs-1) owns the
 tracked/constructed dependency boundary. [Verify](#selective-property-campaigns)
 owns property grouping and shared native artifacts.
 
-For Nix-enabled consumers, external routine deterministic verification uses
-hermetic Nix units with pinned tools, explicit sources/fixtures, controlled
-environments, and no undeclared network access. Loom-owned analysis uses tracked
-inputs. Invoking a host application through `nix run` does not itself establish
-hermeticity. Host services, containers, kernel behavior, and LLM review use an
-explicit effectful lane where those effects are inherent; capabilities,
-environment assumptions, and applicability remain visible.
+Definitions pin tools, sources and environments. Hermetic Nix also confines
+filesystem/network access. `native-process` uses existing agent isolation, never
+failed-sandbox retry or an unsandboxed host/remote daemon; outside the agent it
+stays strict. Kind/environment bind identity; `nix run` alone proves no
+hermeticity. Checked `artifact` packages may reuse immutable outputs without
+rebuilding or acquiring archived build inputs: neither tests nor reproducibility
+proof. Check/app-presence roots, reporters and Cargo verification remain fresh.
+Separately admitted aliases may share execution facts, never claim approval.
+Host/kernel effects and LLM review retain explicit capability/applicability
+lanes.
 
-Discovered obligations, resolved plans, observed results, admissible evidence,
-and publication authorization are distinct typed boundaries. Unchecked strings,
-booleans, partial results, or mutation of validated fields cannot construct a
-later trusted state. Applying
-[Harness's parse/resolve discipline](harness.md#parse-dont-validate), admission
-constructs richer snapshot-bound values or typed errors rather than returning
-validation flags beside unchanged input data. Downstream stages consume those
-values; invalidated context requires re-deriving the affected state. These
-boundaries constrain the implementation; the
-[whole-gate model and production conformance](simulation.md) check sequencing,
-input construction, optimization, and authorization against an independent
-reference procedure.
+Obligations, plans, observations, evidence and publication authority are
+distinct typed boundaries: raw values, partial results and field mutation grant
+no trust. [Harness's parse/resolve discipline](harness.md#parse-dont-validate)
+produces snapshot-bound values or typed errors, not flags; invalidation requires
+re-derivation. The [whole-gate model and conformance](simulation.md)
+independently check sequencing, inputs, optimization and authority.
 
 #### Dependency roles and execution groups
 
@@ -214,12 +211,11 @@ Descriptions reference that graph rather than independently asserting a smaller
 input closure. They do not define repository-wide obligations, declare their own
 completeness, or constitute verification results.
 
-Provider candidates form a closed built-in family: tracked Rust analysis,
-hermetic Nix execution, and specifically supported effectful execution. Ordinary
-checks use these constructors, not arbitrary provider-kind strings or a new
-backend per check. The effectful variant is not a catch-all for unsupported
-commands or missing input/environment contracts. Claimed `trusted` or `hermetic`
-flags cannot substitute for admission.
+Closed provider constructors cover tracked Rust, hermetic Nix, declared native
+processes and specifically supported effects, not arbitrary kind strings or a
+backend per check. Effectful execution cannot rescue unsupported commands or
+missing input/environment contracts. `trusted`/`hermetic` flags grant no
+admission.
 
 Parsing produces typed candidate descriptions, not admitted units or authority.
 Fallible resolution against the current snapshot, independent inventory, and
@@ -344,10 +340,16 @@ Gate; selecting feedback work is not redefining full-publication obligations.
 ### Admitted inputs and selection
 
 - Provider candidate types use closed variants for tracked Rust, hermetic Nix,
-  and specifically supported effects. Unknown kinds and incompatible definitions
-  cannot use an effectful fallback; candidate construction or a trust flag
-  cannot construct an immutable admitted unit without current-context
-  resolution. [test](provider_candidates_use_closed_variants_before_admission)
+  declared native-process execution, and specifically supported effects. Unknown
+  kinds and incompatible definitions cannot use an effectful fallback; candidate
+  construction or a trust flag cannot construct an immutable admitted unit
+  without current-context resolution.
+  [test](provider_candidates_use_closed_variants_before_admission)
+
+- Declared native-process recipes execute actual code with the captured source
+  and tool graph, without claiming Nix sandbox confinement. Their descriptions
+  cannot be relabelled as hermetic candidates during current-context admission.
+  [test](native_process_runs_real_recipe_without_claiming_sandbox_confinement)
 
 - An executable verifier resolves to an exact target, its subject inventory and
   input-discovery contract, its execution requirements, and its result mapping.
@@ -995,6 +997,16 @@ Gate; selecting feedback work is not redefining full-publication obligations.
 
 ### Mechanisms
 
+- Build-only realization reuses immutable outputs while rejecting changed
+  sources and forged purposes
+  [test](build_only_artifacts_reuse_outputs_but_reject_stale_sources)
+
+- Behavioral checks still execute when their outputs exist
+  [test](behavioral_checks_still_execute_when_their_output_is_present)
+
+- Check exports cannot declare artifact reuse
+  [test](a_check_namespace_cannot_opt_into_artifact_reuse)
+
 - Actual planner and native/system dispatch separate agent-runnable suites from
   justified host-only requirements. Finite/push ranges select affected host
   checks through admitted inputs, exclude unrelated checks and retain explicit
@@ -1607,31 +1619,22 @@ invoked by batched dispatch — is a subprocess that conforms to:
 This works for any language. The contract is process-shaped, not
 language-shaped.
 
-**Exit code 2 is a fail at the push gate.** Dispatch errors — a spec annotation
-referencing a walk that doesn't exist, a binary that isn't on PATH, a command
-with a missing flag — produce exit code `2`. The gate treats this as a hard fail
-(not a skip): the verifier the spec is claiming exists, and the gate cannot
-confirm it did anything. The [publication gate](gate.md#gate-success-receipt)
-refuses on any verifier exit ≠ 0, including dispatch errors. This closes the
-failure mode where a spec asserts `[check](cargo run -p loom-walk -- foo_bar)`
-for a walk `foo_bar` that nobody implemented — exit 2 → push refused → the
-missing implementation surfaces immediately.
+**Exit code 2 blocks publication.** Missing walks/binaries, invalid command
+arguments and other dispatch errors are failures, not skips. The
+[publication gate](gate.md#gate-success-receipt) refuses every nonzero verifier
+exit; an unresolved annotation can never claim executed coverage.
 
-**Fallback for non-conforming verifiers.** Bare `grep -q`, `cargo test`,
-`nix build`, and similar shells that don't emit a JSON verdict line still
-satisfy the contract via their exit code alone: the dispatcher interprets exit 0
-as `pass=true` (stdout surfaced as evidence), exit 77 as skipped, and other
-nonzero exits as failures. Skipped execution is not an observed pass, and exit
-77 alone does not authorize worker acceptance. Unstructured, ignored-test and
-legacy skips without checked platform/capability metadata remain blocking. A
-JSON claim cannot override a failed process; conflicting or duplicate verdicts
-fail closed. Status-cache verdicts remain `pass`, `fail`, and `skipped`;
-verifier evidence version 2 invalidates older criterion rows once while
-retaining unrelated cache state.
+**Exit-code fallback.** Commands without JSON verdicts use exit 0 as pass with
+stdout evidence, 77 as skipped, and other nonzero exits as failures.
+Unstructured, ignored-test and legacy skips without checked platform/capability
+metadata block; no skip alone authorizes worker acceptance or becomes an
+observed pass. JSON cannot override process failure; conflicting/duplicate
+verdicts fail closed. Status-cache verdicts remain `pass`, `fail` and `skipped`.
+Evidence version 2 invalidates older criterion rows once, preserving unrelated
+cache state.
 
-Verifiers that emit a JSON line are preferred — the explicit evidence string
-clicks straight to the violation site — but the exit-code fallback keeps simple
-presence/absence checks viable without wrapping each one in a Rust walk.
+Prefer JSON evidence for precise diagnostics; exit-code fallback retains simple
+checks.
 
 ##### Sandbox-capability results
 

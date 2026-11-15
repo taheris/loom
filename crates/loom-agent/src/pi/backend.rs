@@ -674,7 +674,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     fn mock_pi_path() -> PathBuf {
-        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let manifest_dir = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR"));
         for ancestor in manifest_dir.ancestors() {
             let candidate = ancestor.join("tests/mock-pi/pi.sh");
             if candidate.is_file() {
@@ -790,6 +790,7 @@ mod tests {
             image_source: PathBuf::from("/nix/store/zzz-wrix-test-pi.tar"),
             image_source_kind: Some(loom_driver::agent::ImageSourceKind::NixDescriptor),
             wrix_launcher: None,
+            tracking_access: loom_driver::agent::WorkerTrackingAccess::LauncherManaged,
             profile_config: Some(PathBuf::from("/nix/store/wrix-test-pi-profile-config.json")),
             workspace: PathBuf::from("/workspace"),
             env: vec![("WRIX_AGENT".into(), "pi".into())],

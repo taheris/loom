@@ -1,0 +1,27 @@
+experimental = ["wrapper-scripts"]
+
+[scripts.wrapper.census]
+command = ['bash', '-c', 'set -euo pipefail; printf "%s\n" "$*" >> "$CATALOGUE_WRAPPER_LOG"; exec "$@"', 'bash']
+target-runner = "within-wrapper"
+
+[[profile.default.scripts]]
+filter = 'all()'
+list-wrapper = 'census'
+run-wrapper = 'census'
+
+[profile.default]
+default-filter = 'rdeps(optional_beta)'
+
+[test-groups.dependencies]
+max-threads = 1
+
+[test-groups.reverse]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter = 'deps(catalogue-reuse) & !package(=catalogue-reuse)'
+test-group = 'dependencies'
+
+[[profile.default.overrides]]
+filter = 'rdeps(optional_beta)'
+test-group = 'reverse'

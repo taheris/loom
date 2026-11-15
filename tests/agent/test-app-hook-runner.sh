@@ -5,7 +5,8 @@ required_app=${1:?required-suite entry is required}
 full_app=${2:?full-suite entry is required}
 runner=${3:?immutable hook runner is required}
 beads=${4:?immutable Beads executable is required}
-resource_preflight=${5:?actual native source preflight is required}
+resource_preflight=${5:?actual Rust native source preflight is required}
+[[ -x "$resource_preflight" ]]
 cache=${6:?immutable compiler cache is required}
 nix_bin=${7:?immutable Nix executable is required}
 timeout_bin=$(command -v timeout)
@@ -35,8 +36,7 @@ mkdir -p "$HOME" "$CARGO_HOME" "$work/empty-bin"
 for app in "$required_app" "$full_app"; do
   for ambient in absent conflicting; do
     fixture=$(mktemp -d "$work/project.XXXXXXXX")
-    mkdir -p "$fixture/src" "$fixture/.cargo" "$fixture/tests/verify"
-    cp "$resource_preflight" "$fixture/tests/verify/native-resources.py"
+    mkdir -p "$fixture/src" "$fixture/.cargo"
     printf '{ outputs = { self }: {}; }\n' > "$fixture/flake.nix"
     git -C "$fixture" init -q
     printf '[package]\nname="hook-runner-fixture"\nversion="0.0.0"\nedition="2024"\n' > "$fixture/Cargo.toml"
@@ -58,7 +58,16 @@ fn main() {
     assert_eq!(env::var("RUSTC").unwrap(), format!("{toolchain}/bin/rustc"));
     let target = PathBuf::from(env::var_os("CARGO_TARGET_DIR").unwrap());
     assert!(target.file_name().unwrap().to_str().unwrap().starts_with("acceptance-"));
-    assert_eq!(fs::canonicalize(target.parent().unwrap().parent().unwrap()).unwrap(), fs::canonicalize(env::var_os("CARGO_MANIFEST_DIR").unwrap()).unwrap());
+    if cfg!(target_os = "linux") {
+        let cache = env::var_os("XDG_CACHE_HOME").map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env::var_os("HOME").unwrap()).join(".cache"));
+        assert_eq!(fs::canonicalize(target.parent().unwrap().parent().unwrap()).unwrap(), fs::canonicalize(cache.join("loom/test-targets")).unwrap());
+        let workspace = target.parent().unwrap().file_name().unwrap().to_str().unwrap();
+        assert_eq!(workspace.len(), 64);
+        assert!(workspace.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    } else {
+        assert_eq!(fs::canonicalize(target.parent().unwrap().parent().unwrap()).unwrap(), fs::canonicalize(env::var_os("CARGO_MANIFEST_DIR").unwrap()).unwrap());
+    }
     assert_eq!(env::var("CC").unwrap(), "sccache cc");
     assert_eq!(env::var("CXX").unwrap(), "sccache c++");
     for (compiler, source, name) in [
@@ -103,6 +112,6 @@ RS
       printf 'suite accepted malformed native metadata\n' >&2
       exit 1
     fi
-    grep -F "KeyError: 'path'" "$fixture/rejected.log"
+    grep -F 'missing captured source' "$fixture/rejected.log"
   done
 done

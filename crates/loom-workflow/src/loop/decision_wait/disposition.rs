@@ -5,10 +5,13 @@ use std::collections::HashSet;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
-use loom_driver::bd::{BdClient, Bead, CommandRunner, IssueType, Status};
 use loom_driver::identifier::BeadId;
 use loom_events::identifier::SessionId;
 use loom_events::{AgentEvent, EnvelopeBuilder, SessionScope, Source};
+use loom_issues::{
+    task::{Kind as IssueType, Record as Bead, Status},
+    tracking::Store,
+};
 use serde::{Deserialize, Serialize};
 
 use super::{DecisionWaitError, DecisionWaitJournal, LoopError, invalid};
@@ -129,8 +132,8 @@ fn save(journal: &DecisionWaitJournal, key: &str, receipt: &Receipt) -> Result<(
     Ok(())
 }
 
-pub(super) async fn stage<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub(super) async fn stage<T: Store>(
+    bd: &T,
     journal: &DecisionWaitJournal,
     producer: &BeadId,
     decisions: &[Bead],
@@ -145,7 +148,7 @@ pub(super) async fn stage<R: CommandRunner>(
         if !entry.record.decisions.contains(&original.id) {
             return Err(invalid("decision effect outside checked inventory").into());
         }
-        let decision = bd.show(&original.id).await?;
+        let decision = bd.get(&original.id).await?;
         if decision.id != original.id
             || decision.parent != original.parent
             || decision.issue_type != IssueType::Decision
@@ -238,7 +241,7 @@ pub(super) async fn stage<R: CommandRunner>(
         if matches!(receipt.effect, Effect::Applied) {
             deliver(journal, &key, &receipt)?;
         }
-        journal.admissions.record(&bd.show(&decision.id).await?)?;
+        journal.admissions.record(&bd.get(&decision.id).await?)?;
     }
     Ok(())
 }

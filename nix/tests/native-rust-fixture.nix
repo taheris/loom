@@ -49,6 +49,10 @@ let
           # whose runtime dependencies would be absent inside the build sandbox.
           compilerPath = builtins.appendContext "${compiler}" { "${compiler}" = { path = true; }; };
           nextestPath = builtins.appendContext "${nextest}" { "${nextest}" = { path = true; }; };
+          # jq is an executable input, not its unretained development output.
+          jqPath = builtins.appendContext "${pkgs.lib.getBin pkgs.jq}" {
+            "${pkgs.lib.getBin pkgs.jq}" = { path = true; };
+          };
           craneLib = (crane.mkLib pkgs).overrideToolchain compilerPath;
           checked = import ./verification.nix;
           source = checked.resource {
@@ -59,15 +63,16 @@ let
           };
           construct = operation: checked.cargo {
             inherit craneLib operation;
+            runtime = "native-process";
             resources = [ source ];
-            evaluation = map (origin: checked.resource { root = ./.; inherit origin; }) [ "flake.nix" "flake.lock" "verification.nix" "report-supervisor.sh" "private-fixture-tests.sh" ];
+            evaluation = map (origin: checked.resource { root = ./.; inherit origin; }) [ "flake.nix" "flake.lock" "verification.nix" "report-supervisor.sh" "private-fixture-tests.sh" "test-scheduling.sh" ];
             args = {
               src = source.path;
               cargoArtifacts = null;
               cargoVendorDir = craneLib.vendorCargoDeps {
                 cargoLock = builtins.path { path = ./Cargo.lock; name = "Cargo.lock"; };
               };
-              nativeBuildInputs = [ nextestPath ];
+              nativeBuildInputs = [ nextestPath jqPath ];
             };
           };
         in {
@@ -139,7 +144,7 @@ in
 pkgs.runCommand "loom-native-rust-fixture"
   {
     nativeBuildInputs = [
-      pkgs.nix
+      (pkgs.lib.getBin pkgs.nix)
       pkgs.jq
     ];
   }
@@ -156,6 +161,7 @@ pkgs.runCommand "loom-native-rust-fixture"
       cp ${../verification.nix} "$out/verification.nix"
       cp ${../report-supervisor.sh} "$out/report-supervisor.sh"
       cp ${../private-fixture-tests.sh} "$out/private-fixture-tests.sh"
+      cp ${../test-scheduling.sh} "$out/test-scheduling.sh"
       # Hash declared immutable input bytes during fixture construction, not on
       # every emulated guest lock. Nix still resolves and verifies the lock normally.
       nixpkgsHash=$(nix --extra-experimental-features nix-command hash path --sri --type sha256 ${pkgs.path})

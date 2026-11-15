@@ -99,7 +99,7 @@ async fn issues_adapters_preserve_failure_and_guarantee_semantics() {
         }),
         false,
     );
-    assert!(matches!(client.get(&id).await, Err(Error::Rejected { .. })));
+    assert!(matches!(client.get(&id).await, Err(Error::NotFound { id: missing }) if missing == id));
     let (client, _, _) = self::adapter(
         Err(BdError::Spawn(std::io::Error::other("unavailable"))),
         false,
@@ -197,7 +197,7 @@ async fn read_transport_failure_is_not_a_missing_task() {
 }
 
 #[tokio::test]
-async fn missing_task_is_a_rejection_not_a_transport_error() {
+async fn missing_task_is_typed_absence_not_a_rejection_or_transport_error() {
     let (adapter, _, _) = adapter(
         Ok(RunOutput {
             status: 0,
@@ -208,8 +208,73 @@ async fn missing_task_is_a_rejection_not_a_transport_error() {
     );
     assert!(matches!(
         adapter.get(&task::Id::new("external-a").unwrap()).await,
-        Err(Error::Rejected { .. })
+        Err(Error::NotFound { id }) if id.as_str() == "external-a"
     ));
+}
+
+#[tokio::test]
+async fn lookup_failure_and_malformed_data_do_not_become_absence() {
+    for output in [
+        failure(1),
+        failure(13),
+        RunOutput {
+            status: 0,
+            stdout: b"not-json".to_vec(),
+            stderr: Vec::new(),
+        },
+    ] {
+        let (client, _, _) = adapter(Ok(output), false);
+        let error = client
+            .get(&task::Id::new("external-a").unwrap())
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::Transport { .. } | Error::InvalidResponse { .. }
+        ));
+    }
+}
+
+#[tokio::test]
+async fn native_missing_lookup_receipts_are_parsed_only_at_the_adapter_boundary() {
+    for stdout in [
+        br#"{"error":"no issues found matching the provided IDs"}"#.as_slice(),
+        br#"{"schema_version":1,"data":{"error":"no issues found matching the provided IDs","hint":"native hint"}}"#,
+    ] {
+        let (client, calls, _) = adapter(Ok(RunOutput { status: 1, stdout: stdout.to_vec(), stderr: b"arbitrary native diagnostic".to_vec() }), false);
+        let id = task::Id::new("external-a").unwrap();
+        assert!(matches!(client.get(&id).await, Err(Error::NotFound { id: absent }) if absent == id));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+    for (status, stdout) in [
+        (1, br#"{"error":"permission denied"}"#.as_slice()),
+        (
+            1,
+            br#"{"schema_version":2,"data":{"error":"no issues found matching the provided IDs"}}"#,
+        ),
+        (
+            1,
+            br#"{"schema_version":2,"error":"no issues found matching the provided IDs"}"#,
+        ),
+        (
+            2,
+            br#"{"error":"no issues found matching the provided IDs"}"#,
+        ),
+        (1, b"not-json"),
+    ] {
+        let (client, _, _) = adapter(
+            Ok(RunOutput {
+                status,
+                stdout: stdout.to_vec(),
+                stderr: Vec::new(),
+            }),
+            false,
+        );
+        assert!(matches!(
+            client.get(&task::Id::new("external-a").unwrap()).await,
+            Err(Error::Transport { .. })
+        ));
+    }
 }
 
 #[tokio::test]
@@ -242,7 +307,7 @@ async fn observation_rejects_a_response_for_another_source() {
 async fn observation_preserves_read_errors_without_retry_or_fallback() {
     for (response, expected) in [
         (Err(BdError::Timeout { args: "show external-a".into() }), Error::Transport { reason: String::new() }),
-        (Ok(RunOutput { status: 0, stdout: b"[]".to_vec(), stderr: Vec::new() }), Error::Rejected { reason: String::new() }),
+        (Ok(RunOutput { status: 0, stdout: b"[]".to_vec(), stderr: Vec::new() }), Error::NotFound { id: task::Id::new("external-a").unwrap() }),
         (Ok(RunOutput { status: 0, stdout: br#"[{"id":"external-a","title":"source","status":"future-status"}]"#.to_vec(), stderr: Vec::new() }), Error::InvalidResponse { reason: String::new() }),
         (Ok(RunOutput { status: 0, stdout: br#"[{"id":"external-a","title":"source","status":"open","dependencies":[{"id":"external-b","status":"open","dependency_type":"unknown"}]}]"#.to_vec(), stderr: Vec::new() }), Error::InvalidResponse { reason: String::new() }),
     ] {

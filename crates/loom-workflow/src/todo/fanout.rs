@@ -20,8 +20,8 @@
 
 use std::fmt::Write as _;
 
-use loom_driver::bd::{BdClient, CommandRunner, ListOpts};
 use loom_driver::identifier::{BeadId, MoleculeId, SpecLabel};
+use loom_issues::{task::Query, tracking::Store};
 
 use super::error::TodoError;
 use super::touched::TouchedSpec;
@@ -64,8 +64,8 @@ pub enum FanoutOutcome {
 /// # Errors
 ///
 /// Returns an error when todo planning, fan-out, or state persistence fails.
-pub async fn classify_touched_set<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub async fn classify_touched_set<T: Store>(
+    bd: &T,
     touched: &[TouchedSpec],
 ) -> Result<FanoutOutcome, TodoError> {
     if touched.is_empty() {
@@ -78,14 +78,11 @@ pub async fn classify_touched_set<R: CommandRunner>(
     Ok(classify(resolutions))
 }
 
-async fn resolve_one<R: CommandRunner>(
-    bd: &BdClient<R>,
-    label: &SpecLabel,
-) -> Result<SpecResolution, TodoError> {
+async fn resolve_one<T: Store>(bd: &T, label: &SpecLabel) -> Result<SpecResolution, TodoError> {
     let beads = bd
-        .list(ListOpts {
-            issue_type: Some(loom_driver::bd::IssueType::Epic),
-            label: Some(format!("spec:{}", label.as_str())),
+        .query(Query {
+            kind: Some(loom_driver::bd::IssueType::Epic),
+            label: Some(crate::tracking::label(&format!("spec:{}", label.as_str()))?),
             statuses: vec![loom_driver::bd::Status::Open],
             ..Default::default()
         })

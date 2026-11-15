@@ -60,6 +60,23 @@ backend coverage. Superseded argv-fake tests are not retained merely to preserve
 an obsolete path. An in-process test cannot prove a backend/OS/process boundary
 it omits.
 
+Ordinary Loom fixtures exercise real policy, protocols, local processes and
+adapter behavior without recreating Wrix's sandbox, container or Beads backend
+capability campaigns. Wrix owns those expensive campaigns; Loom retains narrow
+consumer-edge checks and genuinely necessary adapter conformance. Declared
+native-process fixtures retain actual execution and failures rather than
+simulating verifier outcomes or dropping integration coverage.
+
+Loom's ordinary landing catalogue must execute without namespace creation,
+mounts, delegated cgroups or a systemd user service. The consumer smoke runs
+real Loom CLI/mock-agent processes; it does not certify Wrix or kernel
+isolation. Retention acceptance exercises real surviving processes and safe
+retention when lifecycle authority is unavailable. Optional container and cgroup
+substrate diagnostics remain explicitly invokable outside that catalogue; they
+are not passing landing evidence and are never an automatic acquisition
+prerequisite. The exported native surface and actual signed commit/pre-push
+controls enforce this boundary.
+
 Only a minimal justified remainder needing capabilities that cannot safely be
 provided inside the agent sandbox is host-only. Host-only classification follows
 actual execution requirements, not an integration/system label, fixture
@@ -527,7 +544,8 @@ annotations across specs use paths relative to the staged-source root (which
 mirrors the `loom/` workspace flattened to `$out/` plus host files like
 `lib/sandbox/linux/entrypoint.sh` mirrored under their host paths), so the
 explicit tier commands run at tree scope with no `--spec` filter. `loom-smoke`
-is exposed as `nix run .#smoke` on Linux only.
+is exposed separately by `nix run .#smoke-container` on Linux; ordinary
+`nix run .#smoke` exercises portable consumer seams.
 
 ## Success Criteria
 
@@ -556,13 +574,38 @@ is exposed as `nix run .#smoke` on Linux only.
   measurements can run explicitly without weakening required behavioral tests.
   [test?](test_speed_measurements_remain_scoped_not_routine_benchmark_gates)
 
+- Ordinary native-process fixture failures remain failures, and changed source
+  invalidates a prior result before reuse.
+  [test](native_process_failure_is_real_and_stale_source_cannot_reuse_a_pass)
+
+- Native test output reuses one compiler/checkout context. On Linux it can live
+  in the caller-owned cache rather than a FUSE source checkout, preserving
+  executable freshness guards without repeated remote-image hashing. Indirect or
+  unsafe roots and foreign Cargo selection are rejected; source edits reuse
+  Cargo's normal incremental validity checks rather than cached test verdicts.
+  [check](nix build .#verification-test-cargo-context)
+
 ### Assembled-system checks
 
 <!-- prettier-ignore -->
-- `nix run .#smoke` follows the
-  [agent-owned container launch boundary](agent.md#container-integration) to run
-  a Pi-backed mock-agent bead against live bd, exiting 0 with the bead closed
+- `nix run .#smoke` exercises real Loom launch, mock-Pi protocol, completion logs
+  and publication handoff through external launcher/tracker fixtures, without
+  recreating the container backend or claiming kernel isolation
   [system](nix build .#verification-system-smoke)
+
+- Every ordinary exported package and app uses native-process verification;
+  container substrate assembly is available only through an explicit diagnostic
+  output, not an ordinary landing root
+  [check](nix build .#verification-kernel-free-surface)
+
+- Ordinary full and required suite entrypoints do not invoke kernel
+  qualification, even when that explicit diagnostic would fail or be unavailable
+  [test](ordinary_suites_do_not_require_kernel_qualification)
+
+- Actual signed fixture commits and configured commit/pre-push hooks succeed
+  without kernel privileges, while invalid verifier input or an unsatisfied
+  publication hook preserves the previous HEAD or remote
+  [check](nix build .#verification-agent-landing)
 
 ### Test-source portability
 
@@ -592,10 +635,10 @@ is exposed as `nix run .#smoke` on Linux only.
   registry entries across production and test sources [check](cargo run -p loom-walk -- no_real_clock_outside_system_clock)
 
 <!-- prettier-ignore -->
-- `#[ignore]` never hides flaky, optional, or otherwise omitted coverage; each
-  exception is an enumerated child-process entry point invoked by a non-ignored
-  parent during the ordinary test suite and carries a process-boundary
-  justification [check](cargo run -p loom-walk -- no_ignore_for_flake)
+- `#[ignore]` never hides flaky or unaccounted coverage; each exception is an
+  enumerated subprocess entry point invoked by its ordinary parent, or one of
+  the two explicit delegated-cgroup diagnostics. Diagnostic skips do not certify
+  kernel behavior or count as executed landing coverage [check](cargo run -p loom-walk -- no_ignore_for_flake)
 
 ### Property-based testing
 
@@ -632,14 +675,20 @@ nonpassing. No platform outputs or shared test functions are removed.
   configured Linux and Darwin system identifiers [check](cargo run -p loom-walk -- test_nix_surface_contract)
 
 <!-- prettier-ignore -->
-- The smoke app selects the real image-backed implementation only on Linux
+- The optional container smoke app selects the real image-backed implementation only on Linux
   [check](cargo run -p loom-walk -- test_nix_surface_contract)
 
 <!-- prettier-ignore -->
-- The Darwin smoke branch is wired to an explicit non-successful unavailable-platform entry
+- The Darwin container diagnostic branch is wired to an explicit non-successful unavailable-platform entry
   [check](cargo run -p loom-walk -- test_nix_surface_contract)
 
 ### CI integration
+
+Shared SDK checks use per-system package aliases so ordinary native hooks
+execute the actual local check, rather than requiring an incidental fixed
+architecture. The checks remain declared for all supported systems; foreign
+runtime coverage and explicitly foreign requirements remain separate and
+unverified locally.
 
 <!-- prettier-ignore -->
 - Suite apps select their declared immutable Rust/Cargo toolchain despite
@@ -647,19 +696,19 @@ nonpassing. No platform outputs or shared test functions are removed.
   and reuse a checkout-local target isolated by toolchain rather than by run.
   The campaign uses compact debug information and no incremental databases while
   retaining debug assertions and compiler caching; cached objects are not results.
-  [check](nix build .#checks.x86_64-linux.test-app-hook-runner)
+  [check](nix build .#verification-test-app-hook-runner)
 
 <!-- prettier-ignore -->
 - Storage diagnostics read Nix database sizes and native GC liveness without
   deleting outputs or walking every store file, distinguish logical from physical
   sizes, and reject malformed or unavailable accounting rather than reporting zero.
-  [check](nix build .#checks.x86_64-linux.acceptance-storage-report)
+  [check](nix build .#verification-acceptance-storage-report)
 
 <!-- prettier-ignore -->
 - Terminal Cargo verifier outputs retain their reports rather than duplicate
   whole-target archives; the actual reusable compiler catalogue remains available
   to dependent execution.
-  [check](nix build .#checks.x86_64-linux.native-stage-integrity)
+  [check](nix build .#verification-source-integrity)
 
 <!-- prettier-ignore -->
 - The `loom-tests` package aliases the complete canonical native Nextest producer
@@ -675,9 +724,16 @@ nonpassing. No platform outputs or shared test functions are removed.
   [check?](cargo run -p loom-walk -- agent_suite_and_affected_host_surface_contract)
 
 <!-- prettier-ignore -->
-- `nix run .#smoke` carries a concrete mock-Pi image, immutable ProfileConfig,
-  canonical `wrix.prekHooks` directory, Linux implementation, and non-successful Darwin entry
+- `nix run .#smoke-container` retains a concrete mock-Pi image, immutable
+  ProfileConfig, canonical `wrix.prekHooks` directory, Linux implementation and
+  non-successful Darwin entry without becoming an ordinary landing obligation
   [check](cargo run -p loom-walk -- test_nix_surface_contract)
+
+<!-- prettier-ignore -->
+- The host-side disposable smoke tracker SDK clears inherited tracker identity
+  and requests fresh workspace-broker identity even in clones without local
+  Dolt metadata, while retaining the actual upstream CLI.
+  [check](nix build .#verification-native-smoke-beads)
 
 <!-- prettier-ignore -->
 - `nix run .#fuzz-loom` is on-demand and absent from flake checks [check](cargo run -p loom-walk -- test_nix_surface_contract)

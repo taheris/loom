@@ -12,7 +12,10 @@ mod list;
 mod options;
 use loom_protocol::inbox as terminal;
 
-pub use apply::{ApplyError, ApplyReport, apply_proposals, ensure_integration_clean_after_chat};
+pub use apply::{
+    ApplyError, ApplyReport, apply_proposals, apply_proposals_with_tracking,
+    ensure_integration_clean_after_chat,
+};
 pub use context::build_inbox_context;
 pub use error::InboxError;
 pub use list::{

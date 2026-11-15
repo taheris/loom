@@ -4,8 +4,9 @@ use std::collections::HashSet;
 
 use displaydoc::Display;
 use loom_driver::bd::LabelExt;
-use loom_driver::bd::{BdClient, Bead, CommandRunner, IssueType, ListOpts, Status};
 use loom_driver::identifier::BeadId;
+use loom_issues::task::{Kind as IssueType, Query, Record as Bead, Status};
+use loom_issues::tracking::Store;
 use loom_protocol::output::Message;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -71,7 +72,7 @@ fn record(source: &Bead) -> Result<Option<Record>, DecisionWaitError> {
     Ok(Some(record))
 }
 
-async fn root<R: CommandRunner>(bd: &BdClient<R>, source: &Bead) -> Result<BeadId, LoopError> {
+async fn root<T: Store>(bd: &T, source: &Bead) -> Result<BeadId, LoopError> {
     let mut current = source.clone();
     let mut seen = HashSet::new();
     loop {
@@ -84,7 +85,7 @@ async fn root<R: CommandRunner>(bd: &BdClient<R>, source: &Bead) -> Result<BeadI
         let Some(parent_id) = current.parent else {
             return Ok(current.id);
         };
-        current = bd.show(&parent_id).await?;
+        current = bd.get(&parent_id).await?;
         if current.id != parent_id {
             return Err(invalid("ambiguous decision producer ownership").into());
         }
@@ -93,19 +94,18 @@ async fn root<R: CommandRunner>(bd: &BdClient<R>, source: &Bead) -> Result<BeadI
 
 /// Read the complete current inventory before any update. Native projections
 /// never establish attribution or extend the set of admitted references.
-async fn inventory<R: CommandRunner>(
-    bd: &BdClient<R>,
+async fn inventory<T: Store>(
+    bd: &T,
     journal: &DecisionWaitJournal,
     source: &Bead,
     known: &HashSet<BeadId>,
 ) -> Result<Vec<Bead>, LoopError> {
     let candidates = bd
-        .list(ListOpts {
-            all: true,
+        .query(Query {
             limit: Some(0),
             parent: None,
-            issue_type: Some(IssueType::Decision),
-            ..ListOpts::default()
+            kind: Some(IssueType::Decision),
+            ..Query::default()
         })
         .await?;
     let mut ids = known.clone();
@@ -122,7 +122,7 @@ async fn inventory<R: CommandRunner>(
     let mut decisions = Vec::with_capacity(ids.len());
     let mut unreported = Vec::new();
     for id in ids {
-        let decision = bd.show(&id).await?;
+        let decision = bd.get(&id).await?;
         if decision.id != id || decision.issue_type != IssueType::Decision {
             return Err(invalid(format!(
                 "{id} is not a native decision child of {}",
@@ -133,7 +133,7 @@ async fn inventory<R: CommandRunner>(
         let current_root = root(bd, source).await?;
         let producer = graph::provenance(&decision, &current_root)?;
         if producer != source.id {
-            let owner = bd.show(&producer).await?;
+            let owner = bd.get(&producer).await?;
             let legacy_closed = decision.status == Status::Closed
                 && decision.parent.as_ref() == Some(&producer)
                 && root(bd, &owner).await? == current_root;
@@ -171,8 +171,8 @@ async fn inventory<R: CommandRunner>(
 /// # Errors
 /// Native or journal failures stop execution. Invalid contextual proposals
 /// become fail-closed recovery without partial queue updates.
-pub async fn reconcile_session<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub async fn reconcile_session<T: Store>(
+    bd: &T,
     journal: &DecisionWaitJournal,
     expected: &Bead,
     session: SessionResult,
@@ -214,8 +214,8 @@ pub async fn reconcile_session<R: CommandRunner>(
 }
 
 /// Refresh canonical admissions and migrate legacy holds before selection.
-pub(super) async fn held<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub(super) async fn held<T: Store>(
+    bd: &T,
     journal: &DecisionWaitJournal,
     bead: &Bead,
 ) -> Result<bool, LoopError> {
@@ -223,16 +223,16 @@ pub(super) async fn held<R: CommandRunner>(
 }
 
 /// Reconcile local operations after the caller atomically read current native dependencies.
-pub(super) async fn held_with_dependencies<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub(super) async fn held_with_dependencies<T: Store>(
+    bd: &T,
     journal: &DecisionWaitJournal,
     bead: &Bead,
 ) -> Result<bool, LoopError> {
     held_current(bd, journal, bead, true).await
 }
 
-async fn held_current<R: CommandRunner>(
-    bd: &BdClient<R>,
+async fn held_current<T: Store>(
+    bd: &T,
     journal: &DecisionWaitJournal,
     bead: &Bead,
     native_checked: bool,
@@ -240,7 +240,7 @@ async fn held_current<R: CommandRunner>(
     migration::recover(bd, journal).await?;
     if let Some(mut entry) = journal.load(&bead.id)? {
         if entry.phase.holds_source() || entry.phase == Phase::Released {
-            let source = bd.show(&bead.id).await?;
+            let source = bd.get(&bead.id).await?;
             if !matches!(source.status, Status::Open | Status::InProgress)
                 || source
                     .labels
@@ -271,7 +271,7 @@ async fn held_current<R: CommandRunner>(
     if native_checked {
         return Ok(false);
     }
-    let source = bd.show(&bead.id).await?;
+    let source = bd.get(&bead.id).await?;
     journal.native_held(bd, &source).await
 }
 

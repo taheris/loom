@@ -284,7 +284,9 @@ impl super::Graph {
             ));
         };
         let profile = match self.runtime {
-            super::Runtime::Nix => return Err(super::Error::Result),
+            super::Runtime::Nix | super::Runtime::NativeProcess => {
+                return Err(super::Error::Result);
+            }
             super::Runtime::NativeCgroup => Profile::Delegated,
             super::Runtime::NativeContainer => Profile::Container,
         };

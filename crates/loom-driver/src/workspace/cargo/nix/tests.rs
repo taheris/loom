@@ -41,10 +41,10 @@ mod cases {
     fn app(root: &Path) -> PathBuf {
         let source = root.join("app");
         std::fs::create_dir(&source).unwrap();
-        std::fs::write(source.join("flake.nix"), format!(
-            "{{ outputs = _: let app = {{ type = \"app\"; program = \"{}\"; }}; in {{ apps = builtins.listToAttrs (map (name: {{ inherit name; value.probe = app; }}) [ \"x86_64-linux\" \"aarch64-linux\" \"x86_64-darwin\" \"aarch64-darwin\" ]); }}; }}",
-            pinned().display(),
-        )).unwrap();
+        std::fs::copy(pinned(), source.join("nix")).unwrap();
+        std::fs::write(source.join("flake.nix"),
+            "{ outputs = { self }: let app = { type = \"app\"; program = \"${self}/nix\"; }; in { apps = builtins.listToAttrs (map (name: { inherit name; value.probe = app; }) [ \"x86_64-linux\" \"aarch64-linux\" \"x86_64-darwin\" \"aarch64-darwin\" ]); }; }",
+        ).unwrap();
         source
     }
 
@@ -65,11 +65,12 @@ mod cases {
             "nix_owned_verifiers_repeat_success_and_failure_without_native_reservations",
             |root| {
                 let source = app(root);
-                // Darwin cannot mount a relocated logical store for `nix run`.
+                // Linux uses a genuinely separate logical store, not a relocated
+                // /nix/store mount (which would need another mount namespace).
                 let store = if cfg!(target_os = "macos") {
-                    PathBuf::from("daemon")
+                    "daemon"
                 } else {
-                    root.join("store")
+                    "local"
                 };
                 for valid in [true, true, false, false] {
                     let mut cmd = command(pinned(), &source);
@@ -80,7 +81,7 @@ mod cases {
                         "--no-write-lock-file",
                         "--store",
                     ])
-                    .arg(&store)
+                    .arg(store)
                     .arg(format!("path:{}#probe", source.display()))
                     .args([
                         "--", "eval", "--store", "dummy://", "--impure", "--raw", "--expr",
@@ -92,6 +93,11 @@ mod cases {
                     })
                     .env("HOME", root.join("home"))
                     .env("XDG_CACHE_HOME", root.join("cache"));
+                    if store == "local" {
+                        cmd.env("NIX_STORE_DIR", root.join("store"))
+                            .env("NIX_STATE_DIR", root.join("nix-state"))
+                            .env("NIX_LOG_DIR", root.join("nix-log"));
+                    }
                     let execution = verifier_command(&mut cmd, &source).unwrap();
                     let state = state(&cmd);
                     let output = cmd.output().unwrap();
@@ -103,7 +109,7 @@ mod cases {
                     assert!(!source.join("target").exists());
                     drop(execution);
                 }
-                if store.is_absolute() {
+                if store == "local" {
                     let output = Command::new(pinned())
                         .args([
                             "store",
@@ -112,7 +118,10 @@ mod cases {
                             "nix-command",
                             "--store",
                         ])
-                        .arg(&store)
+                        .arg(store)
+                        .env("NIX_STORE_DIR", root.join("store"))
+                        .env("NIX_STATE_DIR", root.join("nix-state"))
+                        .env("NIX_LOG_DIR", root.join("nix-log"))
                         .output()
                         .unwrap();
                     assert!(output.status.success(), "{output:?}");

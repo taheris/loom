@@ -6,6 +6,7 @@ let
       name = Native report fixture
       email = native-report@example.invalid
   '';
+  outsideSdk = pkgs.writeText "undeclared-native-sdk-object" "outside the admitted store\n";
   verify = import ../system-verification.nix {
     inherit pkgs system;
     loom = {
@@ -51,7 +52,7 @@ let
     set -euo pipefail
     [[ "$NIX_REMOTE" == local ]]
     ${pkgs.nix}/bin/nix path-info --offline ${source}
-    if ${pkgs.nix}/bin/nix-store --check-validity ${builtins.unsafeDiscardStringContext (toString pkgs.hello)}; then
+    if ${pkgs.nix}/bin/nix-store --check-validity ${builtins.unsafeDiscardStringContext (toString outsideSdk)}; then
       printf 'private SDK admitted an undeclared store object\n' >&2
       exit 1
     fi
@@ -66,12 +67,13 @@ in
 pkgs.runCommand "system-verification-report"
   {
     nativeBuildInputs = [
-      pkgs.jq
-      pkgs.hello
+      (pkgs.lib.getBin pkgs.jq)
     ];
+    inherit outsideSdk;
   }
   ''
     set -euo pipefail
+    ${pkgs.nix}/bin/nix-store --check-validity "$outsideSdk"
     ${pkgs.lib.concatMapStrings exercise [
       0
       1

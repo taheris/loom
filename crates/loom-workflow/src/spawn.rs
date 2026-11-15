@@ -42,6 +42,7 @@ pub fn build_spawn_config(
         image_source: entry.source.clone(),
         image_source_kind,
         wrix_launcher: None,
+        tracking_access: loom_driver::agent::WorkerTrackingAccess::LauncherManaged,
         profile_config: Some(entry.profile_config.clone()),
         workspace,
         env,

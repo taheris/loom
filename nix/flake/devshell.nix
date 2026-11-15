@@ -27,6 +27,7 @@ _:
         config.treefmt.build.wrapper
         loom.bin
         pkgs.cargo-nextest
+        (import ../verification-tool.nix { inherit pkgs; })
         pkgs.flock
         rustToolchain
         wrixLauncher

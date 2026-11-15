@@ -11,10 +11,10 @@ let
       composed = root._isLibCleanSourceWith or false;
       original = if composed then root.origSrc else root;
       selectedRoot = if origin == "." then original else original + "/${origin}";
+      includes = path: type: (!composed || root.filter path type) && filter path type;
       selected =
         path: type:
-        (!composed || root.filter path type)
-        && filter path type
+        includes path type
         && (
           type != "directory"
           || builtins.any (entry: selected (path + "/${entry}") (builtins.readDir path).${entry}) (
@@ -23,7 +23,7 @@ let
         );
     in
     {
-      inherit origin;
+      inherit origin includes;
       _nextest =
         let
           directory = selectedRoot + "/.config";
@@ -44,22 +44,38 @@ let
     {
       resources,
       evaluation ? [ ],
+      runtime ? null,
+      purpose ? "check",
       build,
     }:
     let
       result = build (map ({ path, ... }: path) resources);
+      executionRuntime = if runtime == null then result.loom.runtime or "nix" else runtime;
     in
+    assert builtins.elem executionRuntime [
+      "nix"
+      "native-process"
+      "native-cgroup"
+      "native-container"
+    ];
+    assert builtins.elem purpose [
+      "check"
+      "artifact"
+    ];
     assert result.type == "derivation";
     result
     // {
       loom = (result.loom or { }) // {
         version = 1;
+        runtime = executionRuntime;
+        inherit purpose;
         sources =
           (result.loom.sources or [ ]) ++ map ({ origin, path, ... }: { inherit origin path; }) resources;
         evaluation =
           (result.loom.evaluation or [ ]) ++ map ({ origin, path, ... }: { inherit origin path; }) evaluation;
       };
     };
+  artifact = args: check (args // { purpose = "artifact"; });
   asserted =
     reporter:
     (reporter.overrideAttrs (_: {
@@ -99,10 +115,16 @@ let
     }:
     assert builtins.elem runtime [
       "nix"
+      "native-process"
       "native-cgroup"
       "native-container"
     ];
-    assert runtime == "nix" || tier == "system";
+    assert
+      builtins.elem runtime [
+        "nix"
+        "native-process"
+      ]
+      || tier == "system";
     assert
       targets != [ ] || throw "native report ${name}: declare at least one complete result identity";
     assert
@@ -153,23 +175,41 @@ let
       operation,
       resources,
       evaluation ? [ ],
+      runtime ? "nix",
       args,
+      compilationInputs ? (args.nativeBuildInputs or [ ]),
     }:
     let
       commands = {
-        build = ''cargo build --offline --locked --workspace --all-targets --profile "$CARGO_PROFILE"'';
+        build = ''cargo build --offline --locked --manifest-path "$src/Cargo.toml" --workspace --all-targets --profile "$CARGO_PROFILE"'';
         lint = ''cargo clippy --offline --locked --workspace --profile "$CARGO_PROFILE" -- --deny warnings'';
         lint-all-targets = ''cargo clippy --offline --locked --workspace --all-targets --profile "$CARGO_PROFILE" -- --deny warnings'';
-        test = ''bash "$LOOM_PRIVATE_FIXTURE_RUNNER" --build-campaign bash "$LOOM_REPORT_SUPERVISOR" cargo nextest run --offline --locked --workspace --all-targets --cargo-profile "$CARGO_PROFILE" --ignore-default-filter --test-threads 2 --no-fail-fast --message-format libtest-json-plus'';
+        test = ''
+          runtime=$(mktemp -d)
+          cp -R "''${LOOM_TEST_SOURCE_ROOT:-$src}/." "$runtime"
+          chmod -R u+w "$runtime"
+          export LOOM_TEST_SOURCE_ROOT="$runtime"
+          cd "$runtime"
+          bash "$LOOM_PRIVATE_FIXTURE_RUNNER" --build-campaign bash "$LOOM_REPORT_SUPERVISOR" cargo nextest run --cargo-metadata "$cargoArtifacts/cargo.json" --binaries-metadata "$cargoArtifacts/binaries.json" --workspace-remap "$runtime" --target-dir-remap "$cargoArtifacts/target" --ignore-default-filter --no-fail-fast --message-format libtest-json-plus
+        '';
         catalogue = ''
           mkdir -p "$out"
-          cargo metadata --offline --locked --format-version 1 > "$out/cargo.json"
-          cargo nextest list --offline --locked --workspace --all-targets --cargo-profile "$CARGO_PROFILE" --run-ignored all --ignore-default-filter --message-format json > "$out/nextest.json"
-          cargo nextest list --offline --locked --workspace --all-targets --cargo-profile "$CARGO_PROFILE" --run-ignored all --message-format json > "$out/default.json"
+          cargo metadata --offline --locked --manifest-path "$src/Cargo.toml" --format-version 1 > "$out/cargo.json"
+          cargo nextest list --offline --locked --manifest-path "$src/Cargo.toml" --workspace --all-targets --cargo-profile "$CARGO_PROFILE" --run-ignored all --ignore-default-filter --list-type binaries-only --message-format json > "$out/binaries.json"
+          listing_platform=$(jq -ce '."rust-build-meta".platforms | if (.targets | length) == 0 then .host.platform elif (.targets | length) == 1 then .targets[0].platform else error("unsupported catalogue targets") end | select((.triple | type) == "string" and (.triple | length) > 0)' "$out/binaries.json")
+          listing_target=$(jq -er '.triple' <<< "$listing_platform")
+          if jq -e 'has("custom-json")' <<< "$listing_platform" > /dev/null; then
+            jq -er '."custom-json"' <<< "$listing_platform" > "$out/listing-target.json"
+            listing_target="$out/listing-target.json"
+          fi
+          listing_build_directory=$(jq -er '."rust-build-meta" | (."build-directory" // ."target-directory") | select(type == "string" and length > 0)' "$out/binaries.json")
+          cargo metadata --offline --locked --manifest-path "$src/Cargo.toml" --format-version 1 --all-features --filter-platform "$listing_target" > "$out/listing-cargo.json"
+          cargo nextest list --cargo-metadata "$out/listing-cargo.json" --binaries-metadata "$out/binaries.json" --workspace-remap "$src" --target-dir-remap "$out/target" --build-dir-remap "$listing_build_directory" --run-ignored all --ignore-default-filter --message-format json > "$out/nextest.json"
+          cargo nextest list --cargo-metadata "$out/listing-cargo.json" --binaries-metadata "$out/binaries.json" --workspace-remap "$src" --target-dir-remap "$out/target" --build-dir-remap "$listing_build_directory" --run-ignored all --message-format json > "$out/default.json"
           printf '%s' "$LOOM_NATIVE_GROUPS" > "$out/groups.txt"
           index=0
           while IFS= read -r group; do
-            cargo nextest list --offline --locked --workspace --all-targets --cargo-profile "$CARGO_PROFILE" --run-ignored all --ignore-default-filter -E "group(=$group)" --message-format json > "$out/group-$index.json"
+            cargo nextest list --cargo-metadata "$out/listing-cargo.json" --binaries-metadata "$out/binaries.json" --workspace-remap "$src" --target-dir-remap "$out/target" --build-dir-remap "$listing_build_directory" --run-ignored all --ignore-default-filter -E "group(=$group)" --message-format json > "$out/group-$index.json"
             index=$((index + 1))
           done <<< "$LOOM_NATIVE_GROUPS"
         '';
@@ -177,6 +217,7 @@ let
       allowed = [
         "src"
         "cargoArtifacts"
+        "CARGO_PROFILE"
         "cargoLock"
         "cargoToml"
         "cargoVendorDir"
@@ -190,6 +231,8 @@ let
         "LOOM_NATIVE_STAT_BIN"
         "LOOM_TEST_NIX_REGISTRATION"
         "LOOM_TEST_NIX_INPUTS"
+        "LOOM_TEST_SOURCE_ROOT"
+        "LOOM_TEST_RUNTIME_PATH"
         "LOOM_NATIVE_RUST_FIXTURE"
         "LOOM_NATIVE_SMOKE_FIXTURE"
         "SSL_CERT_FILE"
@@ -198,7 +241,7 @@ let
       construct =
         op: extra:
         check {
-          inherit resources evaluation;
+          inherit resources evaluation runtime;
           build =
             _:
             craneLib.mkCargoDerivation (
@@ -208,21 +251,38 @@ let
                 buildPhaseCargoCommand = ''
                   export HOME=$(mktemp -d)
                   export GIT_CONFIG_SYSTEM=/dev/null
+                  export CARGO_TARGET_DIR="${if op == "catalogue" then "$out" else "$PWD"}/target"
                   ${commands.${op}}
                 '';
                 doCheck = false;
-                # Only the catalogue is consumed as a reusable compiler seed.
-                # Terminal verdict/report outputs must not copy the whole target.
-                doInstallCargoArtifacts = op == "catalogue";
+                # The catalogue builds at its final path so embedded Cargo binary
+                # paths remain valid. No operation moves or archives another target.
+                doInstallCargoArtifacts = false;
                 installPhaseCommand = ''mkdir -p "$out"'';
               }
             );
         };
-      roots = builtins.filter (source: source.origin == "." || source.path == args.src) resources;
+      rootOrigins = builtins.filter (source: source.origin == ".") resources;
+      roots =
+        if rootOrigins != [ ] then
+          rootOrigins
+        else
+          builtins.filter (source: source.path == args.src) resources;
       configuration =
         assert builtins.length roots == 1;
         (builtins.head roots)._nextest;
       catalogue = construct "catalogue" {
+        nativeBuildInputs = compilationInputs;
+        prePatch = ''export CARGO_TARGET_DIR="$out/target"'';
+        dontFixup = true;
+        NIX_NO_SELF_RPATH = 1;
+        LOOM_TEST_SOURCE_ROOT = "";
+        LOOM_TEST_RUNTIME_PATH = "";
+        LOOM_TEST_NIX_REGISTRATION = "";
+        LOOM_TEST_NIX_INPUTS = [ ];
+        LOOM_NATIVE_RUST_FIXTURE = "";
+        LOOM_NATIVE_SMOKE_FIXTURE = "";
+        GIT_CONFIG_GLOBAL = "/dev/null";
         LOOM_NATIVE_GROUPS = builtins.concatStringsSep "\n" (
           [ "@global" ] ++ builtins.attrNames (configuration.test-groups or { })
         );
@@ -231,8 +291,12 @@ let
         if operation == "test" then
           {
             cargoArtifacts = catalogue;
+            # Execution reads immutable catalogue binaries directly; no writable target is needed.
+            prePatch = ''postPatchHooks=("''${postPatchHooks[@]/inheritCargoArtifacts/}")'';
+            NIX_NO_SELF_RPATH = 1;
             LOOM_REPORT_SUPERVISOR = ./report-supervisor.sh;
             LOOM_PRIVATE_FIXTURE_RUNNER = ./private-fixture-tests.sh;
+            LOOM_TEST_SCHEDULING = ./test-scheduling.sh;
             NEXTEST_EXPERIMENTAL_LIBTEST_JSON = "1";
           }
         else
@@ -244,6 +308,7 @@ let
     assert builtins.all (name: builtins.elem name allowed) (builtins.attrNames args);
     result
     // {
+      compilation = if operation == "test" then catalogue else null;
       loom =
         result.loom
         // {
@@ -260,6 +325,7 @@ let
     let
       program = "${package}/bin/${name}";
       definition = check {
+        runtime = package.loom.runtime or "nix";
         resources = package.loom.sources;
         evaluation = package.loom.evaluation;
         build =
@@ -286,6 +352,7 @@ in
 {
   inherit
     app
+    artifact
     resource
     check
     reported

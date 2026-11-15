@@ -24,6 +24,9 @@ pub enum LoopError {
     /// bd CLI failure during `loom loop`
     Bd(#[from] BdError),
 
+    /// tracking operation failed during `loom loop`
+    Tracking(#[from] loom_issues::tracking::Error),
+
     /// loop state carried an invalid bead id
     InvalidBeadId(#[from] loom_driver::identifier::ParseBeadIdError),
 

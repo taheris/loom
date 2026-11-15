@@ -5,13 +5,13 @@
       pkgs,
       config,
       loom,
-      config,
       system,
       wrixLib,
       wrixLauncher,
       ...
     }:
     let
+      inherit (pkgs.lib) optionalString;
       inherit (loom)
         bin
         cargoArtifacts
@@ -26,12 +26,23 @@
           inherit origin;
         };
       evaluation = import ../native-context.nix;
-      check = resources: build: checked.check { inherit resources evaluation build; };
+      verificationTool = import ../verification-tool.nix { inherit pkgs; };
+      toolCheck =
+        name: resources: inputs: script:
+        scriptCheck name (resources ++ verificationTool.loom.sources) (
+          inputs ++ [ verificationTool ]
+        ) script;
+      check =
+        resources: build:
+        checked.check {
+          inherit resources evaluation build;
+          runtime = "native-process";
+        };
       scriptCheck =
         name: resources: nativeBuildInputs: script:
         check resources (
           paths:
-          pkgs.runCommand name { inherit nativeBuildInputs; } ''
+          pkgs.runCommand name { nativeBuildInputs = map pkgs.lib.getBin nativeBuildInputs; } ''
             set -euo pipefail
             ${script paths}
             touch "$out"
@@ -53,7 +64,7 @@
           LOOM_PREK_BIN = { value = "${loom.hookRunner}/bin/prek", force = true }
           LOOM_ISSUES_BD_BIN = { value = "${pkgs.beads}/bin/bd", force = true }
           LOOM_NATIVE_NIX_BIN = { value = "${pkgs.nix}/bin/nix", force = true }
-          ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+          ${optionalString pkgs.stdenv.hostPlatform.isLinux ''
             LOOM_NATIVE_FLOCK_BIN = { value = "${pkgs.util-linux}/bin/flock", force = true }
             LOOM_NATIVE_SHELL_BIN = { value = "${pkgs.bash}/bin/bash", force = true }
             LOOM_NATIVE_STAT_BIN = { value = "${pkgs.coreutils}/bin/stat", force = true }
@@ -96,7 +107,11 @@
             };
           });
       fakeLoomWrix = (import ../lib.nix).mkLoomBin {
-        inherit pkgs;
+        # Exercise launcher wiring without constructing unrelated container backends.
+        pkgs = pkgs // {
+          podman = pkgs.writeShellScriptBin "podman" "exit 97";
+          skopeo = pkgs.writeShellScriptBin "skopeo" "exit 97";
+        };
         loomBuild.bin = fakeLoomBin;
         wrixLauncher = fakeProfiledWrix;
       };
@@ -125,6 +140,7 @@
             inherit (loom) cargoVendorDir;
             doCheck = false;
             doInstallCargoArtifacts = false;
+            preBuild = "export HOME=$(mktemp -d)";
             buildPhaseCargoCommand = ''cargo check --offline --locked --profile "$CARGO_PROFILE" -p loom-llm ${flags}'';
             installPhaseCommand = "touch $out";
           }
@@ -138,19 +154,31 @@
       llmCompatArchive = craneLib.mkCargoDerivation {
         pname = "loom-llm-compat-archive";
         version = "0.0.0";
-        src = stagedSrc;
-        inherit cargoArtifacts;
+        src = loom.compilerSource.path;
+        cargoArtifacts = loom.testCargoArtifacts;
+        CARGO_PROFILE = "dev";
         inherit (loom) cargoVendorDir;
         nativeBuildInputs = [
+          loom.writableWorkspaceArtifacts
+        ]
+        ++ map pkgs.lib.getBin [
           pkgs.cargo-nextest
           pkgs.bash
           pkgs.gnutar
           pkgs.zstd
+          pkgs.jq
         ];
         doCheck = false;
         doInstallCargoArtifacts = false;
-        CARGO_PROFILE_RELEASE_STRIP = "symbols";
-        buildPhaseCargoCommand = ''cargo nextest archive --offline --locked --cargo-profile "$CARGO_PROFILE" -p loom-llm --features openai-compat --lib --archive-file "$TMPDIR/llm-compat.tar.zst"'';
+        NIX_NO_SELF_RPATH = 1;
+        buildPhaseCargoCommand = ''
+          export HOME=$(mktemp -d)
+          export CARGO_TARGET_DIR="$PWD/target"
+          cargo nextest archive --offline --locked --cargo-profile "$CARGO_PROFILE" \
+            --manifest-path ${loom.compilerSource.path}/Cargo.toml \
+            -p loom-llm --features openai-compat --lib --archive-file "$TMPDIR/llm-compat.tar.zst"
+          test ! -e ${loom.compilerSource.path}/target
+        '';
         installPhaseCommand = ''
           mkdir -p "$out"
           bash ${../normalize-nextest-archive.sh} "$TMPDIR/llm-compat.tar.zst" "$out/archive.tar.zst"
@@ -170,6 +198,7 @@
           export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
           export NIX_SSL_CERT_FILE="$SSL_CERT_FILE"
           export NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1
+          export LOOM_TEST_SOURCE_ROOT=${stagedSrc}
           exec cargo-nextest nextest run --archive-file ${llmCompatArchive}/archive.tar.zst \
             --extract-to "$HOME/tests" --workspace-remap ${stagedSrc} \
             --ignore-default-filter --test-threads 2 --no-fail-fast \
@@ -189,21 +218,99 @@
             );
           in
           type == "directory"
-          || builtins.pathExists "${loom.workspaceSource.path}/${relative}"
+          || loom.workspaceSource.includes path type
           || builtins.any (
             origin: relative == origin || pkgs.lib.hasPrefix "${origin}/" relative
           ) extraOrigins;
       };
       checks = {
+        kernel-free-surface = check loom.testResources (
+          _:
+          pkgs.runCommand "kernel-free-surface" { nativeBuildInputs = [ (pkgs.lib.getBin pkgs.nix) ]; } ''
+            export NIX_REMOTE=local HOME
+            HOME=$(mktemp -d)
+            nix eval --offline --impure --json --option allow-import-from-derivation false --expr '
+              let
+                flake = builtins.getFlake "path:${stagedSrc}";
+                packages = flake.packages.${system};
+                checks = flake.checks.${system};
+                apps = flake.apps.${system};
+                native = value: (value.loom.runtime or "nix") == "native-process";
+              in
+              assert builtins.all native (builtins.attrValues packages);
+              assert builtins.all native (builtins.attrValues checks);
+              assert builtins.all (value: (value.loom.purpose or "check") == "check") (builtins.attrValues checks);
+              assert builtins.all (app: native app.meta.loom.definition) (builtins.attrValues apps);
+              assert !(packages ? smoke-runtime);
+              assert flake.legacyPackages.${system} ? kernel-smoke-runtime;
+              true
+            '
+            touch "$out"
+          ''
+        );
+        agent-landing =
+          scriptCheck "agent-landing"
+            [
+              (resource "tests/verify/agent-landing.sh")
+              (resource "nix/private-fixture-tests.sh")
+            ]
+            [
+              pkgs.bash
+              pkgs.git
+              pkgs.openssh
+              pkgs.coreutils
+              pkgs.nix
+              loom.hookRunner
+              loom.bin
+            ]
+            (paths: ''
+              bash ${builtins.elemAt paths 1} --test-process bash ${builtins.head paths} \
+                ${import ../tests/native-smoke-fixture.nix { inherit pkgs; }}
+            '');
+        private-fixture-nix-policy =
+          scriptCheck "private-fixture-nix-policy"
+            [
+              (resource "scripts/run-private-fixture-tests")
+              (resource "nix/private-fixture-tests.sh")
+              (resource "tests/agent/private-fixture-nix-policy.sh")
+            ]
+            [
+              pkgs.bash
+              pkgs.coreutils
+              pkgs.nix
+              pkgs.git
+            ]
+            (paths: ''
+              bash ${builtins.elemAt paths 2} ${builtins.elemAt paths 0} ${builtins.elemAt paths 1}
+            '');
+        wrix-lean-layer-plan = toolCheck "wrix-lean-layer-plan" [ ] [ ] (_: ''
+          loom-verification layer-conformance \
+            ${pkgs.path}/pkgs/by-name/fl/flatten-references-graph/src/flatten_references_graph/popularity_contest.py
+          ${verificationTool}/libexec/loom-verification-tests layer::tests
+        '');
+        nextest-archive-reproducible = check [ (resource "nix/normalize-nextest-archive.sh") ] (
+          paths:
+          import ../tests/normalize-nextest-archive.nix {
+            inherit pkgs;
+            normalizer = builtins.head paths;
+          }
+        );
+        system-verification-report = check [ ] (
+          _: import ../tests/system-verification-report.nix { inherit pkgs system; }
+        );
         profile-catalogue = checked.check {
+          runtime = "native-process";
           resources = [ ];
           evaluation = evaluation ++ loom.testResources;
           build = _: import ../tests/profile-catalogue.nix { inherit pkgs wrixLib; };
         };
         loom-consumer-api = checked.check {
+          runtime = "native-process";
           resources = [
             consumerSource
-            (resource "tests/verify/consumer-api.py")
+          ]
+          ++ verificationTool.loom.sources
+          ++ [
           ];
           evaluation = evaluation ++ [ (resource "tests/verify/consumer-api.nix") ];
           build =
@@ -212,10 +319,11 @@
               inherit pkgs;
               inherit (inputs) crane;
               src = builtins.head paths;
-              script = builtins.elemAt paths 1;
+              inherit verificationTool;
             };
         };
         wrix-consumer-evaluation = checked.check {
+          runtime = "native-process";
           resources = [ ];
           evaluation = evaluation ++ loom.testResources;
           build =
@@ -229,16 +337,6 @@
               )
             );
         };
-        nextest-archive-reproducible = check [ (resource "nix/normalize-nextest-archive.sh") ] (
-          paths:
-          import ../tests/normalize-nextest-archive.nix {
-            inherit pkgs;
-            normalizer = builtins.head paths;
-          }
-        );
-        system-verification-report = check [ ] (
-          _: import ../tests/system-verification-report.nix { inherit pkgs system; }
-        );
         smoke-unavailable = scriptCheck "smoke-unavailable" [ ] [ pkgs.bash pkgs.gnugrep ] (_: ''
           status=0
           bash -euo pipefail ${pkgs.writeText "unavailable-smoke.sh" darwinSmokeText} >"$TMPDIR/smoke.out" 2>&1 || status=$?
@@ -251,7 +349,10 @@
             builtins.toJSON (import ../../tests/verify/native-check-discovery.nix { lib = inputs.nixpkgs.lib; })
           )
         );
+        catalogue-reuse = import ../tests/catalogue-reuse.nix { inherit pkgs loom; };
+
         workspace-build-identity = checked.check {
+          runtime = "native-process";
           resources = [ ];
           evaluation = evaluation ++ loom.testResources;
           build =
@@ -297,52 +398,137 @@
                 pkgs.writeText "prek-pre-unpack.sh" (import ../prek.nix { inherit pkgs; }).preUnpack
               }
             '');
-        acceptance-storage-report =
-          scriptCheck "acceptance-storage-report"
-            (map resource [
-              "tests/agent/acceptance-storage-test.py"
-              "scripts/acceptance-storage.py"
-            ])
-            [ pkgs.python3 ]
+        acceptance-storage-report = toolCheck "acceptance-storage-report" [ ] [ pkgs.coreutils ] (_: ''
+          ${verificationTool}/libexec/loom-verification-tests storage::tests
+          LOOM_VERIFICATION_BIN=${verificationTool}/bin/loom-verification \
+            ${verificationTool}/libexec/loom-verification-cli-tests cli::storage_
+        '');
+        native-smoke-beads = check [ ] (_: import ../tests/native-smoke-beads.nix { inherit pkgs; });
+        test-cargo-context =
+          toolCheck "test-cargo-context"
+            (map resource ([
+              "nix/test-cargo-context.sh"
+              "tests/fixtures/test-cargo-context.sh"
+              "nix/test-scheduling.sh"
+              "tests/fixtures/test-scheduling.sh"
+              "nix/private-fixture-tests.sh"
+              "Cargo.toml"
+              "nix/writable-cargo-artifacts.sh"
+            ]))
+            [
+              pkgs.bash
+              pkgs.coreutils
+              pkgs.git
+              loom.toolchain
+              pkgs.stdenv.cc
+              pkgs.binutils
+            ]
             (paths: ''
-              python3 ${builtins.elemAt paths 0} ${builtins.elemAt paths 1}
+              bash ${builtins.elemAt paths 4} --test-process bash ${builtins.elemAt paths 1} ${builtins.head paths} ${builtins.elemAt paths 2}
+              bash ${builtins.elemAt paths 3} ${builtins.elemAt paths 2}
+              loom-verification cargo-footprint ${builtins.elemAt paths 5}
+              loom-verification writable-artifacts ${builtins.elemAt paths 6} ${loom.toolchain}/bin/rustc
+              ${optionalString pkgs.stdenv.hostPlatform.isLinux ''
+                loom-verification debug-compression ${builtins.head loom.testCompilerHooks}/nix-support/setup-hook ${loom.toolchain}/bin/rustc
+              ''}
             '');
-        native-test-environment = check [ (resource "scripts/run-private-fixture-tests") ] (
-          paths:
-          import ../tests/native-test-environment.nix {
-            inherit pkgs;
-            runner = builtins.head paths;
-          }
-        );
-        native-stage-integrity = check (loom.testResources ++ [ (resource "bin/pre-push-checks") ]) (
-          _:
-          assert !loom.verificationBuild.doInstallCargoArtifacts;
-          assert !loom.clippy.doInstallCargoArtifacts;
-          assert !loom.clippyAllTargets.doInstallCargoArtifacts;
-          assert loom.clippy.cargoArtifacts == loom.cargoArtifacts;
-          assert loom.clippyAllTargets.cargoArtifacts == loom.cargoArtifacts;
-          assert loom.clippy.loom.cargo == "lint";
-          assert loom.clippyAllTargets.loom.cargo == "lint-all-targets";
-          assert !(builtins.hasAttr "loom-tests" config.checks);
-          assert !(builtins.hasAttr "fuzz-loom" config.checks);
-          assert !(builtins.hasAttr "loomTests" config.checks);
-          assert config.packages.loom-tests.drvPath == loom.nextest.drvPath;
-          assert config.packages.loom-tests.loom.cargo == "test";
-          assert config.packages.loom-tests.loom.catalogue == loom.nextest.loom.catalogue;
-          assert !loom.nextest.loom.reporter.doInstallCargoArtifacts;
-          assert loom.nextest.loom.reporter.cargoArtifacts.doInstallCargoArtifacts;
-          pkgs.runCommand "native-staged-source-integrity" { } ''
-            test -x ${stagedSrc}/bin/pre-push-checks
-            cmp ${stagedSrc}/bin/pre-push-checks ${(resource "bin/pre-push-checks").path}
-            cmp ${stagedSrc}/crates/loom-agent/src/pi/parser/terminal_provider_error.jsonl \
-              ${(resource "crates/loom-agent/src/pi/parser/terminal_provider_error.jsonl").path}
-            ${pkgs.python3}/bin/python3 ${stagedSrc}/tests/verify/native-resources-test.py
-            touch "$out"
-          ''
-        );
+        verification-preparation =
+          toolCheck "verification-preparation"
+            [ (resource "nix/private-fixture-tests.sh") ]
+            [ (pkgs.lib.getBin pkgs.nix) pkgs.gnugrep pkgs.coreutils ]
+            (
+              paths:
+              let
+                ready = pkgs.closureInfo { rootPaths = [ (pkgs.writeText "sdk-seed" "pinned SDK fixture") ]; };
+                cold = pkgs.writeTextDir "store-paths" ''
+                  /nix/store/00000000000000000000000000000000-missing-sdk-a
+                  /nix/store/00000000000000000000000000000000-missing-sdk-b
+                '';
+                fixtureRegistration = pkgs.closureInfo {
+                  rootPaths = [
+                    ready
+                    cold
+                  ];
+                };
+              in
+              ''
+                bash ${builtins.head paths} --test-process ${verificationTool}/libexec/loom-verification-tests preparation::tests
+                # Private state fixtures need the system temp parent, not a foreign-owned Nix build ancestor.
+                env -u TMPDIR LOOM_VERIFICATION_BIN=${verificationTool}/bin/loom-verification \
+                  ${verificationTool}/libexec/loom-verification-cli-tests cli::preparation_
+                export HOME="$TMPDIR/sdk-home" NIX_REMOTE=local
+                export NIX_STATE_DIR="$TMPDIR/sdk-nix-state" NIX_LOG_DIR="$TMPDIR/sdk-nix-log" NIX_CONF_DIR="$TMPDIR/sdk-nix-conf"
+                mkdir -p "$HOME" "$NIX_STATE_DIR" "$NIX_LOG_DIR" "$NIX_CONF_DIR"
+                export NIX_CONFIG=$'experimental-features = nix-command flakes\nbuild-users-group =\nrequire-sigs = true\nsandbox = true\nsandbox-fallback = false\nsubstituters =\nbuilders ='
+                nix-store --load-db < ${fixtureRegistration}/registration
+                timeout --kill-after=5s 65s loom-verification prepare ${builtins.unsafeDiscardStringContext ready.drvPath} ${ready} check
+                status=0
+                timeout --kill-after=5s 65s loom-verification prepare ${builtins.unsafeDiscardStringContext cold.drvPath} ${cold} check > missing.log 2>&1 || status=$?
+                [[ "$status" == 78 ]]
+                grep -Fq 'missing-sdk-a' missing.log
+                grep -Fq 'missing-sdk-b' missing.log
+              ''
+            );
+        native-stage-integrity =
+          check (loom.testResources ++ verificationTool.loom.sources ++ [ (resource "bin/pre-push-checks") ])
+            (
+              _:
+              assert config.packages.quint-tools.loom.runtime == "native-process";
+              assert !loom.verificationBuild.doInstallCargoArtifacts;
+              assert loom.verificationBuild.CARGO_PROFILE == "dev";
+              assert loom.verificationBuild.cargoArtifacts.drvPath == loom.testCompilation.drvPath;
+              assert loom.verificationBuild.src == loom.nextest.src;
+              assert !loom.clippy.doInstallCargoArtifacts;
+              assert !loom.clippyAllTargets.doInstallCargoArtifacts;
+              assert loom.clippy.cargoArtifacts == loom.cargoArtifacts;
+              assert loom.clippyAllTargets.cargoArtifacts == loom.cargoArtifacts;
+              assert pkgs.lib.all (
+                input:
+                !(builtins.elem (input.pname or "") [
+                  "jq"
+                  "openssh"
+                ])
+                || (input.outputSpecified or false)
+              ) loom.nextest.nativeBuildInputs;
+              assert loom.nextest.CARGO_PROFILE == "dev";
+              assert loom.testCompilation.drvPath == loom.nextest.loom.catalogue;
+              assert !loom.testCompilation.doInstallCargoArtifacts;
+              assert loom.testCompilation.CARGO_PROFILE == "dev";
+              assert llmCompatArchive.cargoArtifacts.drvPath == loom.testCargoArtifacts.drvPath;
+              assert llmCompatArchive.CARGO_PROFILE == "dev";
+              assert pkgs.lib.hasPrefix "/nix/store/" loom.bin.LOOM_BUILTIN_SOURCE_ROOT;
+              assert pkgs.lib.hasSuffix "/crates/loom-skill" loom.bin.LOOM_BUILTIN_SOURCE_ROOT;
+              assert (loom.bin.CARGO_PROFILE or "release") == "release";
+              assert (loom.clippy.CARGO_PROFILE or "release") == "release";
+              assert (loom.clippyAllTargets.CARGO_PROFILE or "release") == "release";
+              assert loom.clippy.loom.cargo == "lint";
+              assert loom.clippyAllTargets.loom.cargo == "lint-all-targets";
+              assert !(builtins.hasAttr "loom-tests" config.checks);
+              assert !(builtins.hasAttr "fuzz-loom" config.checks);
+              assert !(builtins.hasAttr "loomTests" config.checks);
+              assert config.packages.loom-tests.drvPath == loom.nextest.drvPath;
+              assert config.packages.loom-tests.loom.cargo == "test";
+              assert config.packages.loom-tests.loom.catalogue == loom.nextest.loom.catalogue;
+              assert !loom.nextest.loom.reporter.doInstallCargoArtifacts;
+              assert !loom.nextest.loom.reporter.cargoArtifacts.doInstallCargoArtifacts;
+              assert
+                loom.nextest.loom.reporter.prePatch
+                == ''postPatchHooks=("''${postPatchHooks[@]/inheritCargoArtifacts/}")'';
+              pkgs.runCommand "native-staged-source-integrity" { } ''
+                test -x ${stagedSrc}/bin/pre-push-checks
+                cmp ${stagedSrc}/bin/pre-push-checks ${(resource "bin/pre-push-checks").path}
+                cmp ${stagedSrc}/crates/loom-agent/src/pi/parser/terminal_provider_error.jsonl \
+                  ${(resource "crates/loom-agent/src/pi/parser/terminal_provider_error.jsonl").path}
+                ${verificationTool}/libexec/loom-verification-tests native::tests
+                LOOM_VERIFICATION_BIN=${verificationTool}/bin/loom-verification \
+                  ${verificationTool}/libexec/loom-verification-cli-tests cli::native_
+                touch "$out"
+              ''
+            );
         llm-compat-compile = llmCompile "--features openai-compat";
         llm-native-compile = llmCompile "--no-default-features";
         llm-compat-report = checked.reported {
+          runtime = "native-process";
           inherit system evaluation;
           name = "loom-llm-compat-report";
           bash = pkgs.bash;
@@ -352,18 +538,22 @@
           parser = "libtest-json";
           targets = map (name: "loom-llm::loom_llm$" + name) llmCompatCases;
         };
-        nextest-filtering-syntax = check loom.testResources (
+        nextest-filtering-syntax = check [ loom.compilerSource ] (
           _:
           craneLib.mkCargoDerivation {
             pname = "nextest-filtering-syntax";
             version = "0.0.0";
-            src = stagedSrc;
-            inherit cargoArtifacts;
+            src = loom.compilerSource.path;
+            cargoArtifacts = loom.testCargoArtifacts;
+            nativeBuildInputs = [ loom.writableWorkspaceArtifacts ];
+            CARGO_PROFILE = "dev";
             inherit (loom) cargoVendorDir;
             doCheck = true;
             doInstallCargoArtifacts = false;
-            buildPhaseCargoCommand = ''cargo test --locked --profile "$CARGO_PROFILE" -p loom-gate --test nextest_filtering --no-run'';
-            checkPhaseCargoCommand = ''cargo test --locked --profile "$CARGO_PROFILE" -p loom-gate --test nextest_filtering'';
+            preBuild = ''export HOME=$(mktemp -d); export CARGO_TARGET_DIR="$PWD/target"'';
+            postBuild = "test ! -e ${loom.compilerSource.path}/target";
+            buildPhaseCargoCommand = ''cargo test --offline --locked --manifest-path ${loom.compilerSource.path}/Cargo.toml --profile "$CARGO_PROFILE" -p loom-gate --test integration --no-run'';
+            checkPhaseCargoCommand = ''cargo test --offline --locked --manifest-path ${loom.compilerSource.path}/Cargo.toml --profile "$CARGO_PROFILE" -p loom-gate --test integration nextest_filtering::'';
             installPhaseCommand = "touch $out";
           }
         );
@@ -384,71 +574,70 @@
             pname = "native-cargo-patches";
             version = "0.0.0";
             src = stagedSrc;
-            inherit cargoArtifacts;
+            cargoArtifacts = loom.testCargoArtifacts;
+            CARGO_PROFILE = "dev";
             cargoVendorDir = (inputs.crane.mkLib pkgs).vendorCargoDeps {
               cargoLock = ../../Cargo.lock;
               cargoToml = ../../Cargo.toml;
             };
             nativeBuildInputs = [ (pkgs.lib.getBin pkgs.nix) ];
+            # This control deliberately switches vendor sources at unchanged crate IDs.
+            doNotLinkInheritedArtifacts = true;
             doCheck = true;
             doInstallCargoArtifacts = false;
             preBuild = ''
+              export HOME=$(mktemp -d)
               cp Cargo.lock "$TMPDIR/original-Cargo.lock"
-              if cargo test --locked --profile "$CARGO_PROFILE" -p loom-gate --test nextest_filtering nextest_filter_grammar_errors_retain_upstream_diagnostics > "$TMPDIR/unpatched.log" 2>&1; then
+              if cargo test --locked --profile "$CARGO_PROFILE" -p loom-gate --test integration nextest_filtering::nextest_filter_grammar_errors_retain_upstream_diagnostics > "$TMPDIR/unpatched.log" 2>&1; then
                 echo "unpatched parser unexpectedly passed the strict regression" >&2
                 exit 1
               fi
-              grep -F 'test nextest_filter_grammar_errors_retain_upstream_diagnostics ... FAILED' "$TMPDIR/unpatched.log"
+              if ! grep -F 'test nextest_filtering::nextest_filter_grammar_errors_retain_upstream_diagnostics ... FAILED' "$TMPDIR/unpatched.log"; then
+                cat "$TMPDIR/unpatched.log" >&2
+                exit 1
+              fi
               ${checkedNativeCargo}/bin/cargo --version
               test ! -e .cargo/nix-patches.toml
-              ${checkedNativeCargo}/bin/cargo test --locked --profile "$CARGO_PROFILE" -p loom-gate --test nextest_filtering nextest_filter_grammar_errors_retain_upstream_diagnostics
+              ${checkedNativeCargo}/bin/cargo test --locked --profile "$CARGO_PROFILE" -p loom-gate --test integration nextest_filtering::nextest_filter_grammar_errors_retain_upstream_diagnostics
               test -L .cargo/nix-patches.toml
             '';
-            buildPhaseCargoCommand = ''cargo test --locked --profile "$CARGO_PROFILE" -p loom-gate --test nextest_filtering --test strategy'';
+            buildPhaseCargoCommand = ''
+              cargo test --locked --profile "$CARGO_PROFILE" -p loom-gate --test integration nextest_filtering::
+              cargo test --locked --profile "$CARGO_PROFILE" -p loom-gate --test integration strategy::
+            '';
             checkPhaseCargoCommand = ''cmp Cargo.lock "$TMPDIR/original-Cargo.lock"'';
             installPhaseCommand = "touch $out";
           }
         );
         loom-gate-check = check loom.testResources (
           _:
-          craneLib.mkCargoDerivation {
-            pname = "loom-source-walks";
-            version = "0.0.0";
-            src = stagedSrc;
-            inherit cargoArtifacts;
-            inherit (loom) cargoVendorDir;
-            doCheck = true;
-            doInstallCargoArtifacts = false;
-            nativeBuildInputs = [
-              pkgs.git
-              pkgs.nix
-              pkgs.cacert
-              pkgs.cargo-nextest
-              pkgs.jq
-              pkgs.python3
-            ];
-            buildPhaseCargoCommand = "cargo build --offline --locked -p loom-walk --bin loom-walk --release";
-            postUnpack = ''
-              (
-                export HOME=$(mktemp -d)
-                export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
-                cd "$sourceRoot"
-                test ! -e .git && test ! -e target && test ! -e .cargo-home
-                git init -q -b main
-                printf '/target/\n/.cargo-home/\n' >> .git/info/exclude
-                git add --all
-                GIT_AUTHOR_DATE="@1 +0000" GIT_COMMITTER_DATE="@1 +0000" \
-                  git -c user.name="Loom native source fixture" -c user.email="native-source-fixture@example.invalid" \
-                    -c commit.gpgsign=false commit -q -m "Seal staged verification source"
-              )
-            '';
-            preCheck = ''
+          pkgs.runCommand "loom-source-walks"
+            {
+              nativeBuildInputs = map pkgs.lib.getBin [
+                pkgs.git
+                pkgs.nix
+                pkgs.cacert
+                pkgs.cargo-nextest
+                pkgs.jq
+              ];
+            }
+            ''
               export HOME=$(mktemp -d)
               export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
               export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
-            '';
-            checkPhaseCargoCommand = "bash ${../../scripts/run-private-fixture-tests} target/release/loom-walk --from-specs";
-          }
+              cp -r ${stagedSrc} source
+              chmod -R u+w source
+              cd source
+              test ! -e .git && test ! -e target && test ! -e .cargo-home
+              git init -q -b main
+              printf '/target/\n/.cargo-home/\n' >> .git/info/exclude
+              git add --all
+              GIT_AUTHOR_DATE="@1 +0000" GIT_COMMITTER_DATE="@1 +0000" \
+                git -c user.name="Loom native source fixture" -c user.email="native-source-fixture@example.invalid" \
+                  -c commit.gpgsign=false commit -q -m "Seal staged verification source"
+              bash ${../../scripts/run-private-fixture-tests} ${bin}/bin/loom-walk --from-specs
+              touch "$out"
+            ''
         );
         worker-native-preflight =
           scriptCheck "worker-native-preflight"
@@ -496,55 +685,17 @@
     in
     {
       packages.verification-consumer-api = config.checks.loom-consumer-api;
-      checks =
-        checks
-        // (
-          if
-            builtins.elem system [
-              "aarch64-linux"
-              "x86_64-linux"
-            ]
-          then
-            {
-              nix-pid-only-procfs =
-                let
-                  unpatchedNix = pkgs.nixVersions.stable;
-                  registration = pkgs.closureInfo {
-                    rootPaths = [
-                      pkgs.bash
-                      pkgs.coreutils
-                      pkgs.nix
-                      unpatchedNix
-                    ];
-                  };
-                in
-                scriptCheck "nix-pid-only-procfs"
-                  [ (resource "tests/sandbox/nix-pid-only-procfs.sh") ]
-                  [ pkgs.bash pkgs.coreutils pkgs.findutils pkgs.gnugrep pkgs.util-linux pkgs.python3 ]
-                  (paths: ''
-                    if bash ${builtins.head paths} ${unpatchedNix}/bin/nix ${pkgs.bash} ${pkgs.coreutils} ${registration}/registration > "$TMPDIR/unpatched.log" 2>&1; then
-                      echo 'unpatched Nix unexpectedly accepted PID-only procfs' >&2
-                      exit 1
-                    fi
-                    grep -F \
-                      -e 'does not support the kernel namespaces that are required for sandboxing' \
-                      -e 'error: setgroups failed. Set the require-drop-supplementary-groups option to false to skip this step.' \
-                      "$TMPDIR/unpatched.log"
-                    bash ${builtins.head paths} ${pkgs.nix}/bin/nix ${pkgs.bash} ${pkgs.coreutils} ${registration}/registration
-                  '');
-            }
-          else
-            { }
-        )
-        // {
-          checks-match-host-system = checked.check {
-            resources = [ ];
-            evaluation = evaluation ++ loom.testResources;
-            build =
-              _:
-              assert pkgs.lib.all (candidate: candidate.system == system) (builtins.attrValues checks);
-              pkgs.runCommand "checks-match-host-system" { } ''touch "$out"'';
-          };
+      packages.verification-test-cargo-context = config.checks.test-cargo-context;
+      checks = checks // {
+        checks-match-host-system = checked.check {
+          runtime = "native-process";
+          resources = [ ];
+          evaluation = evaluation ++ loom.testResources;
+          build =
+            _:
+            assert pkgs.lib.all (candidate: candidate.system == system) (builtins.attrValues checks);
+            pkgs.runCommand "checks-match-host-system" { } ''touch "$out"'';
         };
+      };
     };
 }

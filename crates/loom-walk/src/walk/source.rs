@@ -397,7 +397,8 @@ mod tests {
             "pre_push_config_marker_wrapper_contract",
         ] {
             let body = std::fs::read_to_string(
-                Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("src/walk/{rule}.rs")),
+                loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR"))
+                    .join(format!("src/walk/{rule}.rs")),
             )
             .unwrap();
             write(
@@ -492,10 +493,8 @@ mod tests {
             .resolve(&snapshot, &inventory, &candidate, path("specs/fixture.md"))
             .unwrap();
         assert!(matches!(unit.run(), Err(Error::Snapshot(_))));
-        let project = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(2)
-            .unwrap();
+        let manifest = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR"));
+        let project = manifest.ancestors().nth(2).unwrap();
         write(
             root,
             ".pre-commit-config.yaml",

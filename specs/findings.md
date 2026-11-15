@@ -385,7 +385,7 @@ legacy alias registry.
 
 - Inspection retains finding and active-brief diagnostics without Beads
   mutation or loss of finding context.
-  [test](loom::gate_inspection_output::finding_clarification_materialization_requires_unique_active_brief)
+  [test](loom::integration::gate_inspection_output::finding_clarification_materialization_requires_unique_active_brief)
 
 - Tree-minted `loom:clarify` beads and their `loom:blocked` malformed-options
   fallbacks have `status=blocked` while awaiting `loom inbox`, so Beads visibly

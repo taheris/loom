@@ -103,6 +103,17 @@ pub(super) fn discover(
     subjects: &mut BTreeMap<Name, Subject>,
     platform: crate::scope::Platform,
 ) -> Result<BTreeMap<Name, std::sync::Arc<crate::provider::nix::Graph>>, Error> {
+    let constructed = discover_targets(snapshot, root, subjects, platform)?;
+    discover_resources(snapshot, subjects, &constructed)
+}
+
+// Metadata descriptions are not a complete Inventory or execution authority.
+fn discover_targets(
+    snapshot: &Snapshot,
+    root: &Path,
+    subjects: &mut BTreeMap<Name, Subject>,
+    platform: crate::scope::Platform,
+) -> Result<Vec<Name>, Error> {
     let nix_files: BTreeSet<_> = snapshot
         .files()
         .keys()
@@ -303,7 +314,7 @@ pub(super) fn discover(
     for path in &nix_files {
         insert(subjects, single(path, Role::NixSource, "nix")?)?;
     }
-    discover_resources(snapshot, subjects, &constructed)
+    Ok(constructed)
 }
 
 fn discover_resources(
@@ -381,23 +392,35 @@ mod tests {
 
     #[test]
     fn shipped_workspace_packages_construct_complete_native_graphs_from_captured_definitions() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        use crate::{
+            provider::nix::{CargoOperation, Graph},
+            scope::Platform,
+        };
+        let root = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR"))
             .ancestors()
             .nth(2)
             .unwrap()
             .to_path_buf();
         let snapshot = Snapshot::discover(&root).unwrap();
-        let staged = snapshot.stage().unwrap();
-        let inventory = super::super::Inventory::discover(&snapshot).unwrap();
-        let subjects = inventory.subjects();
+        // Exercise the real metadata reader and constructor, not every optional
+        // Wrix/VM backend shipped alongside these six Loom consumer bindings.
+        let mut subjects = BTreeMap::new();
+        let rust = snapshot.stage().unwrap();
+        super::super::rust::discover(&snapshot, rust.path(), &mut subjects).unwrap();
+        let native = snapshot.stage().unwrap();
+        let constructed =
+            discover_targets(&snapshot, native.path(), &mut subjects, Platform::Native).unwrap();
         let attributes = [
-            "verification-build",
-            "verification-clippy",
-            "verification-clippy-all-targets",
-            "verification-nextest",
+            ("verification-build", CargoOperation::Build),
+            ("verification-clippy", CargoOperation::Lint),
+            (
+                "verification-clippy-all-targets",
+                CargoOperation::LintAllTargets,
+            ),
+            ("verification-nextest", CargoOperation::Test),
         ];
         for system in ["aarch64-darwin", "aarch64-linux", "x86_64-linux"] {
-            for attribute in attributes {
+            for (attribute, _) in attributes {
                 let target =
                     Name::try_from(format!("nix:package:flake.nix:{system}:{attribute}")).unwrap();
                 let binding = subjects[&target].nix_target().unwrap();
@@ -405,71 +428,63 @@ mod tests {
                 assert_eq!(binding.attribute().as_str(), attribute);
             }
         }
-        let config: serde_json::Value = serde_json::from_slice(
-            &command(
-                staged.path(),
-                super::super::Tool::Nix,
-                &["config", "show", "--json"],
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        let system = config["system"]["value"].as_str().unwrap();
-        let mut responsibilities = BTreeSet::new();
-        for attribute in attributes {
-            let target =
-                Name::try_from(format!("nix:package:flake.nix:{system}:{attribute}")).unwrap();
-            let graph = inventory.native_graph(&target).unwrap();
+        let system = crate::runner::result::current_platform();
+        let mut names: Vec<_> = attributes
+            .iter()
+            .map(|(attribute, _)| {
+                Name::try_from(format!("nix:package:flake.nix:{system}:{attribute}")).unwrap()
+            })
+            .collect();
+        names.extend(
+            ["worker-native-preflight", "test-app-hook-runner"].map(|attribute| {
+                Name::try_from(format!("nix:check:flake.nix:{system}:{attribute}")).unwrap()
+            }),
+        );
+        let bindings: Vec<_> = names
+            .iter()
+            .map(|name| {
+                assert!(
+                    constructed.contains(name),
+                    "binding must use the real constructor: {name:?}"
+                );
+                subjects[name].nix_target().unwrap().clone()
+            })
+            .collect();
+        let available: Vec<_> = constructed
+            .iter()
+            .map(|name| subjects[name].nix_target().unwrap().clone())
+            .collect();
+        let graphs = Graph::construct_selected(&snapshot, &available, &bindings).unwrap();
+        assert_eq!(graphs.len(), names.len());
+        for (index, graph) in graphs.iter().enumerate() {
             assert!(!graph.origins().is_empty());
             assert!(!graph.outputs().unwrap().is_empty());
             assert!(!graph.resources().is_empty());
+            let expected = attributes.get(index).map(|(_, operation)| *operation);
+            assert_eq!(graph.captured_cargo_operation(), expected);
             assert_eq!(
                 graph.catalogue_derivation().is_some(),
-                attribute == "verification-nextest"
+                expected == Some(CargoOperation::Test)
             );
-            let definition = crate::provider::Definition::hermetic_baseline(
-                &snapshot,
-                &inventory,
-                target.clone(),
-                &target,
-            )
-            .unwrap();
-            responsibilities.extend(definition.description().responsibilities().iter().cloned());
-        }
-        for attribute in ["worker-native-preflight", "test-app-hook-runner"] {
-            let target =
-                Name::try_from(format!("nix:check:flake.nix:{system}:{attribute}")).unwrap();
-            let definition = crate::provider::Definition::hermetic_baseline(
-                &snapshot,
-                &inventory,
-                target.clone(),
-                &target,
-            )
-            .unwrap();
-            assert!(
-                definition
-                    .description()
-                    .responsibilities()
-                    .iter()
-                    .all(|responsibility| {
-                        matches!(
-                            responsibility.duty(),
-                            super::super::Duty::Evaluate | super::super::Duty::Check
-                        )
-                    })
-            );
-        }
-        for obligation in inventory.obligations().iter().filter(|obligation| {
-            inventory.subjects()[obligation.responsible()].role() == Role::RustSource
-        }) {
-            assert!(
-                responsibilities.iter().any(|responsibility| {
-                    responsibility.subject() == obligation.subject()
-                        && responsibility.duty() == obligation.duty()
-                        && responsibility.responsible() == obligation.responsible()
-                }),
-                "missing actual Cargo execution for {obligation:?}"
-            );
+            if matches!(
+                expected,
+                Some(CargoOperation::Build | CargoOperation::LintAllTargets | CargoOperation::Test)
+            ) {
+                // Together these supply the complete Build/Check/Test duties.
+                // Production lint above need not read cfg(test)-only assets.
+                for subject in subjects
+                    .values()
+                    .filter(|subject| subject.role() == Role::RustSource)
+                {
+                    for member in subject.members() {
+                        assert!(
+                            graph.origins().contains(member),
+                            "{:?} omitted actual Rust input {member:?}",
+                            names[index]
+                        );
+                    }
+                }
+            }
         }
     }
 }

@@ -19,7 +19,10 @@ mod native {
                 .args(args)
                 .current_dir(&self.0)
                 .env("HOME", self.0.join("home"))
-                .env("GOMAXPROCS", "2")
+                .env(
+                    "GOMAXPROCS",
+                    std::env::var("GOMAXPROCS").unwrap_or_else(|_| "1".into()),
+                )
                 .env("BD_JSON_ENVELOPE", "1");
             for (name, _) in std::env::vars_os() {
                 if name.to_string_lossy().starts_with("BEADS_") {

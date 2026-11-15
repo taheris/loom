@@ -152,6 +152,7 @@ impl Definition {
         let contract = match &mut self.candidate {
             Candidate::TrackedRust { contract, .. }
             | Candidate::HermeticNix { contract, .. }
+            | Candidate::NativeProcess { contract, .. }
             | Candidate::SupportedEffect { contract, .. } => contract,
         };
         contract.target = target;

@@ -54,6 +54,71 @@ fn init_git(workspace: &Path) {
 }
 
 #[test]
+fn native_discovery_does_not_consume_cargo_launcher_side_effects() {
+    const CHILD: &str = "LOOM_NATIVE_DISCOVERY_FIXTURE";
+    if let Some(workspace) = std::env::var_os(CHILD) {
+        let snapshot =
+            loom_gate::inventory::snapshot::Snapshot::discover(Path::new(&workspace)).unwrap();
+        let inventory = loom_gate::inventory::Inventory::discover(&snapshot).unwrap();
+        let name = loom_gate::inventory::Name::try_from(format!(
+            "nix:package:flake.nix:{}:native-build",
+            loom_gate::runner::result::current_platform(),
+        ))
+        .unwrap();
+        assert!(inventory.subject(&name).is_ok());
+        return;
+    }
+    let fixture = cargo::fixture();
+    let workspace = fixture.path();
+    let flake = workspace.join("flake.nix");
+    let definition = std::fs::read_to_string(&flake).unwrap();
+    let isolated = definition.replacen(
+        "outputs = { self, nixpkgs, crane, ... }:",
+        "outputs = { self, nixpkgs, crane, ... }: assert !(builtins.pathExists ./cargo-launcher-output);",
+        1,
+    );
+    assert_ne!(
+        definition, isolated,
+        "fixture must enforce source isolation"
+    );
+    std::fs::write(flake, isolated).unwrap();
+    let tools = tempfile::tempdir().unwrap();
+    let real_cargo = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|directory| directory.join("cargo"))
+        .find(|path| path.is_file())
+        .unwrap()
+        .canonicalize()
+        .unwrap();
+    let marker = tools.path().join("metadata-called");
+    write_executable(
+        &tools.path().join("cargo"),
+        &loom_test_support::bash_script(&format!(
+            "if [[ \"${{1:-}}\" == metadata ]]; then\n  printf generated > cargo-launcher-output\n  printf called > '{}'\nfi\nexec '{}' \"$@\"\n",
+            marker.display(),
+            real_cargo.display(),
+        )),
+    );
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "native_discovery_does_not_consume_cargo_launcher_side_effects",
+            "--nocapture",
+        ])
+        .env(CHILD, workspace)
+        .env("PATH", prepend_path(tools.path()))
+        .output()
+        .unwrap();
+    assert!(marker.is_file(), "actual Cargo metadata launcher must run");
+    assert!(
+        output.status.success(),
+        "native discovery must use fresh captured inputs: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(!workspace.join("cargo-launcher-output").exists());
+}
+
+#[test]
 fn gate_verify_rejects_positional_selector() {
     let out = Command::new(loom_bin())
         .args(["gate", "verify", "cargo test --lib"])

@@ -12,37 +12,111 @@ C/C++ compiler. Before Cargo, its context initializer selects that toolchain's
 inherited rustup toolchain selector. It leaves compiler-cache wrappers and cache
 backends intact.
 
-Test apps use one `target/acceptance-<context>` per checkout and toolchain. The
-context includes the immutable toolchain path and actual Rust/Cargo versions;
-repeated runs reuse the same writable output, while other checkouts and compiler
-versions do not share it. Source or footprint-policy edits do not allocate a new
-namespace; Cargo's own fingerprints retain those inputs. This is output
-isolation, not evidence or a complete build-input fingerprint. Cargo still
-checks source, features, profiles and flags. An old `target/debug` is not
-imported into the new context.
+Test apps use one reusable acceptance target per checkout and toolchain. On
+Linux the target lives under
+`$XDG_CACHE_HOME/loom/test-targets/<checkout>/acceptance-<context>` (the
+standard user cache fallback applies when unset); other platforms retain
+`target/acceptance-<context>` in the checkout. The checkout key includes its
+canonical path and filesystem identity. Cache ancestry must be owned by the
+caller or root without unsafe write permissions; symlinks and non-directory
+ancestors are rejected. No cache is imported from another checkout and no
+automatic collection authority is added. The compiler context includes the
+immutable toolchain path and actual Rust/Cargo versions; repeated runs reuse the
+same writable output, while other checkouts and compiler versions do not share
+it. Source or footprint-policy edits do not allocate a new namespace; Cargo's
+own fingerprints retain those inputs. This is output isolation, not evidence or
+a complete build-input fingerprint. Local Linux execution lets the existing
+kernel-protected running-image identity cache work without weakening its
+deliberate refusal to cache mutable FUSE/remote images. Cargo still checks
+source, features, profiles and flags. An old `target/debug` is not imported into
+the new context.
 
-The test campaign disables incremental compilation databases and selects
-`line-tables-only` debug information for dev/test builds. It does not disable
-debug assertions, overflow checks or tests, and it does not change production
-optimisation. Source-line backtraces remain available. Compiler caching stays
-enabled when configured.
+Ordinary test apps select bounded I/O overlap from available CPUs and the
+smallest visible memory limit, reserving two GiB of headroom and 768 MiB per
+executing test. Small workers can overlap up to eight fixtures; unknown memory
+retains the CPU default, and explicit `NEXTEST_TEST_THREADS` is respected. This
+changes scheduling, not cases, filters, outcomes or evidence. The same declared
+helper is used by the fixed Cargo report constructor. Disposable Go clients and
+servers default to one worker each, respecting explicit `GOMAXPROCS`; the outer
+campaign supplies concurrency instead of multiplying backend workers. One-shot
+workflow-fixture clients avoid repeated garbage collections, respecting explicit
+`GOGC`; their long-lived SQL servers and native adapter-conformance checks
+retain ordinary collection. Long-running workflow library cases are scheduled
+ahead of the remaining suite so their tail can overlap other real work; no case
+or filter changes.
 
-A bounded dependency-free 2,000-function probe measured 38.8 MiB with full debug
-and incremental output versus 11.7 MiB with this policy (69.9% less allocated
-storage). Both executables returned the same result with debug assertions on,
-both retained source-line panic backtraces, and a second compact invocation
-reused the same target. This is a mechanism control, not whole-workspace sizing
-or attribution of the host's unexplained usage.
+The workspace dev profile disables incremental compilation databases and selects
+`line-tables-only` debug information. Cargo's test profile inherits both
+settings, so direct `cargo build`, `cargo test` and Clippy invocations do not
+accumulate incremental databases outside the test-app wrapper. The wrapper also
+enforces these settings for its campaign. It does not disable debug assertions,
+overflow checks or tests, and it does not change production optimisation.
+Source-line backtraces remain available. Compiler caching stays enabled when
+configured.
+
+A dependency-free 2,000-function probe measured 38.8 MiB with full
+debug/incremental output versus 11.7 MiB with the compact-debug policy (69.9%
+less allocated storage). Both executables returned the same result with debug
+assertions on, both retained source-line panic backtraces, and a second compact
+invocation reused the same target. This is a mechanism control, not
+whole-workspace sizing or attribution of the host's unexplained usage.
+
+The actual workspace-profile regression builds and tests another dependency-free
+2,000-function probe with plain Cargo: compact dev/test output allocated
+12,550,144 bytes versus 30,334,976 bytes with incremental compilation explicitly
+re-enabled (58.6% less), counting each hardlinked inode once. Both builds
+execute with debug assertions, unchanged builds add no target bytes, and a
+source edit changes executable behavior. Re-enabling incremental compilation in
+the manifest makes the regression fail. These are isolated mechanism
+measurements, not whole-project disk or latency acceptance; existing generated
+databases are not automatically deleted.
 
 Terminal Nix Cargo build/lint/test checks now retain their verdict/report rather
 than exporting unconsumed Cargo target archives. Crane may compress these as
 incremental chains, so an export is not necessarily another full physical copy;
 the bug was retaining compiler data that no downstream build consumes. The
 dependency seed and Nextest catalogue still export the compiler artifacts
-actually consumed by later builds. Binary-only native drivers and the smoke
-acceptance executable likewise install their binaries, not unrelated target
-caches. Fresh check execution is still required; no successful verdict is
-substituted from a cache.
+actually consumed by later builds. The catalogue uses explicit compilation
+tools, not the full execution tool list: merely listing Loom tests must not
+build the Wrix runtime. Runtime-only tools remain declared on actual test
+execution and enter `PATH` only inside test-process wrappers, after compilation.
+Fixture-store registration uses the declared absolute Nix tool before execution;
+it does not add runtime tools to the compiler search path. Runtime tools cannot
+shadow existing compiler tools. Catalogue and execution retain identical
+compiler input lists; the independent equality guard is unchanged. The real
+constructor regression proves that adding a runtime-only tool leaves the
+compiler derivation unchanged, changes the execution derivation, and retains the
+tool there; restoring the coupled list fails that regression. Dev dependency
+seeds use Crane's directory/symlink mode. The catalogue inherits shared
+dependency libraries and builds directly at its final immutable target path,
+preserving Cargo's embedded executable paths without relocating a complete
+target. Execution reads the catalogue's binary metadata without invoking
+compilation, and Nextest remaps working directories to the complete current
+runtime source. The disposable fixture store registers compiler sources and the
+running catalogue, so re-importing a store path cannot replace a live test
+working directory. The catalogue's locked, offline, all-target workspace/profile
+construction and the independent compiler-input equality check remain mandatory.
+Build consumers that may recompile workspace crates materialize only their own
+inherited library links; unrelated dependency libraries remain shared. A real
+Rust mutation control proves recompilation leaves the retained store bytes
+unchanged. Successful compilation is not test evidence. The catalogue disables
+package fixups and unused self-output RPATHs: it retains compiler data, not
+installed executables that need another round of `patchelf`. On Linux, a
+compiler-only setup hook losslessly compresses catalogue ELF debug sections with
+zlib at link time. A real 2,000-function probe shrank from 5,206,072 to
+1,602,944 bytes, with identical `.text`/`.rodata`, debug assertions, and actual
+source-line/function-name panic backtraces. Removing the compression flag makes
+the control fail. This is a mechanism measurement, not whole-project sizing. An
+earlier compression-only catalogue qualification occupied 2.7 GiB versus 6.8 GiB
+without compression, with identical 3,785 listed cases, five ignored cases and
+123 binary entries. Sampled peak native growth was 3.8 versus 7.9 GiB; cold
+compilation took 202 versus 154 seconds. These are compiler/storage
+measurements, not passing test verdicts or an end-to-end latency benchmark.
+Shared backing space also reflects other writers and previously allocated guest
+blocks. The production release seed keeps its existing compressed format.
+Binary-only native drivers and the smoke acceptance executable likewise install
+their binaries, not unrelated target caches. Fresh check execution is still
+required; no successful verdict is substituted from a cache.
 
 `E0514` proves that incompatible compiler metadata reached the consumer. It does
 not by itself prove cache corruption. In particular, an inherited `RUSTC` can
@@ -52,10 +126,11 @@ test verdict.
 
 ## Read-only accounting
 
-From the affected checkout:
+From the affected checkout, with the Rust tool provisioned by the development
+shell (or `nix run .#verification-tool -- storage --dead`):
 
 ```bash
-python3 scripts/acceptance-storage.py --dead
+loom-verification storage --dead
 ```
 
 This reads Nix's path metadata and asks its collector to **print**, not delete,

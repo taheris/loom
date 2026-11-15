@@ -27,6 +27,7 @@ fn fixture() -> tempfile::TempDir {
         .map(|system| {
             format!(
                 r#"checks.{system}.cli-boundaries = checked.check {{
+      runtime = "native-process";
                   resources = [ source ];
                   evaluation = map (origin: checked.resource {{ root = ./.; inherit origin; }}) [ "flake.nix" "verification.nix" ];
                   build = sources: builtins.derivation {{

@@ -6,6 +6,7 @@
       pkgs,
       loom,
       config,
+      system,
       smokeProfileManifest,
       smokeSandbox,
       smokeServiceImage,
@@ -14,6 +15,7 @@
       ...
     }:
     let
+      inherit (pkgs.lib) optionalString;
       checked = import ../verification.nix;
       nativePackage = import ../native-package.nix;
       source =
@@ -23,6 +25,7 @@
           inherit origin;
         };
       evaluation = import ../native-context.nix;
+      verificationTool = import ../verification-tool.nix { inherit pkgs; };
       testsDeriv = import ../../tests/default.nix {
         inherit
           pkgs
@@ -42,6 +45,7 @@
       smokeRuntime = testsDeriv.loom-smoke;
       smokeScript = source "scripts/run-smoke.sh";
       smokePreflight = checked.check {
+        runtime = "native-process";
         resources = [ smokeScript ];
         inherit evaluation;
         build =
@@ -50,11 +54,11 @@
             name = "smoke";
             runtimeInputs = [ pkgs.nix ];
             text = ''
-              exec ${pkgs.bash}/bin/bash ${builtins.head paths} /dev/fuse /dev/net/tun .#smoke-runtime "$@"
+              exec ${pkgs.bash}/bin/bash ${builtins.head paths} /dev/fuse /dev/net/tun .#legacyPackages.${system}.kernel-smoke-runtime "$@"
             '';
           };
       };
-      smokeApp = if pkgs.stdenv.hostPlatform.isLinux then smokePreflight else smokeRuntime;
+      kernelSmokeApp = if pkgs.stdenv.hostPlatform.isLinux then smokePreflight else smokeRuntime;
       testCompilerInputs = [
         pkgs.stdenv.cc
         pkgs.sccache
@@ -66,11 +70,15 @@
         pkgs.git
         pkgs.flock
         pkgs.nix
-        pkgs.python3
+        verificationTool
+        pkgs.gnugrep
+        pkgs.gnused
+        pkgs.jq
         pkgs.beads
         pkgs.openssh
         loom.hookRunner
-        loom.bin
+        # Cargo builds the CLI used by integration tests. A packaged release CLI
+        # here would add a second workspace build before the suite even starts.
         loom.toolchain
       ];
       mkTestApp =
@@ -79,18 +87,35 @@
           text,
           runtimeInputs ? testRuntimeInputs,
           evaluation ? [ ],
+          resources ? [ ],
         }:
         checked.check {
-          resources = [ ];
+          runtime = "native-process";
+          resources =
+            resources
+            ++ pkgs.lib.optionals (builtins.elem verificationTool runtimeInputs) verificationTool.loom.sources;
           evaluation = (import ../native-context.nix) ++ evaluation;
           build =
             _:
             pkgs.writeShellApplication {
               inherit name;
-              text = builtins.readFile ../test-cargo-context.sh + "\n" + text;
+              extraShellCheckFlags = [ "--external-sources" ];
+              text =
+                optionalString pkgs.stdenv.hostPlatform.isLinux ''
+                  source ${builtins.head loom.testCompilerHooks}/nix-support/setup-hook
+                ''
+                + builtins.readFile ../test-cargo-context.sh
+                + "\n"
+                + text;
               runtimeInputs = runtimeInputs ++ testCompilerInputs;
               runtimeEnv = {
                 LOOM_TEST_TOOLCHAIN = loom.toolchain;
+                LOOM_TEST_SCHEDULING = ../test-scheduling.sh;
+                # Bind the mutable Cargo run to its declared source data without
+                # compiling a second, release-mode CLI merely to retain inputs.
+                LOOM_TEST_DECLARED_SOURCES_FILE = pkgs.writeText "loom-test-sources.json" (
+                  builtins.toJSON (map (resource: { inherit (resource) origin path; }) resources)
+                );
                 LOOM_CARGO_PATCHES = loom.cargoConfig;
                 LOOM_PREK_BIN = "${loom.hookRunner}/bin/prek";
                 LOOM_ISSUES_BD_BIN = "${pkgs.beads}/bin/bd";
@@ -104,13 +129,98 @@
       requiredScript = source "scripts/required-test.sh";
       testAppConfig = {
         name = "test";
-        text = builtins.readFile fullScript.path;
+        text = builtins.readFile ../../scripts/full-test.sh;
+        resources = loom.testResources;
         evaluation = [ fullScript ];
       };
       requiredTestAppConfig = {
         name = "test-required";
-        text = builtins.readFile requiredScript.path;
+        text = builtins.readFile ../../scripts/required-test.sh;
+        resources = loom.testResources;
         evaluation = [ requiredScript ];
+      };
+      smokeCompileResources = [
+        loom.workspaceSource
+      ]
+      ++ map source [
+        ".config/nextest.toml"
+        ".cargo/config.toml"
+        "tests/fixtures/git"
+      ];
+      smokeNormalizer = source "nix/normalize-nextest-archive.sh";
+      smokeResources = smokeCompileResources ++ [ smokeNormalizer ];
+      smokeSource = pkgs.runCommand "loom-cli-smoke-source" { } (
+        ''
+          cp -r ${loom.workspaceSource.path} "$out"
+          chmod -R u+w "$out"
+        ''
+        + builtins.concatStringsSep "\n" (
+          map (resource: ''
+            mkdir -p "$(dirname "$out/${resource.origin}")"
+            rm -rf "$out/${resource.origin}"
+            cp -r ${resource.path} "$out/${resource.origin}"
+          '') (builtins.tail smokeCompileResources)
+        )
+      );
+      smokeArchive = checked.artifact {
+        runtime = "native-process";
+        resources = smokeResources;
+        inherit evaluation;
+        build =
+          _:
+          loom.craneLib.mkCargoDerivation (
+            loom.checkArgs
+            // {
+              pname = "loom-cli-smoke-archive";
+              version = "1";
+              src = smokeSource;
+              nativeBuildInputs =
+                loom.checkArgs.nativeBuildInputs
+                ++ map pkgs.lib.getBin [
+                  pkgs.bash
+                  pkgs.gnutar
+                  pkgs.zstd
+                  pkgs.jq
+                ];
+              GIT_CONFIG_GLOBAL = "${smokeSource}/tests/fixtures/git/test-gitconfig";
+              CARGO_PROFILE = "release";
+              CARGO_PROFILE_RELEASE_STRIP = "symbols";
+              NIX_NO_SELF_RPATH = 1;
+              doCheck = false;
+              doInstallCargoArtifacts = false;
+              preBuild = ''
+                export HOME=$(mktemp -d)
+                export CARGO_TARGET_DIR="$PWD/target"
+              '';
+              buildPhaseCargoCommand = ''
+                cargo nextest archive --offline --locked --cargo-profile release \
+                  --manifest-path ${smokeSource}/Cargo.toml -p loom --test spawn_dispatch \
+                  --archive-file "$TMPDIR/smoke.tar.zst"
+                test ! -e ${smokeSource}/target
+              '';
+              installPhaseCommand = ''
+                mkdir -p "$out"
+                bash ${smokeNormalizer.path} "$TMPDIR/smoke.tar.zst" "$out/archive.tar.zst"
+              '';
+            }
+          );
+      };
+      smokeApp = mkTestApp {
+        name = "smoke";
+        resources = smokeResources;
+        runtimeInputs = builtins.filter (input: input != loom.bin) testRuntimeInputs;
+        text = ''
+          export LOOM_TEST_SOURCE_ROOT="$PWD"
+          export GIT_CONFIG_GLOBAL="$PWD/tests/fixtures/git/test-gitconfig"
+          export GIT_CONFIG_SYSTEM=/dev/null
+          unset WRIX_SIGNING_KEY
+          extract=$(mktemp -d)
+          trap 'rm -rf -- "$extract"' EXIT
+          cargo-nextest nextest run --archive-file ${smokeArchive}/archive.tar.zst \
+            --extract-to "$extract" --workspace-remap "$PWD" \
+            --ignore-default-filter --no-fail-fast \
+            -E 'test(=wrix_spawn_invocation_records_correct_argv) | test(=loom_loop_bead_writes_per_bead_jsonl_log) | test(=completed_bead_with_renamed_builtin_source_reaches_publication)'
+        '';
       };
       testApp = mkTestApp testAppConfig;
       requiredTestApp = mkTestApp requiredTestAppConfig;
@@ -120,7 +230,7 @@
         exec cargo-nextest nextest run \
           --archive-file ${config.packages.cargo-retention-archive}/archive.tar.zst \
           --extract-to "$TMPDIR/decision-archive" --workspace-remap "$PWD" \
-          --no-fail-fast --ignore-default-filter --test-threads 2 \
+          --no-fail-fast --ignore-default-filter \
           -E 'package(=loom-workflow) & (test(decision_wait) | test(native_controller_counts_one_noop_source_and_five_distinct_decisions) | test(integrity_extension_requires_explicit_reusable_source_readmission))'
       '';
       decisionAdmissionApp = mkTestApp {
@@ -138,6 +248,7 @@
         src = loom.stagedSrc;
         inherit (loom) cargoArtifacts cargoVendorDir;
         nativeBuildInputs = [ pkgs.git ];
+        preBuild = "export HOME=$(mktemp -d)";
         buildPhaseCargoCommand = ''
           cargo build --release -p loom-gate --example native-isolation --example native-rust --example native-reported
           cargo build --release -p loom --bin loom
@@ -164,7 +275,7 @@
           pkgs.git
           pkgs.nix
           pkgs.bash
-          pkgs.python3
+          verificationTool
           loom.toolchain
         ]
         ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
@@ -181,8 +292,8 @@
           export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
           git -C "$fixture" init -q
           git -C "$fixture" add --all
-          python3 "$fixture/tests/verify/native-resources.py" "$fixture"
-          ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+          loom-verification native-resources "$fixture"
+          ${optionalString pkgs.stdenv.hostPlatform.isLinux ''
             cargo test -p loom-gate --features native-container-tests --lib -- --test-threads=1
           ''}
           if ${nativeUnitDriver}/bin/native-isolation > "$fixture/native-observed.jsonl"; then
@@ -198,7 +309,11 @@
       };
       fixtureNix = pkgs.writeShellScriptBin "nix" ''
         case "$*" in
-          "fmt -- --fail-on-change" | "build" | "flake check --no-warn-dirty" | "run .#test-native-units") exit 0 ;;
+          "fmt -- --fail-on-change" | "build" | "flake check --no-warn-dirty") exit 0 ;;
+          "build .#native-rust-fixture --offline --no-substitute --no-link --print-out-paths")
+            printf '%s\n' ${pkgs.lib.escapeShellArg (toString nativeRustFixture)} ;;
+          "build .#native-smoke-fixture --offline --no-substitute --no-link --print-out-paths")
+            printf '%s\n' ${pkgs.lib.escapeShellArg (toString nativeSmokeFixture)} ;;
           "flake metadata "*)
             if [[ "''${LOOM_FIXTURE_INVALID_METADATA:-0}" == 1 ]]; then
               printf '{}\n'
@@ -216,15 +331,27 @@
       '';
       fixtureRuntimeInputs = [
         pkgs.coreutils
-        pkgs.python3
+        verificationTool
         pkgs.cargo-nextest
         pkgs.git
         fixtureNix
         loom.toolchain
       ];
-      fixtureTestApp = mkTestApp (testAppConfig // { runtimeInputs = fixtureRuntimeInputs; });
+      # These toolchain fixtures supply their own disposable Cargo projects;
+      # their unrelated Nix stages deliberately expose no project definitions.
+      fixtureTestApp = mkTestApp (
+        testAppConfig
+        // {
+          runtimeInputs = fixtureRuntimeInputs;
+          resources = [ ];
+        }
+      );
       fixtureRequiredTestApp = mkTestApp (
-        requiredTestAppConfig // { runtimeInputs = fixtureRuntimeInputs; }
+        requiredTestAppConfig
+        // {
+          runtimeInputs = fixtureRuntimeInputs;
+          resources = [ ];
+        }
       );
       bootstrapWrix = wrixLib.rustPackage.package;
       bootstrapHooks = pkgs.runCommand "bootstrap-prek-hooks" { nativeBuildInputs = [ pkgs.bash ]; } ''
@@ -280,6 +407,7 @@
       };
       bootstrapScript = source "tests/sandbox/profile-bootstrap.sh";
       profileBootstrapApp = checked.check {
+        runtime = "native-process";
         resources = [ bootstrapScript ];
         inherit evaluation;
         build =
@@ -294,6 +422,7 @@
               pkgs.coreutils
               pkgs.beads
               pkgs.gnugrep
+              pkgs.diffutils
               pkgs.openssl
               bootstrapWrix
               wrixLauncher
@@ -343,15 +472,16 @@
           pkgs.coreutils
         ];
       };
+      legacyPackages.kernel-smoke-runtime = nativePackage smokeRuntime;
       packages = {
-        smoke-runtime = nativePackage smokeRuntime;
         native-rust-fixture = nativePackage nativeRustFixture;
         native-smoke-fixture = nativePackage nativeSmokeFixture;
       };
       checks.test-app-hook-runner = checked.check {
+        runtime = "native-process";
         resources = map source [
           "tests/agent/test-app-hook-runner.sh"
-          "tests/verify/native-resources.py"
+          "nix/private-fixture-tests.sh"
         ];
         evaluation =
           evaluation
@@ -374,9 +504,9 @@
             }
             ''
               set -euo pipefail
-              bash ${builtins.elemAt paths 0} \
+              bash ${builtins.elemAt paths 1} --test-process bash ${builtins.elemAt paths 0} \
                 ${fixtureRequiredTestApp}/bin/test-required ${fixtureTestApp}/bin/test \
-                ${loom.hookRunner}/bin/prek ${pkgs.beads}/bin/bd ${builtins.elemAt paths 1} ${pkgs.sccache}/bin/sccache ${pkgs.nix}/bin/nix
+                ${loom.hookRunner}/bin/prek ${pkgs.beads}/bin/bd ${verificationTool}/bin/loom-verification ${pkgs.sccache}/bin/sccache ${pkgs.nix}/bin/nix
               touch "$out"
             '';
       };
@@ -392,7 +522,8 @@
         test-profile-bootstrap =
           app profileBootstrapApp "test-profile-bootstrap"
             "Verify authenticated profile-factory provisioning.";
-        smoke = app smokeApp "smoke" "Run the Loom mock-agent assembly smoke.";
+        smoke = app smokeApp "smoke" "Verify Loom launch and completion seams.";
+        smoke-container = app kernelSmokeApp "smoke" "Run optional container substrate diagnostics.";
         fuzz-loom = app fuzzApp "fuzz-loom" "Run an on-demand fuzz target.";
       };
     };

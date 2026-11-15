@@ -1,4 +1,6 @@
 //! Backend-neutral operations and explicitly limited guarantees.
+mod borrowed;
+
 use crate::task::{
     Create, Graph, GroupId, Guard, Id, Progress, Query, Ready, Record, Relation, Update,
 };
@@ -8,6 +10,8 @@ use thiserror::Error;
 
 #[derive(Debug, Display, Error)]
 pub enum Error {
+    /// task {id} was not found
+    NotFound { id: Id },
     /// operation rejected: {reason}
     Rejected { reason: String },
     /// conditional update conflicted: {reason}

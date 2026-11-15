@@ -1,6 +1,6 @@
 //! Selection is a read-only projection; execution always retains the complete admitted closure.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -330,6 +330,33 @@ impl<'a> Selection<'a> {
         self.plan.require_current()
     }
 
+    fn require_ready(&self) -> Result<(), Error> {
+        self.plan.require_current()?;
+        let mut checked = Vec::<&Unit>::new();
+        let mut derivations = BTreeSet::new();
+        for decision in self
+            .decisions
+            .iter()
+            .filter(|decision| decision.reason.selected())
+        {
+            if checked
+                .iter()
+                .any(|unit| same_execution(unit, decision.unit))
+            {
+                continue;
+            }
+            if let Some(graph) = decision.unit.nix_graph() {
+                derivations.extend(graph.cold_inputs()?);
+            }
+            checked.push(decision.unit);
+        }
+        self.plan.require_current()?;
+        if !derivations.is_empty() {
+            return Err(super::super::nix::Error::ColdInputs { derivations }.into());
+        }
+        Ok(())
+    }
+
     pub const fn stage(&self) -> Stage {
         self.stage
     }
@@ -369,7 +396,7 @@ impl<'a> Selection<'a> {
     /// # Errors
     /// Rejects stale context even when no execution is selected.
     pub fn observations(&self) -> Result<Observations<'_, '_>, Error> {
-        self.plan.require_current()?;
+        self.require_ready()?;
         Ok(Observations {
             selection: self,
             decisions: self.decisions.iter(),
@@ -384,7 +411,7 @@ impl<'a> Selection<'a> {
     /// # Errors
     /// Rejects stale context before the first callback, including an empty selection.
     pub fn invocations(&self) -> Result<Invocations<'_, '_>, Error> {
-        self.plan.require_current()?;
+        self.require_ready()?;
         Ok(Invocations {
             selection: self,
             decisions: self.decisions.iter(),

@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod cases {
     use super::super::*;
+    use super::super::{Fixture as NativeFixture, MemoryFixture as Fixture};
 
     fn session(ids: &[BeadId], terminal: &str) -> SessionResult {
         let wire = if ids.is_empty() {
@@ -34,10 +35,10 @@ mod cases {
             .await
             .unwrap();
             assert_eq!(outcome, AgentOutcome::Success);
-            let source = f.bd.show(&f.source.id).await.unwrap();
+            let source = f.bd.get(&f.source.id).await.unwrap();
             assert_eq!(source, f.source, "inventory must not mutate the source");
             for (id, label) in f.decisions.iter().zip(["loom:clarify", "loom:blocked"]) {
-                let decision = f.bd.show(id).await.unwrap();
+                let decision = f.bd.get(id).await.unwrap();
                 assert_eq!(decision.status, Status::Blocked);
                 assert!(
                     decision
@@ -55,32 +56,52 @@ mod cases {
         }
     }
 
-    #[tokio::test]
-    async fn positive_outcomes_reject_zero_or_partial_inventory_before_queue_effects() {
-        for terminal in ["LOOM_COMPLETE", "LOOM_NOOP", "LOOM_WAITING"] {
-            for count in [0, 1] {
-                let f = Fixture::new().await;
-                let outcome = reconcile_session(
-                    &f.bd,
-                    &f.journal(),
-                    &f.source,
-                    session(&f.decisions[..count], terminal),
-                    None,
-                )
-                .await
-                .unwrap();
-                let AgentOutcome::Failure { error } = outcome else {
-                    panic!("unreported inventory accepted: {outcome:?}");
-                };
-                for id in &f.decisions[count..] {
-                    assert!(error.contains(id.as_str()), "missing exact ID: {error}");
-                }
-                assert!(f.journal().load(&f.source.id).unwrap().is_none());
-                for id in &f.decisions {
-                    assert_eq!(f.bd.show(id).await.unwrap().status, Status::Open);
-                }
-            }
+    async fn assert_inventory_rejected(terminal: &str, count: usize) {
+        let f = Fixture::new().await;
+        let outcome = reconcile_session(
+            &f.bd,
+            &f.journal(),
+            &f.source,
+            session(&f.decisions[..count], terminal),
+            None,
+        )
+        .await
+        .unwrap();
+        let AgentOutcome::Failure { error } = outcome else {
+            panic!("unreported inventory accepted: {outcome:?}");
+        };
+        for id in &f.decisions[count..] {
+            assert!(error.contains(id.as_str()), "missing exact ID: {error}");
         }
+        assert!(f.journal().load(&f.source.id).unwrap().is_none());
+        for id in &f.decisions {
+            assert_eq!(f.bd.get(id).await.unwrap().status, Status::Open);
+        }
+    }
+
+    #[tokio::test]
+    async fn complete_rejects_zero_inventory_before_queue_effects() {
+        assert_inventory_rejected("LOOM_COMPLETE", 0).await;
+    }
+    #[tokio::test]
+    async fn complete_rejects_partial_inventory_before_queue_effects() {
+        assert_inventory_rejected("LOOM_COMPLETE", 1).await;
+    }
+    #[tokio::test]
+    async fn noop_rejects_zero_inventory_before_queue_effects() {
+        assert_inventory_rejected("LOOM_NOOP", 0).await;
+    }
+    #[tokio::test]
+    async fn noop_rejects_partial_inventory_before_queue_effects() {
+        assert_inventory_rejected("LOOM_NOOP", 1).await;
+    }
+    #[tokio::test]
+    async fn waiting_rejects_zero_inventory_before_queue_effects() {
+        assert_inventory_rejected("LOOM_WAITING", 0).await;
+    }
+    #[tokio::test]
+    async fn waiting_rejects_partial_inventory_before_queue_effects() {
+        assert_inventory_rejected("LOOM_WAITING", 1).await;
     }
 
     #[tokio::test]
@@ -101,15 +122,16 @@ mod cases {
                 .unwrap();
             f.bd.update(
                 id,
-                UpdateOpts {
+                Update {
                     description: Some("resolved; active brief no longer needed".into()),
-                    ..UpdateOpts::default()
+                    ..Update::default()
                 },
+                Guard::None,
             )
             .await
             .unwrap();
         }
-        let before = f.bd.show(&f.decisions[0]).await.unwrap();
+        let before = f.bd.get(&f.decisions[0]).await.unwrap();
         assert_eq!(
             reconcile_session(
                 &f.bd,
@@ -122,7 +144,7 @@ mod cases {
             .unwrap(),
             AgentOutcome::Success
         );
-        assert_eq!(f.bd.show(&f.decisions[0]).await.unwrap(), before);
+        assert_eq!(f.bd.get(&f.decisions[0]).await.unwrap(), before);
     }
 
     #[tokio::test]
@@ -144,24 +166,24 @@ mod cases {
         assert!(f.journal().has_pending_for(&f.root).unwrap());
         crate::gate_clarify::apply_guarded_decision_report(
             &f.bd,
-            f.bd.show(&f.decisions[0]).await.unwrap(),
+            f.bd.get(&f.decisions[0]).await.unwrap(),
         )
         .await
         .unwrap();
-        let first = f.bd.show(&f.decisions[0]).await.unwrap();
+        let first = f.bd.get(&f.decisions[0]).await.unwrap();
         assert!(!held(&f.bd, &f.journal(), &f.source).await.unwrap());
-        let migrated = f.bd.show(&f.decisions[0]).await.unwrap();
+        let migrated = f.bd.get(&f.decisions[0]).await.unwrap();
         assert_eq!(migrated.description, first.description);
         assert_eq!(migrated.notes, first.notes);
         assert_eq!(migrated.labels, first.labels);
         assert_eq!(migrated.parent.as_ref(), Some(&f.root));
-        assert_eq!(f.bd.show(&f.source.id).await.unwrap(), f.source);
+        assert_eq!(f.bd.get(&f.source.id).await.unwrap(), f.source);
         assert_eq!(
             f.journal().load(&f.source.id).unwrap().unwrap().phase,
             Phase::InventoryAdmitted
         );
         assert!(
-            f.bd.show(&f.decisions[1])
+            f.bd.get(&f.decisions[1])
                 .await
                 .unwrap()
                 .labels
@@ -184,20 +206,17 @@ mod cases {
         .unwrap();
         assert!(matches!(f.admit().await, AgentOutcome::Failure { .. }));
         assert!(!f.journal().has_pending_for(&f.root).unwrap());
-        let source = f.bd.show(&f.source.id).await.unwrap();
+        let source = f.bd.get(&f.source.id).await.unwrap();
         assert_eq!(source.status, Status::Open);
         assert!(!source.metadata.contains_key(HOLD_KEY));
         assert_eq!(
-            f.bd.dependency_snapshot(&source.id)
-                .await
-                .unwrap()
-                .active_blockers(),
+            f.bd.graph(&source.id).await.unwrap().active_blockers(),
             [] as [BeadId; 0]
         );
     }
 
-    async fn closed_with_late_discovery() -> Fixture {
-        let mut f = Fixture::new().await;
+    async fn closed_with_late_discovery() -> NativeFixture {
+        let mut f = NativeFixture::new().await;
         for id in &f.decisions {
             f.bd.close(id, Some("human resolved prior discovery"))
                 .await
@@ -300,7 +319,7 @@ mod cases {
         ));
         assert!(f.journal().load(&f.source.id).unwrap().is_none());
         for id in &f.decisions {
-            assert_eq!(f.bd.show(id).await.unwrap().status, Status::Open);
+            assert_eq!(f.bd.get(id).await.unwrap().status, Status::Open);
         }
     }
 }

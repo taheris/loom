@@ -4,9 +4,12 @@
 
 use std::path::PathBuf;
 
-use loom_driver::bd::{BdClient, BdError, Bead, CommandRunner, UpdateOpts};
 use loom_driver::identifier::BeadId;
 use loom_events::{DriverEventPayload, DriverKind};
+use loom_issues::{
+    task::{Guard, Record as Bead, Status, Update},
+    tracking::{Error as TrackingError, Store},
+};
 use serde::{Deserialize, Serialize};
 
 use crate::inbox::{Brief, BriefError, parse_options, parse_options_in};
@@ -165,10 +168,10 @@ pub(crate) fn evidence_excerpt(text: &str) -> String {
 /// # Errors
 ///
 /// Returns an error when workflow setup, execution, or state validation fails.
-pub async fn apply_clarify_or_blocked<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub async fn apply_clarify_or_blocked<T: Store>(
+    bd: &T,
     bead: &BeadId,
-) -> Result<ClarifyApplyOutcome, BdError> {
+) -> Result<ClarifyApplyOutcome, TrackingError> {
     Ok(apply_clarify_or_blocked_report(bd, bead).await?.outcome)
 }
 
@@ -177,37 +180,37 @@ pub async fn apply_clarify_or_blocked<R: CommandRunner>(
 /// # Errors
 ///
 /// Returns an error when workflow setup, execution, or state validation fails.
-pub async fn apply_clarify_or_blocked_report<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub async fn apply_clarify_or_blocked_report<T: Store>(
+    bd: &T,
     bead: &BeadId,
-) -> Result<ClarifyApplyReport, BdError> {
+) -> Result<ClarifyApplyReport, TrackingError> {
     apply_report(bd, bead, None).await
 }
 
 /// Finding admission checks both producer evidence and persisted decision fields.
-pub(crate) async fn apply_finding_clarify_report<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub(crate) async fn apply_finding_clarify_report<T: Store>(
+    bd: &T,
     bead: &BeadId,
     evidence: &str,
-) -> Result<ClarifyApplyReport, BdError> {
+) -> Result<ClarifyApplyReport, TrackingError> {
     apply_report(bd, bead, Some(evidence)).await
 }
 
-async fn apply_report<R: CommandRunner>(
-    bd: &BdClient<R>,
+async fn apply_report<T: Store>(
+    bd: &T,
     bead: &BeadId,
     evidence: Option<&str>,
-) -> Result<ClarifyApplyReport, BdError> {
-    let snapshot = bd.show(bead).await?;
+) -> Result<ClarifyApplyReport, TrackingError> {
+    let snapshot = bd.get(bead).await?;
     apply_snapshot_report(bd, snapshot, evidence, false).await
 }
 
 /// Stage a freshly ownership-checked decision without clearing any competing
 /// label. Native status CAS protects human closure or takeover during staging.
-pub(crate) async fn apply_guarded_decision_report<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub(crate) async fn apply_guarded_decision_report<T: Store>(
+    bd: &T,
     snapshot: Bead,
-) -> Result<ClarifyApplyReport, BdError> {
+) -> Result<ClarifyApplyReport, TrackingError> {
     apply_snapshot_report(bd, snapshot, None, true).await
 }
 
@@ -235,12 +238,12 @@ pub(crate) fn inspect_decision(snapshot: &Bead) -> ClarifyApplyReport {
     }
 }
 
-async fn apply_snapshot_report<R: CommandRunner>(
-    bd: &BdClient<R>,
+async fn apply_snapshot_report<T: Store>(
+    bd: &T,
     snapshot: Bead,
     evidence: Option<&str>,
     guarded: bool,
-) -> Result<ClarifyApplyReport, BdError> {
+) -> Result<ClarifyApplyReport, TrackingError> {
     let mut union = snapshot.notes.clone().unwrap_or_default();
     if !union.is_empty() {
         union.push('\n');
@@ -261,28 +264,33 @@ async fn apply_snapshot_report<R: CommandRunner>(
     .await
 }
 
-async fn apply_resolved_brief<R: CommandRunner>(
-    bd: &BdClient<R>,
+async fn apply_resolved_brief<T: Store>(
+    bd: &T,
     snapshot: Bead,
     resolution: Result<Brief, BriefError>,
     evidence: &str,
     guarded: bool,
-) -> Result<ClarifyApplyReport, BdError> {
+) -> Result<ClarifyApplyReport, TrackingError> {
+    let guard = if guarded {
+        Guard::Status(snapshot.status)
+    } else {
+        Guard::None
+    };
     match resolution {
         Ok(_) => {
             bd.update(
                 &snapshot.id,
-                UpdateOpts {
-                    status: Some(loom_driver::bd::Status::Blocked),
-                    add_labels: vec!["loom:clarify".to_string()],
-                    if_status: guarded.then_some(snapshot.status),
+                Update {
+                    status: Some(Status::Blocked),
+                    add_labels: vec![crate::tracking::label("loom:clarify")?],
                     remove_labels: if guarded {
                         vec![]
                     } else {
-                        vec!["loom:blocked".to_string()]
+                        vec![crate::tracking::label("loom:blocked")?]
                     },
-                    ..UpdateOpts::default()
+                    ..Update::default()
                 },
+                guard,
             )
             .await?;
             Ok(ClarifyApplyReport {
@@ -319,19 +327,19 @@ async fn apply_resolved_brief<R: CommandRunner>(
             };
             bd.update(
                 &snapshot.id,
-                UpdateOpts {
-                    status: Some(loom_driver::bd::Status::Blocked),
-                    add_labels: vec!["loom:blocked".to_string()],
-                    if_status: guarded.then_some(snapshot.status),
+                Update {
+                    status: Some(Status::Blocked),
+                    add_labels: vec![crate::tracking::label("loom:blocked")?],
                     remove_labels: if guarded {
                         vec![]
                     } else {
-                        vec!["loom:clarify".to_string()]
+                        vec![crate::tracking::label("loom:clarify")?]
                     },
                     notes,
                     append_notes,
-                    ..UpdateOpts::default()
+                    ..Update::default()
                 },
+                guard,
             )
             .await?;
             Ok(ClarifyApplyReport {
@@ -348,7 +356,7 @@ async fn apply_resolved_brief<R: CommandRunner>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use loom_driver::bd::RunOutput;
+    use loom_driver::bd::{BdClient, BdError, CommandRunner, RunOutput};
     use std::ffi::OsString;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;

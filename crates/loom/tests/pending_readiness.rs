@@ -8,8 +8,7 @@ use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-#[path = "common/reported.rs"]
-mod reported;
+use super::reported;
 
 struct Fixture {
     check: reported::Fixture,

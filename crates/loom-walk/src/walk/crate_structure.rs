@@ -84,6 +84,10 @@ const CRATES: &[CrateSpec] = &[
         name: "loom-walk",
         entries: &["src/main.rs"],
     },
+    CrateSpec {
+        name: "loom-verification",
+        entries: &["src/main.rs"],
+    },
 ];
 
 fn rule(input: &WalkInput) -> Verdict {

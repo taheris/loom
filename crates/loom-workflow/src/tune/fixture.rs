@@ -164,9 +164,12 @@ impl Snapshot {
 
     pub(super) async fn checkout(&self, budget: &Budget<'_>) -> Result<Checkout, TuneError> {
         budget.remaining()?;
+        let parent = std::env::temp_dir()
+            .canonicalize()
+            .map_err(TuneError::ReplayWorkspace)?;
         let directory = tempfile::Builder::new()
             .prefix("loom-tune-replay-")
-            .tempdir()
+            .tempdir_in(parent)
             .map_err(TuneError::ReplayWorkspace)?;
         let checkout = Checkout { directory };
         for (relative, file) in &self.files {
@@ -288,6 +291,15 @@ mod tests {
         let clock = SystemClock::new();
         let budget = Budget::new(&clock, &ChecksConfig::default());
         let current = fixture.checkout(&budget).await.unwrap();
+        assert_eq!(current.path(), current.path().canonicalize().unwrap());
+        let scratch = loom_driver::scratch::ScratchSession::open(
+            current.path(),
+            "replay-control",
+            "fixture prompt",
+            "fixture context",
+        )
+        .unwrap();
+        drop(scratch);
         let current_head = GitClient::open(current.path())
             .unwrap()
             .head_commit_sha()

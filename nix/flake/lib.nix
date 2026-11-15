@@ -54,6 +54,7 @@ in
         agentPkg ? null,
         extraPackages ? [ ],
         nativeCargo ? null,
+        verificationSdk ? null,
         loomBin ?
           (loomLib.mkLoom {
             inherit
@@ -79,6 +80,7 @@ in
           agentPkg
           extraPackages
           nativeCargo
+          verificationSdk
           loomBin
           ;
       };
@@ -95,14 +97,14 @@ in
     let
       inherit (inputs) nixpkgs;
       nextestOverlay = import ../nextest-overlay.nix;
-      nixOverlay = import ../nix-overlay.nix;
+      leanWrixLayers = import ../wrix-layer-overlay.nix;
       linuxSystem = if system == "aarch64-darwin" then "aarch64-linux" else system;
 
       wrixPkgs = import nixpkgs {
         inherit system;
         overlays = [
           nextestOverlay
-          nixOverlay
+          leanWrixLayers
           (_final: _prev: {
             beads = inputs.wrix.packages.${system}.beads;
           })
@@ -110,13 +112,14 @@ in
         config.allowUnfree = true;
       };
 
-      wrixLinuxPkgs =
-        (import nixpkgs {
-          system = linuxSystem;
-          overlays = [ nextestOverlay ];
-          config.allowUnfree = true;
-        }).extend
-          nixOverlay;
+      wrixLinuxPkgs = import nixpkgs {
+        system = linuxSystem;
+        overlays = [
+          nextestOverlay
+          leanWrixLayers
+        ];
+        config.allowUnfree = true;
+      };
 
       imageRustToolchain = import ../rust-toolchain.nix {
         fenix = inputs.fenix.packages.${linuxSystem};
@@ -190,8 +193,26 @@ in
         config = imageLoom.cargoConfig;
         toolchain = imageLoom.toolchain;
       };
+      imageVerificationSdk = wrixLinuxPkgs.closureInfo {
+        rootPaths = [
+          imageLoom.preparationInputs
+          (import ../quint/tools.nix { pkgs = wrixLinuxPkgs; })
+          wrixLinuxPkgs.shellcheck-minimal
+          wrixLinuxPkgs.makeWrapper
+          imageTreefmtWrapper
+          ../../flake.lock
+          ../../Cargo.lock
+        ];
+      };
       workerRustProfile = workerProfile (
-        rustProfile // { packages = [ nativeCargo ] ++ rustProfile.packages; }
+        rustProfile
+        // {
+          packages = [
+            nativeCargo
+            imageVerificationSdk
+          ]
+          ++ rustProfile.packages;
+        }
       );
 
       loom = loomLib.mkLoom {
@@ -204,7 +225,6 @@ in
             pkgs = wrixPkgs;
             rustProfile = wrixLib.profiles.rust;
           }).wrix
-          wrixLib.skipIfMissing
         ];
         nativeTestSources =
           let
@@ -278,6 +298,7 @@ in
 
       profileManifest = loomLib.mkProfileManifest {
         inherit pkgs wrixLib nativeCargo;
+        verificationSdk = imageVerificationSdk;
         imagePkgs = wrixLinuxPkgs;
         profiles = {
           inherit (wrixLib.profiles) base python;
@@ -309,10 +330,7 @@ in
       _module.args = {
         pkgs = import nixpkgs {
           inherit system;
-          overlays = [
-            nextestOverlay
-            nixOverlay
-          ];
+          overlays = [ nextestOverlay ];
           config.allowUnfree = true;
         };
         inherit

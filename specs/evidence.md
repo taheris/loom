@@ -103,6 +103,12 @@ feedback lifecycle success cannot substitute for those execution facts. The
 driver verifies provenance and current eligibility rather than trusting the
 agent to declare a result admitted.
 
+A declared native-process observation retains its distinct execution kind and
+captured local-agent or strict-sandbox context. It cannot satisfy an obligation
+requiring hermetic confinement merely because its recipe or output matches a
+hermetic unit. A worker-editable environment flag cannot select remote
+unsandboxed host execution.
+
 Crossing the worker/driver handoff alone neither invalidates an equivalent
 result nor requires a duplicate execution. Re-admit against current obligations,
 relevant integrated/rebased content and inputs, execution/environment

@@ -22,14 +22,7 @@ impl Fixture {
         std::fs::create_dir_all(workspace.join("scripts")).expect("create workspace scripts");
         std::fs::create_dir_all(&tools).expect("create tools");
 
-        let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-        std::fs::create_dir_all(workspace.join("tests/verify"))
-            .expect("native preflight directory");
-        std::fs::copy(
-            source_root.join("tests/verify/native-resources.py"),
-            workspace.join("tests/verify/native-resources.py"),
-        )
-        .expect("copy actual native source preflight");
+        let source_root = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR")).join("../..");
         std::fs::write(workspace.join("flake.nix"), "{ outputs = { self }: {}; }\n")
             .expect("empty native output fixture");
         std::fs::copy(
@@ -43,6 +36,12 @@ impl Fixture {
         )
         .expect("copy pre-push wrapper");
 
+        std::fs::create_dir_all(workspace.join("nix")).expect("scheduling helper directory");
+        std::fs::copy(
+            source_root.join("nix/test-scheduling.sh"),
+            workspace.join("nix/test-scheduling.sh"),
+        )
+        .expect("copy declared native scheduling helper");
         for script in ["full-test.sh", "required-test.sh"] {
             std::fs::copy(
                 source_root.join("scripts").join(script),
@@ -145,7 +144,7 @@ impl Fixture {
     reason = "The external Nix fixture contains literal Bash parameter expansions, not Rust formatting placeholders."
 )]
 fn write_nix_fixture(path: impl AsRef<Path>, body: &str) -> std::io::Result<()> {
-    // Only external Nix metadata is modeled; the real Python preflight runs.
+    // Only external Nix metadata is modeled; the real Rust preflight runs.
     let prefix = r#"
 case "${1:-} ${2:-}" in
   'flake metadata')
@@ -256,7 +255,7 @@ fn marker_read_failure_runs_required_command_and_preserves_its_failure() {
 #[test]
 fn configured_worker_wrapper_initializes_patches_before_cargo() {
     let fixture = Fixture::new();
-    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../bin/loom");
+    let source = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR")).join("../../bin/loom");
     std::fs::copy(source, fixture.workspace.join("bin/loom")).expect("configured wrapper");
     std::fs::write(
         fixture.workspace.join("scripts/configure-cargo-patches.sh"),
@@ -327,7 +326,7 @@ fn run_shell_reexec_check(source: &str) -> Output {
     std::fs::write(&script, source).expect("write shell fixture");
     Command::new("bash")
         .arg(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR"))
                 .join("../..")
                 .join("scripts/check-shell-reexec"),
         )
@@ -501,7 +500,8 @@ fn suites_reject_malformed_native_metadata_before_building_or_claiming_system_cr
             .expect("run malformed native metadata control");
         assert!(!output.status.success(), "{output:?}");
         assert!(
-            String::from_utf8_lossy(&output.stderr).contains("KeyError: 'path'"),
+            String::from_utf8_lossy(&output.stderr)
+                .contains("loom-verification: missing captured source"),
             "{output:?}"
         );
         let log = std::fs::read_to_string(&fixture.log).expect("native preflight log");
@@ -519,7 +519,8 @@ fn suites_reject_malformed_native_metadata_before_building_or_claiming_system_cr
 fn full_suite_checks_production_and_test_feature_configurations() {
     let fixture = Fixture::new();
     install_recording_command(&fixture.tools, "nix");
-    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/full-test.sh");
+    let script = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR"))
+        .join("../../scripts/full-test.sh");
     let output = fixture
         .recording_command("bash")
         .arg(script)
@@ -538,7 +539,6 @@ fn full_suite_checks_production_and_test_feature_configurations() {
             "cargo\tclippy\t--workspace\t--\t-D\twarnings\ttiers=<unset>",
             "cargo\tclippy\t--workspace\t--all-targets\t--\t-D\twarnings\ttiers=<unset>",
             "cargo\tnextest\trun\t--workspace\t--ignore-default-filter\ttiers=<unset>",
-            "nix\trun\t.#test-native-units\ttiers=<unset>",
         ],
     );
 }
@@ -555,7 +555,6 @@ if [[ "$1" == run ]]; then
     case "$2" in
         '.#test') exec bash scripts/full-test.sh ;;
         '.#test-required') exec bash scripts/required-test.sh ;;
-        '.#test-native-units') exit 0 ;;
         *) exit 2 ;;
     esac
 fi
@@ -603,8 +602,8 @@ fi
                 .iter()
                 .filter(|line| line.as_str() == "nix\trun\t.#test-native-units\ttiers=<unset>")
                 .count(),
-            1,
-            "pre-push must retain the native isolation verifier exactly once",
+            0,
+            "ordinary pre-push suites must not launch backend sandbox conformance",
         );
     }
 }
@@ -652,15 +651,45 @@ fn required_suite_keeps_all_native_tests_without_repeating_lint_or_nix_work() {
         log.lines().collect::<Vec<_>>(),
         [
             "native-resource-preflight\ttiers=<unset>",
+            "nix\tbuild\t.#native-rust-fixture\t--offline\t--no-substitute\t--no-link\t--print-out-paths\ttiers=<unset>",
+            "nix\tbuild\t.#native-smoke-fixture\t--offline\t--no-substitute\t--no-link\t--print-out-paths\ttiers=<unset>",
             "cargo\tbuild\t--workspace\ttiers=<unset>",
             "cargo\tnextest\trun\t--workspace\t--ignore-default-filter\ttiers=<unset>",
-            "nix\trun\t.#test-native-units\ttiers=<unset>",
         ]
     );
 }
 
 #[test]
-fn suites_stop_without_system_credit_when_native_isolation_is_unavailable_or_failed() {
+fn required_fixture_preparation_failure_blocks_compilation_and_tests() {
+    for package in ["native-rust-fixture", "native-smoke-fixture"] {
+        let fixture = Fixture::new();
+        write_nix_fixture(
+            fixture.tools.join("nix"),
+            &format!(
+                r#"set -euo pipefail
+printf '%s\n' "$*" >> "$PRE_PUSH_TEST_LOG"
+if [[ "$*" == *'.#{package}'* ]]; then exit 42; fi
+"#
+            ),
+        )
+        .expect("write cold-fixture control");
+        let output = fixture
+            .recording_command("bash")
+            .arg("scripts/required-test.sh")
+            .output()
+            .expect("execute real required entry point");
+        assert_eq!(output.status.code(), Some(42), "{output:?}");
+        let log = std::fs::read_to_string(&fixture.log).unwrap();
+        assert!(log.contains(package), "{log}");
+        assert!(
+            !log.contains("cargo\t"),
+            "cold fixture must block Cargo: {log}"
+        );
+    }
+}
+
+#[test]
+fn ordinary_suites_do_not_require_kernel_qualification() {
     for script in ["scripts/full-test.sh", "scripts/required-test.sh"] {
         for exit in [1, 78] {
             let fixture = Fixture::new();
@@ -676,12 +705,13 @@ fn suites_stop_without_system_credit_when_native_isolation_is_unavailable_or_fai
                 .arg(script)
                 .output()
                 .expect("execute real suite with native-unit failure control");
-            assert_eq!(output.status.code(), Some(exit), "{script}: {output:?}");
+            assert_success(&output, script);
             let log = std::fs::read_to_string(&fixture.log).expect("invocation log");
             assert!(log.contains("cargo\tnextest\trun\t--workspace\t--ignore-default-filter"));
             assert!(
-                !log.contains("loom\tgate\tsystem"),
-                "{script} must not continue past unavailable or failed native isolation: {log}",
+                !log.contains("nix\trun\t.#test-native-units")
+                    && !log.contains("loom\tgate\tsystem"),
+                "{script} must not acquire kernel privileges for ordinary coverage: {log}",
             );
         }
     }

@@ -2,9 +2,12 @@
 //! No worker assertion or dotted ID spelling grants migration authority.
 
 use super::{DecisionWaitError, DecisionWaitJournal, LoopError, graph, invalid};
-use loom_driver::bd::{BdClient, Bead, CommandRunner, IssueType, Status, UpdateOpts};
 use loom_driver::identifier::BeadId;
 use loom_driver::state::RecordKind;
+use loom_issues::{
+    task::{Guard, Kind as IssueType, Record as Bead, Relation, Status, Update},
+    tracking::Store,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,8 +93,8 @@ pub(super) fn permits_parent(
 /// Called only after the complete contextual set and its original native graph
 /// have been validated. Migration adds a producer prerequisite only for Waiting
 /// (or a previously attributed legacy hold), never for an independent terminal.
-pub(super) async fn apply<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub(super) async fn apply<T: Store>(
+    bd: &T,
     journal: &DecisionWaitJournal,
     source: &Bead,
     root: &BeadId,
@@ -114,7 +117,7 @@ pub(super) async fn apply<R: CommandRunner>(
             .parent
             .clone()
             .ok_or_else(|| invalid("legacy decision lacks producer"))?;
-        let owner = bd.show(&producer).await?;
+        let owner = bd.get(&producer).await?;
         if matches!(
             owner.issue_type,
             IssueType::Decision | IssueType::Molecule | IssueType::Epic
@@ -122,7 +125,7 @@ pub(super) async fn apply<R: CommandRunner>(
         {
             return Err(invalid("legacy decision has incompatible producer or work root").into());
         }
-        let mut affected = bd.blocking_dependents(&decision.id).await?;
+        let mut affected = bd.dependents(&decision.id).await?;
         affected.sort_by(|left, right| left.as_str().cmp(right.as_str()));
         let original_candidate = graph::candidate(&producer, root, decision)?;
         let mut target = affected.clone();
@@ -157,13 +160,13 @@ pub(super) async fn apply<R: CommandRunner>(
     }
     let mut current = Vec::with_capacity(decisions.len());
     for decision in decisions {
-        current.push(bd.show(&decision.id).await?);
+        current.push(bd.get(&decision.id).await?);
     }
     Ok(current)
 }
 
-async fn resume<R: CommandRunner>(
-    bd: &BdClient<R>,
+async fn resume<T: Store>(
+    bd: &T,
     journal: &DecisionWaitJournal,
     id: &BeadId,
 ) -> Result<(), LoopError> {
@@ -171,11 +174,11 @@ async fn resume<R: CommandRunner>(
     if plan.complete {
         return Ok(());
     }
-    let owner = bd.show(&plan.producer).await?;
+    let owner = bd.get(&plan.producer).await?;
     if super::root(bd, &owner).await? != plan.root {
         return Err(invalid("migration producer changed work root").into());
     }
-    let current = bd.show(id).await?;
+    let current = bd.get(id).await?;
     let mut expected = plan.before.clone();
     if current.parent.as_ref() == Some(&plan.root) {
         expected.parent = current.parent.clone();
@@ -193,25 +196,30 @@ async fn resume<R: CommandRunner>(
             invalid("human or worker changed an interrupted migration; intent retained").into(),
         );
     }
-    let mut edges = bd.blocking_dependents(id).await?;
+    let mut edges = bd.dependents(id).await?;
     edges.sort_by(|left, right| left.as_str().cmp(right.as_str()));
     if edges != plan.original_affected && edges != plan.candidate.affected_work {
         return Err(invalid("native graph changed during interrupted migration").into());
     }
     bd.update(
         id,
-        UpdateOpts {
-            set_metadata: vec![(graph::CANDIDATE_KEY.into(), encoded)],
-            ..UpdateOpts::default()
+        Update {
+            set_metadata: [(
+                graph::CANDIDATE_KEY.into(),
+                serde_json::Value::String(encoded),
+            )]
+            .into(),
+            ..Update::default()
         },
+        Guard::None,
     )
     .await?;
     if current.parent.as_ref() != Some(&plan.root) {
-        bd.reparent(id, &plan.root).await?;
+        bd.parent(id, &plan.root).await?;
     }
     for affected in &plan.candidate.affected_work {
         if !edges.contains(affected) {
-            bd.dep_add(affected, id).await?;
+            bd.relate(affected, id, Relation::Blocks).await?;
         }
     }
     plan.complete = true;
@@ -220,8 +228,8 @@ async fn resume<R: CommandRunner>(
 
 /// Recover before admission/scheduling, including a crash after reparenting but
 /// before saving the transformed inventory. Conflicting edits fail closed.
-pub(super) async fn recover<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub(super) async fn recover<T: Store>(
+    bd: &T,
     journal: &DecisionWaitJournal,
 ) -> Result<(), LoopError> {
     for (key, plan) in journal

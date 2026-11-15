@@ -1,13 +1,15 @@
 #[cfg(test)]
 mod cases {
     use super::super::*;
-    use crate::test_support::{IsolatedBeads, client};
-    use loom_driver::bd::{CreateOpts, IssueType, Status};
+    use loom_issues::{
+        memory::Backend,
+        task::{Create, Kind as IssueType, Relation, Status},
+    };
     use loom_protocol::output::{Phase, decode};
 
     struct Fixture {
         directory: tempfile::TempDir,
-        bd: Arc<BdClient<IsolatedBeads>>,
+        bd: Arc<Backend>,
         git: loom_driver::git::GitClient,
         root: BeadId,
         source: Bead,
@@ -18,36 +20,44 @@ mod cases {
     impl Fixture {
         async fn new() -> Self {
             let directory = tempfile::tempdir().unwrap();
-            let bd = Arc::new(client(directory.path()).await);
+            let bd = Arc::new(Backend::default());
             let git = git_workspace(directory.path());
             seed_spec(directory.path(), "harness");
             let root = bd
-                .create(CreateOpts {
-                    title: "native wait root".into(),
-                    issue_type: Some(IssueType::Epic),
-                    ..CreateOpts::default()
+                .create(Create {
+                    title: "dependency wait root".into(),
+                    kind: Some(IssueType::Epic),
+                    ..Create::default()
                 })
                 .await
                 .unwrap();
             let mut work = Vec::new();
             for title in ["waiting implementation", "independent implementation"] {
-                let id = bd.create(CreateOpts {
-                title: title.into(), parent: Some(root.clone()),
-                metadata: Some(serde_json::json!({loom_protocol::acceptance::METADATA_KEY: loom_test_support::acceptance::metadata("harness").unwrap()}).to_string()),
-                ..CreateOpts::default()
-            }).await.unwrap();
+                let id = bd
+                    .create(Create {
+                        title: title.into(),
+                        parent: Some(root.clone()),
+                        metadata: [(
+                            loom_protocol::acceptance::METADATA_KEY.into(),
+                            loom_test_support::acceptance::metadata("harness").unwrap(),
+                        )]
+                        .into(),
+                        ..Create::default()
+                    })
+                    .await
+                    .unwrap();
                 work.push(id);
             }
             let blocker = bd
-                .create(CreateOpts {
+                .create(Create {
                     title: "real prerequisite".into(),
                     parent: Some(root.clone()),
-                    ..CreateOpts::default()
+                    ..Create::default()
                 })
                 .await
                 .unwrap();
-            let source = bd.show(&work[0]).await.unwrap();
-            let sibling = bd.show(&work[1]).await.unwrap();
+            let source = bd.get(&work[0]).await.unwrap();
+            let sibling = bd.get(&work[1]).await.unwrap();
             Self {
                 directory,
                 bd,
@@ -80,7 +90,7 @@ mod cases {
         let agent = Arc::clone(&f.bd);
         let before = loom_driver::git::sync_head_commit_sha(&f.git.loom_workspace()).unwrap();
         let mut controller = ProductionAgentLoopController::new(
-            BdClient::with_runner(IsolatedBeads::attach(f.directory.path())),
+            f.bd.as_ref().clone(),
             SpecLabel::new("harness").unwrap(),
             PathBuf::from("must-not-run-gate"),
             f.directory.path().to_path_buf(),
@@ -95,7 +105,7 @@ mod cases {
                 let blocker = blocker.clone();
                 async move {
                     if waiting {
-                        agent.dep_add(&id, &blocker).await.unwrap();
+                        agent.relate(&id, &blocker, Relation::Blocks).await.unwrap();
                         std::fs::write(cfg.workspace.join("retained-draft.txt"), "unmerged draft")
                             .unwrap();
                         *path.lock().unwrap() = Some(cfg.workspace);
@@ -121,9 +131,9 @@ mod cases {
         .unwrap();
         assert_eq!(summary.beads_waiting, 1);
         assert_eq!(summary.beads_processed, 2);
-        assert_eq!(f.bd.show(&f.source.id).await.unwrap().status, Status::Open);
+        assert_eq!(f.bd.get(&f.source.id).await.unwrap().status, Status::Open);
         assert_eq!(
-            f.bd.show(&f.sibling.id).await.unwrap().status,
+            f.bd.get(&f.sibling.id).await.unwrap().status,
             Status::Closed
         );
         assert_eq!(
@@ -138,7 +148,7 @@ mod cases {
         assert!(!controller.workspace.join("retained-draft.txt").exists());
         assert!(
             DecisionWaitJournal::new(f.directory.path())
-                .blocks_scope(&f.bd, &f.root)
+                .blocks_scope(f.bd.as_ref(), &f.root)
                 .await
                 .unwrap()
         );
@@ -165,7 +175,10 @@ mod cases {
                 let blocker = blocker.clone();
                 async move {
                     if waiting {
-                        agent.dep_add(&slot.bead.id, &blocker).await.unwrap();
+                        agent
+                            .relate(&slot.bead.id, &blocker, Relation::Blocks)
+                            .await
+                            .unwrap();
                         std::fs::write(
                             slot.worktree.path.join("retained-draft.txt"),
                             "parallel draft",
@@ -205,7 +218,7 @@ mod cases {
         .unwrap();
         assert!(outcome.results.iter().any(|result| matches!(result, crate::r#loop::BatchResult::Waiting { bead, .. } if *bead == f.source.id)));
         assert!(outcome.results.iter().any(|result| matches!(result, crate::r#loop::BatchResult::Merged { bead } if *bead == f.sibling.id)));
-        assert_eq!(f.bd.show(&f.source.id).await.unwrap().status, Status::Open);
+        assert_eq!(f.bd.get(&f.source.id).await.unwrap().status, Status::Open);
         let path = source_path.lock().unwrap().clone().unwrap();
         assert_eq!(
             std::fs::read_to_string(path.join("retained-draft.txt")).unwrap(),

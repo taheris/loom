@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 use crate::r#loop::WaitPrerequisites;
 use loom_driver::bd::UpdateOpts;
@@ -11,16 +13,23 @@ mod recovery;
 mod scope;
 use crate::test_support::{IsolatedBeads, client};
 use loom_driver::agent::SessionOutcome;
-use loom_driver::bd::{CreateOpts, ReadyOpts};
+use loom_driver::bd::{BdClient, CreateOpts, ReadyOpts};
 use loom_driver::identifier::SpecLabel;
+use loom_issues::{
+    memory::Backend,
+    task::{Create, Guard, Label, Update},
+};
 use loom_protocol::output::{Phase as OutputPhase, decode};
 use std::sync::Arc;
 
 const BRIEF: &str = "## Options — choose compatibility\n\n### Option 1 — Keep\nCost: debt.\n\n### Option 2 — Change\nCost: churn.\n";
 
-struct Fixture {
+type Fixture = FixtureWithStore<BdClient<IsolatedBeads>>;
+type MemoryFixture = FixtureWithStore<Backend>;
+
+struct FixtureWithStore<T: Store> {
     dir: tempfile::TempDir,
-    bd: BdClient<IsolatedBeads>,
+    bd: T,
     root: BeadId,
     source: Bead,
     sibling: BeadId,
@@ -32,47 +41,63 @@ impl Fixture {
     async fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let bd = client(dir.path()).await;
+        Self::with_store(dir, bd).await
+    }
+}
+
+impl MemoryFixture {
+    async fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        loom_driver::git::initialize_snapshot(dir.path(), &loom_driver::clock::SystemClock::new())
+            .await
+            .unwrap();
+        Self::with_store(dir, Backend::default()).await
+    }
+}
+
+impl<T: Store> FixtureWithStore<T> {
+    async fn with_store(dir: tempfile::TempDir, bd: T) -> Self {
         let root = bd
-            .create(CreateOpts {
+            .create(Create {
                 title: "work root".into(),
-                issue_type: Some(IssueType::Epic),
-                labels: vec!["spec:loop".into()],
-                ..CreateOpts::default()
+                kind: Some(IssueType::Epic),
+                labels: vec![Label::new("spec:loop").unwrap()],
+                ..Create::default()
             })
             .await
             .unwrap();
         let source_id = bd
-            .create(CreateOpts {
+            .create(Create {
                 title: "producer".into(),
                 parent: Some(root.clone()),
-                ..CreateOpts::default()
+                ..Create::default()
             })
             .await
             .unwrap();
         let sibling = bd
-            .create(CreateOpts {
+            .create(Create {
                 title: "independent work".into(),
                 parent: Some(root.clone()),
-                ..CreateOpts::default()
+                ..Create::default()
             })
             .await
             .unwrap();
         let mut decisions = Vec::new();
         for brief in [BRIEF, "missing Options; original context"] {
             decisions.push(
-                bd.create(CreateOpts {
+                bd.create(Create {
                     title: "human decision".into(),
                     description: brief.into(),
-                    issue_type: Some(IssueType::Decision),
+                    kind: Some(IssueType::Decision),
                     parent: Some(source_id.clone()),
                     notes: Some("human history to retain".into()),
-                    ..CreateOpts::default()
+                    ..Create::default()
                 })
                 .await
                 .unwrap(),
             );
         }
-        let source = bd.show(&source_id).await.unwrap();
+        let source = bd.get(&source_id).await.unwrap();
         Self {
             dir,
             bd,
@@ -273,7 +298,7 @@ async fn native_descendant_wait_preserves_guards_and_releases_only_owned_state()
 #[cfg(test)]
 #[tokio::test]
 async fn incomplete_inventory_and_forged_native_attribution_have_no_queue_effects() {
-    let f = Fixture::new().await;
+    let f = MemoryFixture::new().await;
     let outcome = reconcile_session(
         &f.bd,
         &f.journal(),
@@ -286,26 +311,27 @@ async fn incomplete_inventory_and_forged_native_attribution_have_no_queue_effect
     assert!(matches!(outcome, AgentOutcome::Failure { .. }));
     assert!(f.journal().load(&f.source.id).unwrap().is_none());
     for id in &f.decisions {
-        assert_eq!(f.bd.show(id).await.unwrap().status, Status::Open);
+        assert_eq!(f.bd.get(id).await.unwrap().status, Status::Open);
     }
     f.bd.update(
         &f.source.id,
-        UpdateOpts {
-            add_labels: vec![HOLD_LABEL.into()],
-            set_metadata: vec![(HOLD_KEY.into(), "{}".into())],
-            ..UpdateOpts::default()
+        Update {
+            add_labels: vec![Label::new(HOLD_LABEL).unwrap()],
+            set_metadata: [(HOLD_KEY.into(), "{}".into())].into(),
+            ..Update::default()
         },
+        Guard::None,
     )
     .await
     .unwrap();
     assert!(matches!(f.admit().await, AgentOutcome::Failure { .. }));
     assert!(
-        held(&f.bd, &f.journal(), &f.bd.show(&f.source.id).await.unwrap())
+        held(&f.bd, &f.journal(), &f.bd.get(&f.source.id).await.unwrap())
             .await
             .is_err()
     );
     assert_eq!(
-        f.bd.show(&f.source.id).await.unwrap().metadata[HOLD_KEY],
+        f.bd.get(&f.source.id).await.unwrap().metadata[HOLD_KEY],
         "{}"
     );
 }
@@ -313,7 +339,7 @@ async fn incomplete_inventory_and_forged_native_attribution_have_no_queue_effect
 #[cfg(test)]
 #[tokio::test]
 async fn restart_recovers_intent_and_human_takeover_without_reopening() {
-    let f = Fixture::new().await;
+    let f = MemoryFixture::new().await;
     let journal = f.journal();
     journal
         .save(&Entry {
@@ -335,11 +361,12 @@ async fn restart_recovers_intent_and_human_takeover_without_reopening() {
     );
     f.bd.update(
         &f.source.id,
-        UpdateOpts {
+        Update {
             status: Some(Status::Deferred),
             notes: Some("human takeover".into()),
-            ..UpdateOpts::default()
+            ..Update::default()
         },
+        Guard::None,
     )
     .await
     .unwrap();
@@ -347,7 +374,7 @@ async fn restart_recovers_intent_and_human_takeover_without_reopening() {
         f.bd.close(id, Some("human answer")).await.unwrap();
     }
     assert!(held(&f.bd, &f.journal(), &f.source).await.unwrap());
-    let source = f.bd.show(&f.source.id).await.unwrap();
+    let source = f.bd.get(&f.source.id).await.unwrap();
     assert_eq!(source.status, Status::Deferred);
     assert_eq!(source.notes.as_deref(), Some("human takeover"));
     assert!(!source.metadata.contains_key("loom.dependency_wait"));
@@ -357,14 +384,15 @@ async fn restart_recovers_intent_and_human_takeover_without_reopening() {
 #[cfg(test)]
 #[tokio::test]
 async fn changed_root_or_corrupt_projection_cannot_release_owned_hold() {
-    let f = Fixture::new().await;
+    let f = MemoryFixture::new().await;
     assert!(matches!(f.admit().await, AgentOutcome::Waiting { .. }));
     f.bd.update(
         &f.source.id,
-        UpdateOpts {
-            set_metadata: vec![("loom.dependency_wait".into(), "{}".into())],
-            ..UpdateOpts::default()
+        Update {
+            set_metadata: [("loom.dependency_wait".into(), "{}".into())].into(),
+            ..Update::default()
         },
+        Guard::None,
     )
     .await
     .unwrap();
@@ -374,15 +402,15 @@ async fn changed_root_or_corrupt_projection_cannot_release_owned_hold() {
         Ok(false)
     ));
     let other =
-        f.bd.create(CreateOpts {
+        f.bd.create(Create {
             title: "other root".into(),
-            issue_type: Some(IssueType::Epic),
-            ..CreateOpts::default()
+            kind: Some(IssueType::Epic),
+            ..Create::default()
         })
         .await
         .unwrap();
-    f.bd.reparent(&f.source.id, &other).await.unwrap();
+    f.bd.parent(&f.source.id, &other).await.unwrap();
     assert!(held(&f.bd, &f.journal(), &f.source).await.is_err());
     assert!(matches!(f.admit().await, AgentOutcome::Failure { .. }));
-    assert_eq!(f.bd.show(&f.source.id).await.unwrap().status, Status::Open);
+    assert_eq!(f.bd.get(&f.source.id).await.unwrap().status, Status::Open);
 }

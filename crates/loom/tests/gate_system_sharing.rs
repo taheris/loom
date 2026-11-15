@@ -12,8 +12,7 @@ use std::process::Output;
 use loom_gate::{StatusCache, Verdict};
 use serde_json::{Value, json};
 
-#[path = "common/reported.rs"]
-mod reported;
+use super::reported;
 
 fn fixture(configured: bool) -> reported::Fixture {
     let fixture = reported::Fixture::new("system", "json-lines", &["shared"]);

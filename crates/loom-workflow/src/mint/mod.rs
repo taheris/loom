@@ -27,11 +27,17 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 
 use loom_driver::bd::LabelExt;
-use loom_driver::bd::{BdClient, Bead, CommandRunner, CreateOpts, Label, ListOpts, UpdateOpts};
+#[cfg(test)]
+use loom_driver::bd::{BdClient, CommandRunner, CreateOpts, ListOpts, UpdateOpts};
+use loom_driver::bd::{Bead, Label};
 use loom_driver::config::SuppressionConfig;
 use loom_driver::identifier::{BeadId, MoleculeId, SpecLabel};
 use loom_events::{DriverEventPayload, DriverKind};
 use loom_gate::IntegrityFinding;
+use loom_issues::{
+    task::{Create, Guard, Query, Update},
+    tracking::Store,
+};
 use serde::Serialize;
 
 use crate::gate_clarify::{
@@ -728,8 +734,8 @@ impl MintSummary {
 /// Walk a sequence of findings through the mint pipeline with default
 /// options (write to bd, no suppressions). Convenience wrapper over
 /// [`mint_findings_with_options`].
-pub async fn mint_findings<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub async fn mint_findings<T: Store>(
+    bd: &T,
     findings: &[Finding],
     head_commit: &str,
 ) -> MintSummary {
@@ -747,8 +753,8 @@ pub async fn mint_findings<R: CommandRunner>(
 /// call stays inside the mint module.
 /// # Errors
 /// Rejects records that do not resolve against the active workspace before any mint.
-pub async fn mint_integrity_recovery<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub async fn mint_integrity_recovery<T: Store>(
+    bd: &T,
     findings: &[IntegrityFinding],
     head_commit: &str,
     validator: &(impl loom_protocol::gate::FindingValidator + Sync + ?Sized),
@@ -782,8 +788,8 @@ enum MoleculeBatchState {
 /// Blocking work becomes ready immediately, deferred
 /// work stays parked until stabilization, and clarify work is one bead per
 /// finding. Structural conflicts park the molecule for human resolution.
-pub async fn route_molecule_findings<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub async fn route_molecule_findings<T: Store>(
+    bd: &T,
     molecule: &MoleculeId,
     findings: &[Finding],
     opts: &MintOptions,
@@ -792,20 +798,23 @@ pub async fn route_molecule_findings<R: CommandRunner>(
     if summary.refused > 0 {
         match BeadId::new(molecule.as_str()) {
             Ok(bead) => {
-                if let Err(err) = bd
-                    .update(
+                if let Err(err) = async {
+                    bd.update(
                         &bead,
-                        UpdateOpts {
+                        Update {
                             status: Some(loom_driver::bd::Status::Blocked),
-                            add_labels: vec!["loom:blocked".to_string()],
+                            add_labels: vec![crate::tracking::label("loom:blocked")?],
                             notes: Some(format!(
                                 "{GATE_ROUTING_STRUCTURAL_VIOLATION_CAUSE}: {}",
                                 summary.render(),
                             )),
-                            ..UpdateOpts::default()
+                            ..Update::default()
                         },
+                        Guard::None,
                     )
                     .await
+                }
+                .await
                 {
                     summary.record_error("molecule-routing-block", err.to_string());
                 }
@@ -819,8 +828,8 @@ pub async fn route_molecule_findings<R: CommandRunner>(
     summary
 }
 
-async fn route_molecule_findings_inner<R: CommandRunner>(
-    bd: &BdClient<R>,
+async fn route_molecule_findings_inner<T: Store>(
+    bd: &T,
     molecule: &MoleculeId,
     findings: &[Finding],
     opts: &MintOptions,
@@ -836,7 +845,7 @@ async fn route_molecule_findings_inner<R: CommandRunner>(
             return summary;
         }
     };
-    if let Err(err) = bd.show(&parent).await {
+    if let Err(err) = bd.get(&parent).await {
         summary.record(BatchOutcome::Errored {
             fingerprint: molecule.to_string(),
             message: format!("missing molecule epic `{molecule}` or bd read failed: {err}"),
@@ -844,10 +853,10 @@ async fn route_molecule_findings_inner<R: CommandRunner>(
         return summary;
     }
     let children = match bd
-        .list(ListOpts {
+        .query(Query {
             parent: Some(parent.clone()),
             statuses: DEDUP_STATUSES.to_vec(),
-            ..ListOpts::default()
+            ..Query::default()
         })
         .await
     {
@@ -1039,8 +1048,8 @@ fn molecule_mint_groups(findings: Vec<Finding>) -> Vec<MoleculeMintGroup> {
     groups
 }
 
-async fn merge_or_create_deferred_batch<R: CommandRunner>(
-    bd: &BdClient<R>,
+async fn merge_or_create_deferred_batch<T: Store>(
+    bd: &T,
     children: &[Bead],
     findings: &[Finding],
     lead_spec: &SpecLabel,
@@ -1090,9 +1099,17 @@ async fn merge_or_create_deferred_batch<R: CommandRunner>(
                     }
                 };
             update.status = Some(loom_driver::bd::Status::Deferred);
-            update.add_labels = labels;
+            update.add_labels = match crate::tracking::labels(labels) {
+                Ok(labels) => labels,
+                Err(error) => {
+                    return BatchOutcome::Errored {
+                        fingerprint,
+                        message: error.to_string(),
+                    };
+                }
+            };
             update.description = Some(description);
-            match bd.update(&existing.id, update).await {
+            match bd.update(&existing.id, update, Guard::None).await {
                 Ok(()) => BatchOutcome::Minted {
                     fingerprint,
                     bead_id: existing.id.clone(),
@@ -1124,8 +1141,8 @@ async fn merge_or_create_deferred_batch<R: CommandRunner>(
     }
 }
 
-async fn create_molecule_batch<R: CommandRunner>(
-    bd: &BdClient<R>,
+async fn create_molecule_batch<T: Store>(
+    bd: &T,
     findings: &[Finding],
     lead_spec: &SpecLabel,
     parent: &BeadId,
@@ -1136,18 +1153,20 @@ async fn create_molecule_batch<R: CommandRunner>(
     labels.push(format!("profile:{}", default_profile_for_spec(lead_spec)));
     let notes = (state == MoleculeBatchState::BlockedClarifyWithoutOptions)
         .then(|| CLARIFY_WITHOUT_OPTIONS_CAUSE.to_string());
-    let created = bd
-        .create(CreateOpts {
+    let created = async {
+        bd.create(Create {
             title: batch_title(findings, lead_spec),
             status: Some(loom_driver::bd::Status::Blocked),
             description: molecule_batch_description(findings, state),
-            issue_type: Some(loom_driver::bd::IssueType::Task),
-            labels,
+            kind: Some(loom_driver::bd::IssueType::Task),
+            labels: crate::tracking::labels(labels)?,
             parent: Some(parent.clone()),
             notes,
-            ..CreateOpts::default()
+            ..Create::default()
         })
-        .await;
+        .await
+    }
+    .await;
     let bead_id = match created {
         Ok(bead_id) => bead_id,
         Err(err) => {
@@ -1269,8 +1288,8 @@ impl From<TreeMintBatchRouting> for FindingRouting {
     }
 }
 
-pub async fn mint_tree_findings_with_options<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub async fn mint_tree_findings_with_options<T: Store>(
+    bd: &T,
     findings: &[Finding],
     head_commit: &str,
     opts: &MintOptions,
@@ -1279,8 +1298,8 @@ pub async fn mint_tree_findings_with_options<R: CommandRunner>(
     materialize_tree_plan(bd, plan, head_commit, opts, summary).await
 }
 
-async fn materialize_tree_plan<R: CommandRunner>(
-    bd: &BdClient<R>,
+async fn materialize_tree_plan<T: Store>(
+    bd: &T,
     plan: TreeMintPlan,
     head_commit: &str,
     opts: &MintOptions,
@@ -1365,13 +1384,13 @@ fn record_dry_run_tree_plan(plan: TreeMintPlan, summary: &mut MintSummary) {
     }
 }
 
-async fn active_work_epics<R: CommandRunner>(bd: &BdClient<R>) -> Result<Vec<Bead>, MintError> {
+async fn active_work_epics<T: Store>(bd: &T) -> Result<Vec<Bead>, MintError> {
     let beads = bd
-        .list(ListOpts {
-            issue_type: Some(loom_driver::bd::IssueType::Epic),
-            label: Some(ACTIVE_LABEL.to_string()),
+        .query(Query {
+            kind: Some(loom_driver::bd::IssueType::Epic),
+            label: Some(crate::tracking::label(ACTIVE_LABEL)?),
             statuses: vec![loom_driver::bd::Status::Open],
-            ..ListOpts::default()
+            ..Query::default()
         })
         .await?;
     Ok(beads
@@ -1380,8 +1399,8 @@ async fn active_work_epics<R: CommandRunner>(bd: &BdClient<R>) -> Result<Vec<Bea
         .collect())
 }
 
-async fn create_tree_remediation_epic<R: CommandRunner>(
-    bd: &BdClient<R>,
+async fn create_tree_remediation_epic<T: Store>(
+    bd: &T,
     plan: &TreeMintPlan,
     head_commit: &str,
 ) -> Result<BeadId, MintError> {
@@ -1391,18 +1410,21 @@ async fn create_tree_remediation_epic<R: CommandRunner>(
         .iter()
         .map(|batch| batch.findings.len())
         .sum::<usize>();
-    let metadata = serde_json::json!({ "loom.base_commit": head_commit }).to_string();
     Ok(bd
-        .create(CreateOpts {
+        .create(Create {
             title: cap_bd_title(format!(
                 "tree remediation: {batch_count} batches ({finding_count} findings)",
             )),
             description: tree_remediation_epic_description(batch_count, finding_count),
-            issue_type: Some(loom_driver::bd::IssueType::Epic),
+            kind: Some(loom_driver::bd::IssueType::Epic),
             priority: Some(loom_driver::bd::Priority::P2),
-            labels: tree_remediation_epic_labels(plan),
-            metadata: Some(metadata),
-            ..CreateOpts::default()
+            labels: crate::tracking::labels(tree_remediation_epic_labels(plan))?,
+            metadata: [(
+                "loom.base_commit".into(),
+                serde_json::Value::String(head_commit.into()),
+            )]
+            .into(),
+            ..Create::default()
         })
         .await?)
 }
@@ -1428,17 +1450,18 @@ fn tree_remediation_epic_labels(plan: &TreeMintPlan) -> Vec<String> {
     labels
 }
 
-async fn activate_tree_remediation_epic<R: CommandRunner>(
-    bd: &BdClient<R>,
+async fn activate_tree_remediation_epic<T: Store>(
+    bd: &T,
     epic: &BeadId,
     active_before: &[Bead],
 ) -> Result<(), MintError> {
     bd.update(
         epic,
-        UpdateOpts {
-            add_labels: vec![ACTIVE_LABEL.to_string()],
-            ..UpdateOpts::default()
+        Update {
+            add_labels: vec![crate::tracking::label(ACTIVE_LABEL)?],
+            ..Update::default()
         },
+        Guard::None,
     )
     .await?;
     for active in active_before {
@@ -1447,21 +1470,18 @@ async fn activate_tree_remediation_epic<R: CommandRunner>(
         }
         bd.update(
             &active.id,
-            UpdateOpts {
-                remove_labels: vec![ACTIVE_LABEL.to_string()],
-                ..UpdateOpts::default()
+            Update {
+                remove_labels: vec![crate::tracking::label(ACTIVE_LABEL)?],
+                ..Update::default()
             },
+            Guard::None,
         )
         .await?;
     }
     Ok(())
 }
 
-async fn neutralize_empty_tree_epic<R: CommandRunner>(
-    bd: &BdClient<R>,
-    epic: &BeadId,
-    summary: &mut MintSummary,
-) {
+async fn neutralize_empty_tree_epic<T: Store>(bd: &T, epic: &BeadId, summary: &mut MintSummary) {
     if let Err(err) = bd.close(epic, Some(EMPTY_TREE_EPIC_CLOSE_REASON)).await {
         summary.record(BatchOutcome::Errored {
             fingerprint: format!("tree-epic:{epic}"),
@@ -1473,8 +1493,8 @@ async fn neutralize_empty_tree_epic<R: CommandRunner>(
     }
 }
 
-pub async fn plan_tree_mint_with_options<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub async fn plan_tree_mint_with_options<T: Store>(
+    bd: &T,
     findings: &[Finding],
     opts: &MintOptions,
 ) -> (TreeMintPlan, MintSummary) {
@@ -1565,8 +1585,8 @@ pub async fn plan_tree_mint_with_options<R: CommandRunner>(
     (TreeMintPlan { batches }, summary)
 }
 
-async fn ensure_tree_spec_metadata<R: CommandRunner>(
-    bd: &BdClient<R>,
+async fn ensure_tree_spec_metadata<T: Store>(
+    bd: &T,
     findings: &[Finding],
     dry_run: bool,
 ) -> Result<(), BatchOutcome> {
@@ -1639,8 +1659,8 @@ fn tree_plan_batches(findings: Vec<Finding>) -> Vec<TreeMintBatch> {
 }
 
 /// Promote one molecule's deferred remediation beads to ready work.
-pub async fn promote_deferred<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub async fn promote_deferred<T: Store>(
+    bd: &T,
     molecule: &MoleculeId,
     dry_run: bool,
 ) -> MintSummary {
@@ -1655,7 +1675,7 @@ pub async fn promote_deferred<R: CommandRunner>(
             return summary;
         }
     };
-    if let Err(err) = bd.show(&molecule_bead).await {
+    if let Err(err) = bd.get(&molecule_bead).await {
         summary.record(BatchOutcome::Errored {
             fingerprint: molecule.to_string(),
             message: format!("missing molecule epic `{molecule}` or bd read failed: {err}"),
@@ -1663,9 +1683,9 @@ pub async fn promote_deferred<R: CommandRunner>(
         return summary;
     }
     let children = match bd
-        .list(ListOpts {
+        .query(Query {
             parent: Some(molecule_bead),
-            ..ListOpts::default()
+            ..Query::default()
         })
         .await
     {
@@ -1707,7 +1727,7 @@ pub async fn promote_deferred<R: CommandRunner>(
                 continue;
             }
         };
-        match bd.update(&bead.id, update).await {
+        match bd.update(&bead.id, update, Guard::None).await {
             Ok(()) => {
                 summary.ready_remediation_batches += 1;
                 summary.record(BatchOutcome::PromotedDeferred {
@@ -1771,8 +1791,8 @@ fn finding_label_count(bead: &Bead) -> usize {
 /// [`ResolveError::InvariantViolation`]) become per-batch
 /// [`BatchOutcome::Refused`] so the run keeps going; other
 /// [`MintError`] variants become [`BatchOutcome::Errored`].
-pub async fn mint_findings_with_options<R: CommandRunner>(
-    bd: &BdClient<R>,
+pub async fn mint_findings_with_options<T: Store>(
+    bd: &T,
     findings: &[Finding],
     head_commit: &str,
     opts: &MintOptions,
@@ -1956,15 +1976,15 @@ fn group_survivors_by_lead_spec(
     by_spec
 }
 
-async fn report_stale_candidates<R: CommandRunner>(
-    bd: &BdClient<R>,
+async fn report_stale_candidates<T: Store>(
+    bd: &T,
     summary: &mut MintSummary,
     current_hashes: &HashSet<String>,
 ) {
     let beads = match bd
-        .list(ListOpts {
+        .query(Query {
             statuses: DEDUP_STATUSES.to_vec(),
-            ..ListOpts::default()
+            ..Query::default()
         })
         .await
     {
@@ -2081,15 +2101,16 @@ enum FindingDedup {
     Errored { message: String },
 }
 
-async fn dedup_live_finding<R: CommandRunner>(bd: &BdClient<R>, finding: &Finding) -> FindingDedup {
-    let label = finding_label(finding);
-    let matching_beads = match bd
-        .list(ListOpts {
+async fn dedup_live_finding<T: Store>(bd: &T, finding: &Finding) -> FindingDedup {
+    let matching_beads = match async {
+        bd.query(Query {
             statuses: DEDUP_STATUSES.to_vec(),
-            label: Some(label),
-            ..ListOpts::default()
+            label: Some(crate::tracking::label(&finding_label(finding))?),
+            ..Query::default()
         })
         .await
+    }
+    .await
     {
         Ok(beads) => beads,
         Err(err) => {
@@ -2131,8 +2152,8 @@ async fn dedup_live_finding<R: CommandRunner>(bd: &BdClient<R>, finding: &Findin
     }
 }
 
-async fn dedup_closed_same_molecule<R: CommandRunner>(
-    bd: &BdClient<R>,
+async fn dedup_closed_same_molecule<T: Store>(
+    bd: &T,
     finding: &Finding,
     molecule: &MoleculeId,
 ) -> FindingDedup {
@@ -2144,15 +2165,16 @@ async fn dedup_closed_same_molecule<R: CommandRunner>(
             };
         }
     };
-    let label = finding_label(finding);
-    let matching_beads = match bd
-        .list(ListOpts {
+    let matching_beads = match async {
+        bd.query(Query {
             statuses: vec![loom_driver::bd::Status::Closed],
-            label: Some(label),
+            label: Some(crate::tracking::label(&finding_label(finding))?),
             parent: Some(parent),
-            ..ListOpts::default()
+            ..Query::default()
         })
         .await
+    }
+    .await
     {
         Ok(beads) => beads,
         Err(err) => {
@@ -2213,8 +2235,8 @@ fn markdown_code_value(line: &str, prefix: &str) -> Option<String> {
 }
 
 /// Mint one batch after per-finding dedup has selected its findings.
-async fn process_batch<R: CommandRunner>(
-    bd: &BdClient<R>,
+async fn process_batch<T: Store>(
+    bd: &T,
     findings: &[Finding],
     lead_spec: &SpecLabel,
     lead_epic: Option<&MoleculeId>,
@@ -2253,8 +2275,8 @@ async fn process_batch<R: CommandRunner>(
     create_batch_under_parent(bd, findings, lead_spec, &parent, routing).await
 }
 
-async fn create_batch_under_parent<R: CommandRunner>(
-    bd: &BdClient<R>,
+async fn create_batch_under_parent<T: Store>(
+    bd: &T,
     findings: &[Finding],
     lead_spec: &SpecLabel,
     parent: &BeadId,
@@ -2268,18 +2290,20 @@ async fn create_batch_under_parent<R: CommandRunner>(
     let description = batch_description(findings, &fingerprint, routing);
     let notes = matches!(routing, FindingRouting::BlockedClarifyWithoutOptions)
         .then(|| CLARIFY_WITHOUT_OPTIONS_CAUSE.to_string());
-    let bead_id = match bd
-        .create(CreateOpts {
+    let bead_id = match async {
+        bd.create(Create {
             title,
             description,
             status: Some(loom_driver::bd::Status::Blocked),
-            issue_type: Some(loom_driver::bd::IssueType::Task),
-            labels,
+            kind: Some(loom_driver::bd::IssueType::Task),
+            labels: crate::tracking::labels(labels)?,
             parent: Some(parent.clone()),
             notes,
-            ..CreateOpts::default()
+            ..Create::default()
         })
         .await
+    }
+    .await
     {
         Ok(bead_id) => bead_id,
         Err(err) => {
@@ -2315,8 +2339,8 @@ async fn create_batch_under_parent<R: CommandRunner>(
     }
 }
 
-async fn admit_created_batch<R: CommandRunner>(
-    bd: &BdClient<R>,
+async fn admit_created_batch<T: Store>(
+    bd: &T,
     bead: &BeadId,
     parent: &BeadId,
     findings: &[Finding],
@@ -2324,7 +2348,7 @@ async fn admit_created_batch<R: CommandRunner>(
 ) -> Result<Option<BriefError>, MintError> {
     let mut update = acceptance::batch_update(bead, parent, findings, None)?;
     update.status = Some(status.bead_status());
-    bd.update(bead, update).await?;
+    bd.update(bead, update, Guard::None).await?;
     if let [finding] = findings
         && finding.route() == FindingRoute::Clarify
     {
@@ -2338,15 +2362,15 @@ async fn admit_created_batch<R: CommandRunner>(
 
 /// Caches bonded-spec resolution so two findings naming the same missing
 /// spec do not each mint a fresh molecule.
-struct LeadResolver<'a, R: CommandRunner> {
-    bd: &'a BdClient<R>,
+struct LeadResolver<'a, T: Store> {
+    bd: &'a T,
     head_commit: &'a str,
     cache: HashMap<String, (SpecLabel, MoleculeId)>,
     explored: HashSet<String>,
 }
 
-impl<'a, R: CommandRunner> LeadResolver<'a, R> {
-    fn new(bd: &'a BdClient<R>, head_commit: &'a str) -> Self {
+impl<'a, T: Store> LeadResolver<'a, T> {
+    fn new(bd: &'a T, head_commit: &'a str) -> Self {
         Self {
             bd,
             head_commit,
@@ -3108,7 +3132,7 @@ mod tests {
         )
         .unwrap();
         for (key, value) in update.set_metadata {
-            bead.metadata.insert(key, serde_json::Value::String(value));
+            bead.metadata.insert(key, value);
         }
         serde_json::to_string(&bead).unwrap()
     }
@@ -3861,7 +3885,7 @@ mod tests {
         assert!(
             calls
                 .iter()
-                .any(|call| call == &["list", "--json", "--parent=lm-mol"]),
+                .any(|call| call == &["list", "--json", "--all", "--limit=0", "--parent=lm-mol"]),
             "promotion lists existing children instead of fabricating findings: {calls:?}",
         );
         assert!(
@@ -4066,6 +4090,8 @@ mod tests {
                     == &[
                         "list",
                         "--json",
+                        "--all",
+                        "--limit=0",
                         "--status=closed",
                         &format!("--label={FINDING_LABEL_PREFIX}{hash}"),
                         "--parent=lm-gateepic",
@@ -4376,6 +4402,8 @@ reason = "false positive"
                 == &[
                     "list",
                     "--json",
+                    "--all",
+                    "--limit=0",
                     "--status=open,in_progress,blocked,deferred"
                 ]),
             "unfiltered tree stale reporting must list all live candidates: {calls:?}",
@@ -5475,7 +5503,7 @@ reason = "false positive"
         assert_eq!(summary.errors, 1, "bd create failure is an error");
         let rendered = summary.render();
         assert!(
-            rendered.contains("bd CLI failure while minting findings: `bd` exited with status 1"),
+            rendered.contains("tracking operation failed while minting findings: mutation may have taken effect; reconcile authoritative state: `bd` exited with status 1"),
             "summary must include the bd source error: {rendered}",
         );
         assert!(

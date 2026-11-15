@@ -3,8 +3,8 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use loom_driver::bd::{BdClient, CommandRunner};
 use loom_driver::identifier::BeadId;
+use loom_issues::tracking::Store;
 use serde::{Deserialize, Serialize};
 
 use super::{LoopError, Record, invalid};
@@ -142,9 +142,9 @@ impl DecisionWaitJournal {
 
     /// Complete interrupted queue staging even when the producer is no longer
     /// returned by native readiness (for example, after agent-side closure).
-    pub(crate) async fn recover_inventory<R: CommandRunner>(
+    pub(crate) async fn recover_inventory<T: Store>(
         &self,
-        bd: &BdClient<R>,
+        bd: &T,
         root: Option<&BeadId>,
         label: &loom_driver::identifier::SpecLabel,
     ) -> Result<(), LoopError> {
@@ -158,11 +158,11 @@ impl DecisionWaitJournal {
             if root.is_some_and(|root| entry.record.root != *root && entry.record.source != *root) {
                 continue;
             }
-            let source = bd.show(&entry.record.source).await?;
+            let source = bd.get(&entry.record.source).await?;
             let in_scope = if let Some(root) = root {
                 entry.record.root == *root || entry.record.source == *root
             } else {
-                let owner = bd.show(&entry.record.root).await?;
+                let owner = bd.get(&entry.record.root).await?;
                 let expected_label = format!("spec:{label}");
                 source
                     .labels
@@ -186,9 +186,9 @@ impl DecisionWaitJournal {
 
     /// Protect both original attribution and current native membership: moving
     /// or closing held work cannot evade a molecule's publication barrier.
-    pub(crate) async fn blocks_scope<R: CommandRunner>(
+    pub(crate) async fn blocks_scope<T: Store>(
         &self,
-        bd: &BdClient<R>,
+        bd: &T,
         root: &BeadId,
     ) -> Result<bool, LoopError> {
         let native_blocked = self.native_blocks_scope(bd, root).await?;
@@ -200,7 +200,7 @@ impl DecisionWaitJournal {
         {
             let mut in_scope = entry.record.root == *root || entry.record.source == *root;
             if !in_scope {
-                let mut current = bd.show(&entry.record.source).await?;
+                let mut current = bd.get(&entry.record.source).await?;
                 let mut seen = HashSet::new();
                 loop {
                     if current.id == *root {
@@ -215,7 +215,7 @@ impl DecisionWaitJournal {
                     let Some(parent) = current.parent else {
                         break;
                     };
-                    current = bd.show(&parent).await?;
+                    current = bd.get(&parent).await?;
                     if current.id != parent {
                         return Err(
                             invalid("ambiguous native ownership at publication barrier").into()
@@ -227,7 +227,7 @@ impl DecisionWaitJournal {
                 if entry.phase.blocks_publication()
                     || (entry.native_wait
                         && !bd
-                            .dependency_snapshot(&entry.record.source)
+                            .graph(&entry.record.source)
                             .await?
                             .active_blockers()
                             .is_empty())

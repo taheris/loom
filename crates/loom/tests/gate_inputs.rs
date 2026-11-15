@@ -9,8 +9,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::{Command, Output};
 
-#[path = "common/reported.rs"]
-mod reported;
+use super::reported;
 
 struct Fixture {
     native: reported::Fixture,

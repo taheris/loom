@@ -20,12 +20,12 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use walkdir::WalkDir;
 
 fn workspace_root() -> PathBuf {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest_dir = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR"));
     manifest_dir
         .ancestors()
         .nth(2)

@@ -3,9 +3,12 @@
 use std::collections::HashSet;
 
 use loom_driver::bd::LabelExt;
-use loom_driver::bd::{BdClient, Bead, CommandRunner, IssueType, ListOpts, Status, UpdateOpts};
 use loom_driver::identifier::{BeadId, SpecLabel};
 use loom_driver::state::RecordKind;
+use loom_issues::{
+    task::{Guard, Kind as IssueType, Query, Record as Bead, Status, Update},
+    tracking::Store,
+};
 use serde::{Deserialize, Serialize};
 
 use super::{DecisionWaitError, DecisionWaitJournal, LoopError, invalid};
@@ -60,9 +63,9 @@ impl DecisionWaitJournal {
     ///
     /// # Errors
     /// Reports tracker failures; invalid proposals remain worker recovery outcomes.
-    pub async fn reconcile_native_wait<R: CommandRunner>(
+    pub async fn reconcile_native_wait<T: Store>(
         &self,
-        bd: &BdClient<R>,
+        bd: &T,
         expected: &Bead,
         outcome: super::super::AgentOutcome,
     ) -> Result<super::super::AgentOutcome, LoopError> {
@@ -85,13 +88,14 @@ impl DecisionWaitJournal {
     ///
     /// # Errors
     /// Rejects changed task identity, independent holds and empty prerequisites.
-    pub async fn admit_native_wait<R: CommandRunner>(
+    pub async fn admit_native_wait<T: Store>(
         &self,
-        bd: &BdClient<R>,
+        bd: &T,
         expected: &Bead,
     ) -> Result<super::super::ActiveBlockers, LoopError> {
         let _guard = self.acquire(&expected.id).await?;
-        let source = bd.show(&expected.id).await?;
+        let observed = bd.observe(&expected.id).await?;
+        let source = observed.record;
         if source.id != expected.id
             || source.parent != expected.parent
             || source.issue_type != expected.issue_type
@@ -101,7 +105,7 @@ impl DecisionWaitJournal {
         {
             return Err(invalid("native wait source identity or independent hold changed").into());
         }
-        let snapshot = bd.dependency_snapshot(&source.id).await?;
+        let snapshot = observed.graph;
         let mut active = snapshot.active_blockers().into_iter();
         let first = active
             .next()
@@ -110,20 +114,20 @@ impl DecisionWaitJournal {
         if source.status == Status::InProgress {
             bd.update(
                 &source.id,
-                UpdateOpts {
+                Update {
                     status: Some(Status::Open),
-                    if_status: Some(Status::InProgress),
-                    ..UpdateOpts::default()
+                    ..Update::default()
                 },
+                Guard::Status(Status::InProgress),
             )
             .await?;
         }
         Ok(blockers)
     }
 
-    pub(super) async fn native_held<R: CommandRunner>(
+    pub(super) async fn native_held<T: Store>(
         &self,
-        bd: &BdClient<R>,
+        bd: &T,
         bead: &Bead,
     ) -> Result<bool, LoopError> {
         if bead.status == Status::Closed {
@@ -142,16 +146,12 @@ impl DecisionWaitJournal {
         {
             return Ok(true);
         }
-        Ok(!bd
-            .dependency_snapshot(&bead.id)
-            .await?
-            .active_blockers()
-            .is_empty())
+        Ok(!bd.graph(&bead.id).await?.active_blockers().is_empty())
     }
 
-    pub(super) async fn park_native_affected<R: CommandRunner>(
+    pub(super) async fn park_native_affected<T: Store>(
         &self,
-        bd: &BdClient<R>,
+        bd: &T,
         entry: &super::Entry,
         decisions: &[Bead],
     ) -> Result<(), LoopError> {
@@ -159,14 +159,14 @@ impl DecisionWaitJournal {
             .context
             .as_ref()
             .ok_or_else(|| invalid("affected work lacks admitted graph context"))?;
-        let producer = bd.show(&entry.record.source).await?;
+        let producer = bd.get(&entry.record.source).await?;
         super::graph::resolve(bd, &producer, &entry.record.root, decisions, Some(context)).await?;
         Ok(())
     }
 
-    pub(super) async fn native_blocks_scope<R: CommandRunner>(
+    pub(super) async fn native_blocks_scope<T: Store>(
         &self,
-        bd: &BdClient<R>,
+        bd: &T,
         root: &BeadId,
     ) -> Result<bool, LoopError> {
         let mut pending = vec![root.clone()];
@@ -175,20 +175,14 @@ impl DecisionWaitJournal {
             if !visited.insert(id.clone()) {
                 return Err(invalid("cyclic native ownership at publication barrier").into());
             }
-            if !bd
-                .dependency_snapshot(&id)
-                .await?
-                .active_blockers()
-                .is_empty()
-            {
+            if !bd.graph(&id).await?.active_blockers().is_empty() {
                 return Ok(true);
             }
             for child in bd
-                .list(ListOpts {
+                .query(Query {
                     parent: Some(id.clone()),
-                    all: true,
                     limit: Some(0),
-                    ..ListOpts::default()
+                    ..Query::default()
                 })
                 .await?
             {
@@ -217,9 +211,9 @@ impl DecisionWaitJournal {
     ///
     /// # Errors
     /// Ambiguous legacy holds remain unchanged; malformed attribution is diagnosed.
-    pub async fn refresh_native_waits<R: CommandRunner>(
+    pub async fn refresh_native_waits<T: Store>(
         &self,
-        bd: &BdClient<R>,
+        bd: &T,
         root: Option<&BeadId>,
         label: Option<&SpecLabel>,
     ) -> Result<(), LoopError> {
@@ -236,9 +230,9 @@ impl DecisionWaitJournal {
                 return Err(invalid("invalid legacy native wait attribution").into());
             }
             let _guard = self.acquire(&record.source).await?;
-            let source = bd.show(&record.source).await?;
+            let source = bd.get(&record.source).await?;
             if let Some(label) = label {
-                let owner = bd.show(&record.root).await?;
+                let owner = bd.get(&record.root).await?;
                 let expected = format!("spec:{label}");
                 if !source
                     .labels
@@ -269,12 +263,12 @@ impl DecisionWaitJournal {
             if source.status == Status::Blocked && matching {
                 bd.update(
                     &source.id,
-                    UpdateOpts {
+                    Update {
                         status: Some(Status::Open),
-                        if_status: Some(Status::Blocked),
                         unset_metadata: vec![KEY.into()],
-                        ..UpdateOpts::default()
+                        ..Update::default()
                     },
+                    Guard::Status(Status::Blocked),
                 )
                 .await?;
             } else if source.status == Status::Blocked || projected.is_some() {

@@ -67,6 +67,8 @@ The fixed workspace separates public contracts from internal orchestration:
   contract).
 - `loom-test-support` — shared test fixtures (internal, test-only).
 - `loom-walk` — deterministic source/spec conformance walks (internal).
+- `loom-verification` — Rust verification fixtures, source-partition and
+  immutable-input preparation tooling (internal).
 
 ### Dependency Graph
 
@@ -87,7 +89,9 @@ events, LLM primitives, and materialized skills; `loom-direct-runner` composes
 agent tools with the LLM conversation. `loom-tune` consumes events and skills.
 `loom-gate` consumes events and protocol values. `loom-workflow` is the
 orchestration top and may compose the internal crates. Runtime crates do not
-depend on `loom-test-support` or `loom-walk`.
+depend on `loom-test-support`, `loom-walk`, or `loom-verification`.
+`loom-verification` depends only on third-party libraries so its bootstrap
+package does not compile runtime orchestration.
 
 ### Workspace Dependencies
 
@@ -360,10 +364,11 @@ is required.
   [test](spawn_config_omits_profile_manifest_host_only_fields_from_wrix_json)
 
 <!-- prettier-ignore -->
-- `wrix spawn` installs from `image_source` (a Nix store path) before invoking
-  podman with `image_ref` as the ref; the selected ProfileConfig image digest
-  lets wrix skip reloading bytes if the same content already exists in the local
-  image store [system](nix build .#verification-system-smoke)
+- Loom supplies the selected `image_source`, `image_ref`, source kind and
+  ProfileConfig through the external `wrix spawn` boundary. Wrix owns image
+  installation, digest reuse and container isolation; Loom verifies its payload
+  without launching that backend
+  [test](wrix_spawn_invocation_records_correct_argv)
 
 - Per-bead profile/runtime selection: two beads with different profile labels or
   backend runtimes result in `wrix spawn` invocations with the matching

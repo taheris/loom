@@ -2,22 +2,26 @@
 set -euo pipefail
 
 trusted_root() {
-  local path="$1"
-  local metadata owner mode
+  local path="$1" metadata owner mode checked=0
+  local -a ancestors=()
 
-  # Match Directory::open: the filesystem root anchors traversal; check its children.
+  # The filesystem root anchors traversal; validate every canonical child.
   while [[ "$path" != / ]]; do
-    if ! metadata=$(stat --format='%u %a' -- "$path"); then
-      return 1
-    fi
-    read -r owner mode <<<"$metadata"
+    ancestors+=("$path")
+    path="${path%/*}"
+    [[ -n "$path" ]] || path=/
+  done
+  (("${#ancestors[@]}" > 0)) || return 0
+  metadata=$(stat --format='%u %a' -- "${ancestors[@]}") || return 1
+  while read -r owner mode; do
+    [[ "$owner" =~ ^[0-9]+$ && "$mode" =~ ^[0-7]+$ ]] || return 1
     if [[ "$owner" != "$EUID" && "$owner" != 0 ]] ||
       (( (8#$mode & 0022) != 0 && (8#$mode & 01000) == 0 )); then
       return 1
     fi
-    path=$(dirname -- "$path")
-  done
-  return 0
+    ((checked += 1))
+  done <<< "$metadata"
+  ((checked == ${#ancestors[@]}))
 }
 
 private_root() {
@@ -52,6 +56,16 @@ if [[ "$#" == 0 ]]; then
   exit 2
 fi
 
+# Retain the admitted Nix confinement before replacing homes and private store state.
+nix_sandbox=
+if [[ "$fixture_process" == false && -n "${LOOM_TEST_NIX_REGISTRATION:-}" ]]; then
+  nix_sandbox=$("${LOOM_NATIVE_NIX_BIN:?missing declared Nix tool}" --extra-experimental-features nix-command config show sandbox)
+  case "$nix_sandbox" in
+    true|false) ;;
+    *) printf 'Unsupported admitted Nix sandbox policy: %s\n' "$nix_sandbox" >&2; exit 1 ;;
+  esac
+fi
+
 # Shared compiler daemons must not capture a disposable fixture TMPDIR.
 for name in "${!SCCACHE_@}"; do
   unset "$name"
@@ -60,13 +74,27 @@ export RUSTC_WRAPPER="" RUSTC_WORKSPACE_WRAPPER=""
 export CARGO_BUILD_RUSTC_WRAPPER="" CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER=""
 
 umask 077
+# Isolate homes, not the registry data that compiled the running tests.
+if [[ -z "${CARGO_HOME:-}" && -n "${HOME:-}" && "$HOME" != /homeless-shelter ]]; then
+  export CARGO_HOME="$HOME/.cargo"
+fi
 TMPDIR=$(private_root)
 export TMPDIR
+# Fixture tools must never create Nix\'s forbidden default home on the host.
+export HOME="$TMPDIR/home"
+mkdir -m 700 -- "$HOME"
 # Runtime fixtures cannot inherit targets; primary compilation preserves its admitted target.
 if [[ "$fixture_process" == true ]]; then
+  if [[ -n "${LOOM_TEST_RUNTIME_PATH:-}" ]]; then
+    export PATH="$PATH:$LOOM_TEST_RUNTIME_PATH"
+  fi
   export CARGO_TARGET_DIR="$TMPDIR/cargo-target"
   export CARGO_BUILD_TARGET_DIR="$CARGO_TARGET_DIR"
   export CARGO_BUILD_BUILD_DIR="$CARGO_TARGET_DIR"
+  # The outer campaign supplies concurrency; individual Go fixtures need one worker.
+  export GOMAXPROCS="${GOMAXPROCS:-1}"
+  # SDK inputs are already admitted; private fixture outputs are not public cache entries.
+  export NIX_CONFIG="${NIX_CONFIG:-}"$'\nsubstitute = false'
 fi
 # Empty values disable Cargo-configured wrappers; unsetting would re-enable them.
 export RUSTC_WRAPPER="" CARGO_BUILD_RUSTC_WRAPPER=""
@@ -93,12 +121,13 @@ if [[ "$fixture_process" == false && -n "${LOOM_TEST_NIX_REGISTRATION:-}" ]]; th
     'experimental-features = nix-command flakes' \
     'build-users-group =' \
     'require-sigs = true' \
-    'sandbox = true' \
+    "sandbox = $nix_sandbox" \
     'sandbox-fallback = false' \
     'allow-import-from-derivation = false' \
     'substituters =' \
     'builders =' > "$NIX_CONF_DIR/nix.conf"
-  nix-store --load-db < "$LOOM_TEST_NIX_REGISTRATION"
+  # Runtime tools stay off the compiler PATH, including during fixture seeding.
+  "${LOOM_NATIVE_NIX_BIN:?missing declared Nix tool}"-store --load-db < "$LOOM_TEST_NIX_REGISTRATION"
   # Initialize only this Nix-owned disposable build source, never an operator checkout.
   git init -q
   git add --all
@@ -111,7 +140,7 @@ writable_directories() {
   if [[ -L "$root" || ! -d "$root" || ! -O "$root" ]]; then
     return 0
   fi
-  chmod u+w -- "$root"
+  if [[ ! -w "$root" ]]; then chmod u+w -- "$root"; fi
   for child in "$root"/* "$root"/.[!.]* "$root"/..?*; do
     if [[ -d "$child" && ! -L "$child" ]]; then
       writable_directories "$child"

@@ -98,10 +98,8 @@ fn assert_fail(out: &Output, evidence_contains: &str) {
 
 #[test]
 fn workspace_style_walks_pass() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .unwrap();
+    let manifest = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR"));
+    let root = manifest.ancestors().nth(2).unwrap();
     for walk in [
         "renderer_no_insta_dependency",
         "no_derive_from_on_newtypes",
@@ -815,10 +813,8 @@ fn no_tokio_sleep_outside_clock_rejects_unpaused_test_time() {
 
 #[test]
 fn no_tokio_timeout_outside_clock_repository_matches_exact_exception_counts() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .unwrap();
+    let manifest = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR"));
+    let root = manifest.ancestors().nth(2).unwrap();
     assert_pass(&invoke(
         &["no_tokio_timeout_outside_clock"],
         Some(root),
@@ -1258,6 +1254,7 @@ const STRUCTURE_CRATE_NAMES: &[&str] = &[
     "loom-templates",
     "loom-test-support",
     "loom-walk",
+    "loom-verification",
 ];
 
 const STRUCTURE_LIB_NAMES: &[&str] = &[
@@ -1308,7 +1305,7 @@ fn seed_full_crate_set(ws: &TempDir) {
 
 fn structure_entries(name: &str) -> &'static [&'static str] {
     match name {
-        "loom" | "loom-walk" => &["src/main.rs"],
+        "loom" | "loom-walk" | "loom-verification" => &["src/main.rs"],
         "loom-direct-runner" => &["src/lib.rs", "src/main.rs"],
         _ => &["src/lib.rs"],
     }
@@ -1324,6 +1321,19 @@ fn crate_structure_includes_loom_tune_pass_all_target_crates_present() {
         None,
     );
     assert_pass(&out);
+}
+
+#[test]
+fn crate_structure_rejects_missing_verification_entry() {
+    let ws = make_workspace();
+    seed_full_crate_set(&ws);
+    std::fs::remove_file(ws.path().join("crates/loom-verification/src/main.rs")).unwrap();
+    let out = invoke(
+        &["crate_structure_includes_loom_tune"],
+        Some(ws.path()),
+        None,
+    );
+    assert_fail(&out, "crates/loom-verification/src/main.rs");
 }
 
 #[test]
@@ -1392,9 +1402,17 @@ fn crate_structure_includes_loom_tune_fail_extra_workspace_member() {
 fn crate_structure_includes_loom_tune_fail_missing_workspace_member() {
     let ws = make_workspace();
     seed_full_crate_set(&ws);
-    let mut cargo = std::fs::read_to_string(ws.path().join("Cargo.toml")).unwrap();
-    cargo = cargo.replace("\"crates/loom-walk\"", "");
-    std::fs::write(ws.path().join("Cargo.toml"), cargo).unwrap();
+    let mut cargo: toml::Value =
+        toml::from_str(&std::fs::read_to_string(ws.path().join("Cargo.toml")).unwrap()).unwrap();
+    cargo["workspace"]["members"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|member| member.as_str() != Some("crates/loom-walk"));
+    std::fs::write(
+        ws.path().join("Cargo.toml"),
+        toml::to_string(&cargo).unwrap(),
+    )
+    .unwrap();
     let out = invoke(
         &["crate_structure_includes_loom_tune"],
         Some(ws.path()),
@@ -4705,6 +4723,53 @@ fn workspace_compile_checks_are_full_test_app_only_allow_tool_version_probes() {
 }
 
 #[test]
+fn workspace_compile_checks_allow_scoped_archive_compilation_and_exact_case_execution() {
+    for command in [
+        "cargo nextest archive --offline --locked -p loom-llm --archive-file archive.tar.zst",
+        "cargo nextest archive --offline \\\n  --locked --package loom-llm --archive-file archive.tar.zst",
+        "cargo-nextest nextest run --archive-file archive.tar.zst -E 'test(=one) | test(=two)'",
+        r#"cargo nextest run --archive-file archive.tar.zst -E '${builtins.concatStringsSep " | " (map (name: "test(=${name})") cases)}'"#,
+    ] {
+        assert_pass(&workspace_compile_check_command(command));
+    }
+}
+
+#[test]
+fn workspace_compile_checks_keep_metadata_assertions_separate_from_exports() {
+    for (value, passes) in [
+        (r#"pkgs.runCommand "metadata" { } "touch $out""#, true),
+        ("loom.nextest", false),
+    ] {
+        let ws = make_workspace();
+        seed_workspace_compile_checks_fixture(ws.path());
+        seed(
+            ws.path(),
+            "nix/flake/checks.nix",
+            &format!(
+                r#"_: {{ perSystem = {{ pkgs, loom, ... }}: {{
+  checks.metadata =
+    assert !loom.clippy.doInstallCargoArtifacts;
+    assert
+      loom.nextest.CARGO_PROFILE == "dev";
+    assert true; {value};
+}}; }}
+"#,
+            ),
+        );
+        let output = invoke(
+            &["workspace_compile_checks_are_full_test_app_only"],
+            Some(ws.path()),
+            None,
+        );
+        if passes {
+            assert_pass(&output);
+        } else {
+            assert_fail(&output, "workspace compile surface `nextest`");
+        }
+    }
+}
+
+#[test]
 fn workspace_compile_checks_are_full_test_app_only_allow_tool_help_probes() {
     for command in [
         "cargo clippy --help",
@@ -4724,6 +4789,12 @@ fn workspace_compile_checks_are_full_test_app_only_reject_cargo_compilation() {
         "cargo clippy --workspace --all-targets -- -D warnings",
         "cargo nextest run --workspace",
         "cargo nextest list --workspace",
+        "cargo nextest archive --workspace -p loom --archive-file archive.tar.zst",
+        "cargo nextest archive --archive-file archive.tar.zst",
+        "cargo nextest archive -p '*' --archive-file archive.tar.zst",
+        "cargo nextest run --archive-file archive.tar.zst",
+        "cargo nextest run --archive-file archive.tar.zst -E 'all()'",
+        "cargo nextest run | echo --archive-file archive.tar.zst -E 'test(=fake)'",
         "cargo clippy -- --version",
         "cargo nextest run -- --version",
         "cargo clippy --version-other",
@@ -4746,6 +4817,8 @@ fn workspace_compile_checks_are_full_test_app_only_reject_compilation_beside_pro
         "cargo nextest --version; cargo nextest run --workspace",
         "cargo nextest run --workspace; cargo nextest --version",
         "cargo nextest run --workspace | grep --version",
+        "cargo nextest archive -p loom --archive-file archive.tar.zst; cargo nextest run --workspace",
+        "cargo nextest run --archive-file archive.tar.zst -E 'test(=one)' && cargo nextest run --workspace",
     ] {
         assert_fail(
             &workspace_compile_check_command(command),
@@ -4951,6 +5024,65 @@ fn workspace_compile_checks_validate_captured_native_constructors() {
         Some(ws.path()),
         None,
     ));
+    for (before, after, diagnostic) in [
+        (
+            "cargoArtifacts = dependencyArtifacts \"release\";",
+            "cargoArtifacts = dependencyArtifacts \"dev\";",
+            "cargoArtifacts must be built once",
+        ),
+        (
+            "testCargoArtifacts = dependencyArtifacts \"dev\";",
+            "testCargoArtifacts = dependencyArtifacts \"release\";",
+            "testCargoArtifacts must use the shared dev dependency constructor",
+        ),
+        (
+            "// optionalAttrs (CARGO_PROFILE != \"release\") { inherit CARGO_PROFILE; }",
+            "// optionalAttrs (CARGO_PROFILE == \"release\") { inherit CARGO_PROFILE; }",
+            "cargoArtifacts must be built once",
+        ),
+        (
+            "CARGO_PROFILE:\n    craneLib.buildDepsOnly (\n      commonArgs",
+            "CARGO_PROFILE:\n    craneLib.buildDepsOnly (\n      { }",
+            "cargoArtifacts must be built once",
+        ),
+        (
+            "filter = srcFilter;",
+            "filter = _: _: true;",
+            "cargoArtifacts must be built once",
+        ),
+        (
+            "cargoArtifacts = testCargoArtifacts;",
+            "inherit cargoArtifacts;",
+            "nextest must use the dev profile",
+        ),
+        (
+            "CARGO_PROFILE = \"dev\";",
+            "CARGO_PROFILE = \"release\";",
+            "nextest must use the dev profile",
+        ),
+        (
+            "CARGO_PROFILE = \"dev\";",
+            "cargoProfile = \"dev\";",
+            "nextest must use the dev profile",
+        ),
+        (
+            "inherit cargoArtifacts;",
+            "cargoArtifacts = testCargoArtifacts;",
+            "clippy must inherit the shared cargoArtifacts cache",
+        ),
+    ] {
+        let mutated = workspace.replace(before, after);
+        assert_ne!(mutated, workspace, "mutation did not match: {before}");
+        seed(ws.path(), "nix/workspace.nix", &mutated);
+        assert_fail(
+            &invoke(
+                &["workspace_compile_checks_are_full_test_app_only"],
+                Some(ws.path()),
+                None,
+            ),
+            diagnostic,
+        );
+    }
     for operation in ["lint", "test"] {
         seed(
             ws.path(),
@@ -5000,7 +5132,7 @@ fn seed_test_nix_surface(root: &Path) {
     seed(
         root,
         "nix/flake/apps.nix",
-        "test = app testApp \"test\";\ntest-required = app requiredTestApp \"test-required\";\nsmoke = app smokeApp \"smoke\";\nfuzz-loom = app fuzzApp \"fuzz-loom\";\nsmokePrekHooks = wrixLib.prekHooks;\nfullScript = source \"scripts/full-test.sh\";\nrequiredScript = source \"scripts/required-test.sh\";\ntext = builtins.readFile fullScript.path;\ntext = builtins.readFile requiredScript.path;\nevaluation = [ fullScript ];\nevaluation = [ requiredScript ];\n",
+        "test = app testApp \"test\";\ntest-required = app requiredTestApp \"test-required\";\nsmoke = app smokeApp \"smoke\";\nfuzz-loom = app fuzzApp \"fuzz-loom\";\nsmokePrekHooks = wrixLib.prekHooks;\nfullScript = source \"scripts/full-test.sh\";\nrequiredScript = source \"scripts/required-test.sh\";\ntext = builtins.readFile ../../scripts/full-test.sh;\ntext = builtins.readFile ../../scripts/required-test.sh;\nevaluation = [ fullScript ];\nevaluation = [ requiredScript ];\n",
     );
     seed(
         root,

@@ -1,6 +1,15 @@
 # Dependency patches
 
-## Restricted procfs for nested Nix sandboxes
+## Historical restricted-procfs investigation
+
+The ordinary Loom toolchain now uses upstream Nix. The overlay and procfs
+fixtures below are retained investigation material, not imports into normal
+worker/test toolchains or unconditional flake checks. Wrix owns backend sandbox
+capability campaigns. Loom's ordinary process fixtures use a separately typed
+native-process execution policy, not a relaxed hermetic-Nix result; narrow
+explicit Loom edge diagnostics retain their actual capability requirements.
+
+### Restricted procfs for nested Nix sandboxes
 
 `nix-pid-only-procfs.patch` retains native Nix sandboxing in rootless workers
 whose outer container masks non-process `/proc` entries. Linux rejects a new
@@ -17,9 +26,9 @@ absence is no longer mistaken for disabled user namespaces: Nix still rejects a
 visible zero sysctl and actually attempts `CLONE_NEWUSER` before declaring
 support.
 
-`../nix-overlay.nix` applies the Linux-only patch to the Nix executable used by
-Loom's compiled verifier pin, test fixtures and generated worker images. No host
-socket, capability grant, unmasked parent procfs, VM, extra sandbox path or
+The retained `../nix-overlay.nix` describes the Linux-only patch formerly used
+by Loom's compiled verifier pin, test fixtures and generated worker images. No
+host socket, capability grant, unmasked parent procfs, VM, extra sandbox path or
 unsandboxed execution is introduced. Programs requiring unavailable global
 procfs entries still fail; their results are not reclassified as passes.
 
@@ -188,14 +197,15 @@ requires review rather than silently falling back to the recovering parser.
 
 ## Restricted native-container proc
 
-`nix-restricted-proc.patch` is used only by `../native-container-nix.nix`, not
-the ordinary Nix toolchain. Its namespace probe and actual sandbox both mount
-`subset=pid` with nosuid/nodev/noexec. A hidden user-namespace sysctl does not
-suppress the real clone probe. Unsupported kernels fail the actual mount; there
-is no unrestricted retry or sandbox fallback. The group-drop requirement is
-unchanged. The package retains its complete upstream tests, declaring their
-shell interpreters and gzip pipeline directly rather than relying on `/bin/sh`
-inside a closed builder. Existing upstream skips are not native smoke coverage.
+`../native-container-nix.nix` reuses the configured Nix overlay's restricted
+procfs and required supplementary-group handling rather than applying a second,
+conflicting procfs patch. The appliance's restricted parent procfs still
+requires the kernel-enforced PID-only child mount; sandbox fallback remains
+disabled. The package retains its complete upstream tests, declaring their shell
+interpreters and gzip pipeline directly rather than relying on `/bin/sh` inside
+a closed builder. Existing upstream skips are not native smoke coverage.
+CLI-only test SDK inputs select Nix's binary output explicitly; unused
+development headers are not execution prerequisites.
 
 ## Nextest compiler archive reproducibility
 
@@ -206,11 +216,22 @@ therefore differ. The compiler archive recipes also request Cargo's standard
 release symbol stripping: LLVM's unused anonymous symbol suffixes can vary even
 when every runtime section is identical. This does not omit tests or change
 runtime code. Packaging normalization then preserves the compiler's payload
-bytes, paths, links and executable modes. The reproducibility check varies input
-timestamps, compares normalized archives, verifies restored
-contents/modes/links, and rejects malformed input. Ordinary Gate rebuild
-validation remains enabled; no nondeterminism exemption or cached behavioral
-verdict is introduced.
+bytes, links and executable modes. Compiler archives use the immutable staged
+manifest so compiled source paths do not name temporary builders. Cargo must
+also receive an absolute writable builder-local `CARGO_TARGET_DIR`: otherwise
+`--manifest-path` places its default target inside the immutable source,
+bypasses the inherited dependency cache and contaminates the input. The recipes
+reject a target directory in their source after compilation. Qualification
+requires clean independent builder targets, not repackaging binaries left in a
+source input. They omit the unused self-output library RPATH because no
+libraries are installed there and Nix redirects that output during rebuilds.
+Nextest's relocatable target-directory metadata is canonicalized to `/target`,
+including binary paths beneath that exact root; source paths and unrelated
+strings remain unchanged. Extraction still supplies the actual target and
+workspace remaps. The reproducibility check varies timestamps and target roots,
+verifies restored payloads/modes/links and immutable source paths, and rejects
+malformed archives and invalid roots. Ordinary Gate rebuild validation remains
+enabled; no nondeterminism exemption or cached behavioral verdict is introduced.
 
 ## Native appliance kernel
 
@@ -219,9 +240,9 @@ and header archive generation. Source enumeration uses Perl's argument-vector
 pipe rather than an implicit `/bin/sh`. OID generation uses core Perl arbitrary-
 precision binary conversion instead of unchecked shell/`bc` pipelines. Without
 that repair a closed builder can silently generate incorrect OIDs and reject
-valid module-signature containers. `../tests/kernel-oid-registry.py`
-independently checks every encoded OID, offset, lookup hash and lookup ordering
-before the kernel is built. Module-signature verification remains enabled.
+valid module-signature containers. `loom-verification kernel-oid` independently
+checks every encoded OID, offset, lookup hash and lookup ordering before the
+kernel is built. Module-signature verification remains enabled.
 
 `../native-container-kernel.nix` declares the finite appliance module inventory,
 retains the full kernel configuration, and rejects changes to enabled security

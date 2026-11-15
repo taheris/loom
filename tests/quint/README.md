@@ -17,12 +17,23 @@ The `model`, `reference-equivalence`, `cache-model` and `witnesses` scenarios
 run the composed [whole-gate model](../../specs/gate/README.md), with
 independent reference evaluation, finite simulation and executable
 positive/negative witnesses. `model` also runs the declared exhaustive frontier
-directly over Quint-compiled IR, without a duplicate Rust model. See the model
-README for exact bounds and counterexample replay. `deeper` runs both the
-whole-gate and bridge deeper campaigns. These model scenarios do not claim
-production conformance. Input-generation, conformance, replay, mutation,
-incremental, cost and adoption scenarios still fail explicitly as unimplemented.
-Extend the same dispatcher, not another app or hook.
+directly over Quint-compiled IR, without a duplicate Rust model. The three
+public `verification-quint-reference-equivalence`,
+`verification-quint-cache-model` and `verification-quint-witnesses` packages
+alias one checked `routine` producer. It actually executes the complete common
+campaign and reports `quint-routine`, not three rewritten scenario receipts.
+Their owners and current input bindings stay independent; ordinary fresh-request
+and failure rules still apply. Direct app selectors remain separately executable
+diagnostics, with their actual selector in the receipt. `model` remains a
+distinct common-plus-exhaustive execution. These pure system producers copy and
+execute the same checked model fixture, including its sealer Git configuration,
+not the full Cargo/test workspace. Production bridge and acceptance scenarios
+retain their full source and Rust conformance dependencies. See the model README
+for exact bounds and counterexample replay. `deeper` runs both the whole-gate
+and bridge deeper campaigns. These model scenarios do not claim production
+conformance. Input-generation, conformance, replay, mutation, incremental, cost
+and adoption scenarios still fail explicitly as unimplemented. Extend the same
+dispatcher, not another app or hook.
 
 The workspace scenario uses production worker preparation, the common private
 spawn-config writer, and the real Wrix/Pi container launch. Its stub agent
@@ -100,7 +111,7 @@ on-demand because its isolated rebuild took 129 seconds; the other flake checks
 and routine model scenarios remain enabled. `quint-no-jvm` audits the tool and
 harness closures, preventing the retired solver's read-only launcher-removal
 build path from returning. Neither check patches or deletes files in an upstream
-store path. Native `cargo test -p loom-gate --test quint` covers
+store path. Native `cargo test -p loom-gate --test integration quint::` covers
 exact-count/early-guard classification, invalid campaigns, and identity
 invalidation without needing Quint on PATH. Shell fixtures mock external
 processes only; production gate logic and upstream comparison remain real.

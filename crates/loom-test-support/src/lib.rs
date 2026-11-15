@@ -53,10 +53,26 @@ pub fn scrub_git_local_env(command: &mut std::process::Command) {
     }
 }
 
+/// Locate current runtime fixtures independently of the immutable compiler source.
+pub fn manifest_dir(compiled: &str) -> std::path::PathBuf {
+    manifest_dir_at(
+        compiled,
+        std::env::var_os("LOOM_TEST_SOURCE_ROOT").as_deref(),
+    )
+}
+
+fn manifest_dir_at(compiled: &str, root: Option<&std::ffi::OsStr>) -> std::path::PathBuf {
+    let compiled = std::path::Path::new(compiled);
+    match (root, compiled.file_name()) {
+        (Some(root), Some(name)) => std::path::PathBuf::from(root).join("crates").join(name),
+        _ => compiled.to_path_buf(),
+    }
+}
+
 /// Prevents test Git processes from inheriting operator signing configuration.
 pub fn configure_hermetic_git(command: &mut std::process::Command) {
-    let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/git/test-gitconfig");
+    let config =
+        manifest_dir(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/git/test-gitconfig");
     command.env("GIT_CONFIG_GLOBAL", config);
 }
 
@@ -152,6 +168,32 @@ pub fn write_executable_bash_script(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn runtime_fixture_source_observes_edits_without_compiler_source_fallback() {
+        let seed = tempfile::tempdir().unwrap();
+        let runtime = tempfile::tempdir().unwrap();
+        for (root, body) in [
+            (seed.path(), "compiled data"),
+            (runtime.path(), "current data"),
+        ] {
+            std::fs::create_dir_all(root.join("crates/example")).unwrap();
+            std::fs::write(root.join("current.txt"), body).unwrap();
+        }
+        let compiled = seed.path().join("crates/example");
+        let resolved =
+            super::manifest_dir_at(compiled.to_str().unwrap(), Some(runtime.path().as_os_str()));
+        let fixture = resolved.join("../../current.txt");
+        assert_eq!(std::fs::read_to_string(&fixture).unwrap(), "current data");
+        std::fs::write(&fixture, "changed data").unwrap();
+        assert_eq!(std::fs::read_to_string(&fixture).unwrap(), "changed data");
+        std::fs::remove_file(&fixture).unwrap();
+        assert!(std::fs::read_to_string(&fixture).is_err());
+        assert_eq!(
+            super::manifest_dir_at(compiled.to_str().unwrap(), None),
+            compiled
+        );
+    }
+
     #[test]
     fn hermetic_git_command_disables_operator_signing() {
         let mut command = std::process::Command::new("true");

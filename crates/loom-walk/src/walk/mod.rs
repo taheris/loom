@@ -710,7 +710,7 @@ mod tests {
 
     #[test]
     fn embedded_template_conformance_matches_registered_execution() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let root = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR")).join("../..");
         let input = WalkInput::for_root(&root);
         let expected = [
             "template_pinning_matrix",

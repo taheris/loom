@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::{Error, Name, Nodes, StorePath};
 
 /// Immutable dependency artifacts and the recipes that may actually execute.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub(super) struct Execution {
     pub(super) nodes: BTreeSet<StorePath>,
     pub(super) inputs: BTreeSet<StorePath>,
@@ -51,6 +51,9 @@ pub(super) fn capture(
             .collect::<Result<BTreeMap<_, _>, Error>>()?;
         let paths = required.values().flatten().cloned().collect();
         let available = present(&paths)?;
+        if !available.is_subset(&paths) {
+            return Err(Error::Result);
+        }
         for (dependency, outputs) in required {
             if outputs.is_subset(&available) {
                 execution.inputs.extend(outputs);
@@ -62,6 +65,36 @@ pub(super) fn capture(
         }
     }
     Ok(execution)
+}
+
+/// A realized build-only root stops at its own output; cold artifacts retain ordinary build duties.
+pub(super) fn artifact(
+    nodes: &Nodes,
+    requested: &StorePath,
+    mut present: impl FnMut(&BTreeSet<StorePath>) -> Result<BTreeSet<StorePath>, Error>,
+) -> Result<Execution, Error> {
+    let outputs: BTreeSet<_> = nodes
+        .get(requested)
+        .ok_or(Error::Root)?
+        .outputs
+        .values()
+        .cloned()
+        .collect();
+    if outputs.is_empty() {
+        return Err(Error::Output);
+    }
+    let available = present(&outputs)?;
+    if !available.is_subset(&outputs) {
+        return Err(Error::Result);
+    }
+    if available == outputs {
+        return Ok(Execution {
+            nodes: BTreeSet::new(),
+            inputs: outputs,
+            cold_inputs: BTreeSet::new(),
+        });
+    }
+    capture(nodes, [requested.clone()], present)
 }
 
 /// The requested check always executes; available dependency artifacts stop realization traversal.
@@ -126,6 +159,139 @@ mod tests {
     ) -> impl FnMut(&BTreeSet<StorePath>) -> Result<BTreeSet<StorePath>, Error> {
         let paths: BTreeSet<_> = paths.iter().map(|value| path(value)).collect();
         move |outputs| Ok(outputs.intersection(&paths).cloned().collect())
+    }
+
+    #[test]
+    fn realized_artifact_does_not_require_its_archived_build_inputs() {
+        let mut reads = Vec::new();
+        let execution = artifact(&graph(), &path("check.drv"), |outputs| {
+            reads.push(outputs.clone());
+            Ok(outputs
+                .intersection(&[path("check")].into())
+                .cloned()
+                .collect())
+        })
+        .unwrap();
+        assert_eq!(reads, vec![BTreeSet::from([path("check")])]);
+        assert!(execution.nodes.is_empty());
+        assert_eq!(execution.inputs, BTreeSet::from([path("check")]));
+        assert!(execution.cold_inputs.is_empty());
+    }
+
+    #[test]
+    fn cold_artifact_retains_realization_and_cold_source_requirements() {
+        let execution = artifact(&graph(), &path("check.drv"), available(&["compiler"])).unwrap();
+        assert_eq!(execution.nodes, BTreeSet::from([path("check.drv")]));
+        assert_eq!(execution.inputs, BTreeSet::from([path("compiler")]));
+        assert!(execution.cold_inputs.is_empty());
+        let cold = artifact(&graph(), &path("check.drv"), available(&[])).unwrap();
+        assert_eq!(cold.cold_inputs, BTreeSet::from([path("archive.drv")]));
+    }
+
+    #[test]
+    fn artifact_readiness_is_live_and_rejects_unrequested_results() {
+        let mut reads = 0;
+        let mut present = |outputs: &BTreeSet<StorePath>| {
+            reads += 1;
+            Ok(if reads == 1 {
+                outputs.clone()
+            } else {
+                BTreeSet::new()
+            })
+        };
+        assert!(
+            artifact(&graph(), &path("check.drv"), &mut present)
+                .unwrap()
+                .nodes
+                .is_empty()
+        );
+        assert!(
+            !artifact(&graph(), &path("check.drv"), &mut present)
+                .unwrap()
+                .cold_inputs
+                .is_empty()
+        );
+        assert!(artifact(&graph(), &path("check.drv"), |_| Ok([path("other")].into())).is_err());
+        assert!(artifact(&graph(), &path("check.drv"), |_| Err(Error::Result)).is_err());
+    }
+
+    #[test]
+    fn wide_shared_frontier_uses_one_live_read_per_level() {
+        let mut nodes = graph();
+        let mut compilers = Vec::new();
+        for index in 0..64 {
+            let compiler = format!("compiler-{index}");
+            nodes.insert(
+                path(&format!("{compiler}.drv")),
+                std::sync::Arc::new(node(false, &["archive.drv"], &compiler)),
+            );
+            compilers.push(format!("{compiler}.drv"));
+        }
+        nodes.insert(
+            path("check.drv"),
+            std::sync::Arc::new(node(
+                false,
+                &compilers.iter().map(String::as_str).collect::<Vec<_>>(),
+                "check",
+            )),
+        );
+        let mut queries = Vec::new();
+        require_pinned(&nodes, &path("check.drv"), |outputs| {
+            queries.push(outputs.clone());
+            Ok(outputs
+                .iter()
+                .filter(|output| **output == path("archive"))
+                .cloned()
+                .collect())
+        })
+        .unwrap();
+        assert_eq!(queries.len(), 2);
+        assert_eq!(queries[0].len(), 64);
+        assert_eq!(queries[1], BTreeSet::from([path("archive")]));
+    }
+
+    #[test]
+    fn warm_frontier_does_not_query_archival_dependencies() {
+        let mut queries = Vec::new();
+        require_pinned(&graph(), &path("check.drv"), |outputs| {
+            queries.push(outputs.clone());
+            Ok(outputs.clone())
+        })
+        .unwrap();
+        assert_eq!(queries, vec![BTreeSet::from([path("compiler")])]);
+    }
+
+    #[test]
+    fn frontier_availability_is_observed_again_on_each_request() {
+        let mut reads = 0;
+        let mut presence = |outputs: &BTreeSet<StorePath>| {
+            reads += 1;
+            Ok(if reads == 1 {
+                outputs.clone()
+            } else {
+                BTreeSet::new()
+            })
+        };
+        require_pinned(&graph(), &path("check.drv"), &mut presence).unwrap();
+        assert!(matches!(
+            require_pinned(&graph(), &path("check.drv"), &mut presence),
+            Err(Error::ColdInput { .. })
+        ));
+        assert_eq!(reads, 3);
+    }
+
+    #[test]
+    fn frontier_rejects_backend_errors_and_unrequested_availability() {
+        assert!(matches!(
+            require_pinned(&graph(), &path("check.drv"), |_| Err(Error::Result)),
+            Err(Error::Result)
+        ));
+        assert!(matches!(
+            require_pinned(&graph(), &path("check.drv"), |_| Ok(BTreeSet::from([
+                path("unrequested")
+            ]))),
+            Err(Error::Result)
+        ));
     }
 
     #[test]

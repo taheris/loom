@@ -13,7 +13,7 @@ struct Fixture {
     head: String,
     runner: StatefulRunner,
     state: Arc<CacheDb>,
-    controller: ProductionTodoController<StatefulRunner>,
+    controller: ProductionTodoController<BdClient<StatefulRunner>>,
     success: TodoSuccess,
 }
 
@@ -335,7 +335,12 @@ async fn todo_acceptance_persistence_compensates_bindings_before_later_state() -
                 .insert(METADATA_KEY.into(), serde_json::json!(previous));
             state.fail_update = Some(state.update_attempt + failure);
         }
-        assert!(matches!(fixture.finalize().await, Err(TodoError::Bd(_))));
+        assert!(matches!(
+            fixture.finalize().await,
+            Err(TodoError::Tracking(
+                loom_issues::tracking::Error::Uncertain { .. }
+            ))
+        ));
         fixture.assert_pending()?;
         assert_eq!(
             fixture.runner.bead("lm-task.1")?.metadata[METADATA_KEY],
@@ -364,7 +369,12 @@ async fn todo_acceptance_persistence_compensates_a_write_that_reports_failure() 
         state.fail_update = Some(state.update_attempt + 2);
         state.fail_update_after_write = true;
     }
-    assert!(matches!(fixture.finalize().await, Err(TodoError::Bd(_))));
+    assert!(matches!(
+        fixture.finalize().await,
+        Err(TodoError::Tracking(
+            loom_issues::tracking::Error::Uncertain { .. }
+        ))
+    ));
     fixture.assert_pending()?;
     for task in ["lm-task.1", "lm-task.2"] {
         assert!(

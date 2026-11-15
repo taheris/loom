@@ -189,6 +189,7 @@ mod tests {
                     image_source: PathBuf::from("/nix/store/zzz-wrix-base.tar"),
                     image_source_kind: Some(loom_driver::agent::ImageSourceKind::NixDescriptor),
                     wrix_launcher: None,
+                    tracking_access: loom_driver::agent::WorkerTrackingAccess::LauncherManaged,
                     profile_config: None,
                     workspace: self.workspace.path().to_path_buf(),
                     env: vec![],

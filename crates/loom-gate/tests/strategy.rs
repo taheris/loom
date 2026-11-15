@@ -116,7 +116,8 @@ fn quint_verify_blocks_parse_property_filters_and_role_exceptions() {
         ));
     }
     let conventions = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/spec-conventions.md"),
+        loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/spec-conventions.md"),
     )
     .unwrap();
     assert_eq!(

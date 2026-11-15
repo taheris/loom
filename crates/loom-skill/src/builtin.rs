@@ -192,7 +192,9 @@ fn parse_package(package: &Package) -> Result<NamedSkill, CatalogError> {
 }
 
 fn source_path(relative_path: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative_path)
+    // Packaged origins must not embed the ephemeral compiler checkout.
+    let root = option_env!("LOOM_BUILTIN_SOURCE_ROOT").unwrap_or(env!("CARGO_MANIFEST_DIR"));
+    PathBuf::from(root).join(relative_path)
 }
 
 #[cfg(test)]

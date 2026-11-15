@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod cases {
     use std::{
-        path::{Path, PathBuf},
+        path::PathBuf,
         process::{Command, Output},
     };
 
@@ -21,7 +21,7 @@ mod cases {
             std::fs::create_dir_all(source.join("scripts")).expect("source scripts");
             std::fs::create_dir_all(&tools).expect("external tools");
             std::fs::copy(
-                Path::new(env!("CARGO_MANIFEST_DIR")).join("../../bin/loom"),
+                loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR")).join("../../bin/loom"),
                 source.join("bin/loom"),
             )
             .expect("source entry point");

@@ -16,7 +16,7 @@ use loom_driver::agent::{
     Active, AgentBackend, AgentEvent, AgentKind, AgentSession, ModelSelection, ProtocolError,
     SpawnConfig,
 };
-use loom_driver::bd::{BdClient, ListOpts};
+use loom_driver::bd::BdClient;
 use loom_driver::clock::{Clock, SystemClock};
 use loom_driver::config::{AgentSelection, LoomConfig, Phase};
 use loom_driver::git::GitError;
@@ -26,6 +26,7 @@ use loom_driver::scratch::{ScratchSession, resolve_scratch_key};
 use loom_driver::state::CacheDb;
 use loom_events::identifier::SessionId;
 use loom_events::{EnvelopeBuilder, InputKind, SessionScope, Source};
+use loom_issues::{task::Query, tracking::Error as TrackingError};
 use thiserror::Error;
 use tracing::{info, warn};
 
@@ -35,13 +36,14 @@ use crate::redaction::redact_agent_input;
 use crate::skill::{SkillError, SkillPlan};
 use crate::spawn::container_workspace_path;
 
+use super::apply::apply_proposals_with_tracking;
 use super::context::build_inbox_context;
 use super::list::{
     InboxItem, InboxKind, build_queue, find_by_bead_id, find_by_index, find_by_proposal_id,
     frame_unavailable_tune_items,
 };
 use super::terminal::{TerminalMarker, TerminalMarkerError, parse as parse_terminal_marker};
-use super::{ApplyError, apply_proposals, ensure_integration_clean_after_chat};
+use super::{ApplyError, ensure_integration_clean_after_chat};
 
 const INBOX_NON_CLOSED_STATUSES: [loom_driver::bd::Status; 4] = [
     loom_driver::bd::Status::Open,
@@ -97,8 +99,8 @@ pub enum ChatError {
     Config(String),
     /// inbox data carried an invalid spec label
     InvalidSpecLabel(#[from] ParseSpecLabelError),
-    /// bd list failed: {0}
-    BdList(String),
+    /// tracking operation failed during inbox chat
+    Tracking(#[from] TrackingError),
     /// render inbox.md template: {0}
     Render(String),
     /// cache db operation failed while running `loom inbox chat`
@@ -137,6 +139,19 @@ pub enum ChatError {
 ///
 /// Returns an error when inbox state, interaction, or persistence fails.
 pub fn run(workspace: &Path, opts: &ChatOpts) -> Result<ChatReport, ChatError> {
+    let tracking = BdClient::<loom_driver::bd::TokioRunner>::new();
+    run_with_tracking(workspace, opts, &tracking)
+}
+
+/// Run Inbox policy against the caller-selected authoritative tracker.
+///
+/// # Errors
+/// Propagates tracking, launch, interaction, validation and persistence failures.
+pub fn run_with_tracking<T: crate::tracking::Adapter>(
+    workspace: &Path,
+    opts: &ChatOpts,
+    tracking: &T,
+) -> Result<ChatReport, ChatError> {
     let cfg = LoomConfig::load(LoomConfig::resolve_path(workspace))
         .map_err(|e| ChatError::Config(e.to_string()))?;
     let selection = resolve_chat_selection(opts.cli_profile.as_ref(), opts.agent_override, &cfg)?;
@@ -144,12 +159,7 @@ pub fn run(workspace: &Path, opts: &ChatOpts) -> Result<ChatReport, ChatError> {
         .enable_all()
         .build()
         .map_err(|e| ChatError::Config(format!("tokio runtime: {e}")))?;
-    let beads = runtime
-        .block_on(async {
-            let bd = BdClient::<loom_driver::bd::TokioRunner>::new();
-            bd.list(inbox_list_opts()).await
-        })
-        .map_err(|e| ChatError::BdList(e.to_string()))?;
+    let beads = runtime.block_on(tracking.query(inbox_query()))?;
     let mut queue = build_queue(&beads, opts.spec_filter.as_ref(), opts.kind_filter, false);
     frame_unavailable_tune_items(workspace, &mut queue);
     let visible = select_visible(queue, opts.target.as_ref())?;
@@ -162,6 +172,8 @@ pub fn run(workspace: &Path, opts: &ChatOpts) -> Result<ChatReport, ChatError> {
         });
     }
 
+    // Interactive transports are external processes, not same-process test agents.
+    tracking.worker_access().require_external()?;
     let image: &ImageEntry =
         runtime.block_on(opts.manifest.resolve(&selection.profile, selection.kind()))?;
     let scope_label = opts
@@ -259,6 +271,7 @@ pub fn run(workspace: &Path, opts: &ChatOpts) -> Result<ChatReport, ChatError> {
                     &cfg,
                     &opts.launcher_env,
                 )?;
+                crate::tracking::configure_worker(tracking, &mut spawn_config)?;
                 spawn_config.skills = Some(restored_skills.registered);
                 info!(
                     wrix_bin = %bin.display(),
@@ -281,30 +294,27 @@ pub fn run(workspace: &Path, opts: &ChatOpts) -> Result<ChatReport, ChatError> {
     drop(scratch);
     runtime
         .block_on(
-            crate::r#loop::DecisionWaitJournal::new(workspace).refresh_native_waits(
-                &BdClient::<loom_driver::bd::TokioRunner>::new(),
-                None,
-                None,
-            ),
+            crate::r#loop::DecisionWaitJournal::new(workspace)
+                .refresh_native_waits(tracking, None, None),
         )
         .map_err(|error| ChatError::Wait(Box::new(error)))?;
 
     let marker = parse_terminal_marker(&stdout)?;
     ensure_integration_clean_after_chat(workspace)?;
     let applied_proposals = if let TerminalMarker::Apply(payload) = marker {
-        apply_proposals(workspace, payload.proposals.into_vec())?
+        runtime
+            .block_on(apply_proposals_with_tracking(
+                workspace,
+                tracking,
+                payload.proposals.into_vec(),
+            ))?
             .proposals
             .len()
     } else {
         0
     };
 
-    let beads_after = runtime
-        .block_on(async {
-            let bd = BdClient::<loom_driver::bd::TokioRunner>::new();
-            bd.list(inbox_list_opts()).await
-        })
-        .map_err(|e| ChatError::BdList(e.to_string()))?;
+    let beads_after = runtime.block_on(tracking.query(inbox_query()))?;
     let mut remaining = build_queue(
         &beads_after,
         opts.spec_filter.as_ref(),
@@ -319,10 +329,10 @@ pub fn run(workspace: &Path, opts: &ChatOpts) -> Result<ChatReport, ChatError> {
     })
 }
 
-fn inbox_list_opts() -> ListOpts {
-    ListOpts {
+fn inbox_query() -> Query {
+    Query {
         statuses: INBOX_NON_CLOSED_STATUSES.to_vec(),
-        ..ListOpts::default()
+        ..Query::default()
     }
 }
 
@@ -887,6 +897,67 @@ mod tests {
             parent: None,
             metadata: std::collections::BTreeMap::default(),
             notes: None,
+        }
+    }
+
+    #[test]
+    fn interactive_inbox_refuses_external_launch_for_in_process_tracking_before_probes() {
+        use loom_issues::{
+            memory::Backend,
+            task::{Create, Label, Status},
+            tracking::Store,
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let images = directory.path().join("images.json");
+        let entries: serde_json::Map<_, _> = [AgentKind::Pi, AgentKind::Claude, AgentKind::Direct].into_iter().map(|kind| (
+            kind.to_string(), serde_json::json!({"ref":"fixture", "source":"/missing-image", "source_kind":"nix-descriptor", "profile_config":"/missing-profile", "launcher":"/missing-launcher"})
+        )).collect();
+        fs::write(
+            &images,
+            serde_json::to_vec(&serde_json::json!({"base":entries})).unwrap(),
+        )
+        .unwrap();
+        let tracking = Backend::default();
+        for kind in [AgentKind::Pi, AgentKind::Claude, AgentKind::Direct] {
+            let opts = ChatOpts {
+                spec_filter: None,
+                kind_filter: None,
+                target: None,
+                cli_profile: Some(ProfileName::base()),
+                agent_override: Some(kind),
+                manifest: ProfileImageManifest::from_path(&images).unwrap(),
+                wrix_bin: Some(directory.path().join("must-not-run")),
+                launcher_env: vec![],
+            };
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime
+                .block_on(tracking.create(Create {
+                    title: format!("decision for {kind}"),
+                    status: Some(Status::Blocked),
+                    labels: vec![Label::new("loom:blocked").unwrap()],
+                    ..Create::default()
+                }))
+                .unwrap();
+            drop(runtime);
+            let result = run_with_tracking(directory.path(), &opts, &tracking);
+            if kind == AgentKind::Direct {
+                assert!(
+                    matches!(&result, Err(ChatError::AgentSelection(reason)) if reason.contains("direct backend cannot run interactive")),
+                    "{result:?}"
+                );
+            } else {
+                assert!(
+                    matches!(
+                        &result,
+                        Err(ChatError::Protocol(ProtocolError::Unsupported))
+                    ),
+                    "{kind}: {result:?}"
+                );
+            }
+            assert!(!directory.path().join(".loom/scratch").exists());
         }
     }
 

@@ -21,7 +21,8 @@ let
     '';
   });
 in
-checked.check {
+checked.artifact {
+  runtime = "native-process";
   resources = [
     checker
     witnesses

@@ -1,7 +1,9 @@
 #[cfg(test)]
 mod cases {
+    use super::super::MemoryFixture as Fixture;
     use super::super::*;
     use loom_events::{AgentEvent, DriverKind};
+    use loom_issues::task::Relation;
 
     fn session(ids: &[BeadId]) -> SessionResult {
         let wire = format!(
@@ -45,8 +47,8 @@ mod cases {
             AgentOutcome::Success
         );
         let before = [
-            f.bd.show(&f.decisions[0]).await.unwrap(),
-            f.bd.show(&f.decisions[1]).await.unwrap(),
+            f.bd.get(&f.decisions[0]).await.unwrap(),
+            f.bd.get(&f.decisions[1]).await.unwrap(),
         ];
         let first = events(&f);
         assert_eq!(first.len(), 3);
@@ -90,9 +92,9 @@ mod cases {
         assert_eq!(events(&f), first);
         assert_eq!(tracker.ids().unwrap().len(), 2);
         for (id, snapshot) in f.decisions.iter().zip(before) {
-            assert_eq!(f.bd.show(id).await.unwrap(), snapshot);
+            assert_eq!(f.bd.get(id).await.unwrap(), snapshot);
         }
-        assert_eq!(f.bd.show(&f.source.id).await.unwrap(), f.source);
+        assert_eq!(f.bd.get(&f.source.id).await.unwrap(), f.source);
     }
 
     #[tokio::test]
@@ -101,7 +103,7 @@ mod cases {
         reconcile_session(&f.bd, &f.journal(), &f.source, session(&f.decisions), None)
             .await
             .unwrap();
-        let repaired = f.bd.show(&f.decisions[1]).await.unwrap();
+        let repaired = f.bd.get(&f.decisions[1]).await.unwrap();
         let mut entry = f.journal().load(&f.source.id).unwrap().unwrap();
         entry.phase = Phase::InventoryPending;
         f.journal().save(&entry).unwrap();
@@ -140,7 +142,7 @@ mod cases {
             .await
             .unwrap()
         );
-        assert_eq!(f.bd.show(&f.decisions[1]).await.unwrap(), repaired);
+        assert_eq!(f.bd.get(&f.decisions[1]).await.unwrap(), repaired);
         assert_eq!(events(&f).len(), 3);
         assert_eq!(tracker.ids().unwrap().len(), 2);
         assert_eq!(
@@ -152,13 +154,16 @@ mod cases {
     #[tokio::test]
     async fn native_compatible_producer_reuses_exact_decision_and_preserves_closed_answer() {
         let f = Fixture::new().await;
-        f.bd.dep_add(&f.sibling, &f.decisions[0]).await.unwrap();
+        f.bd.relate(&f.sibling, &f.decisions[0], Relation::Blocks)
+            .await
+            .unwrap();
         f.bd.update(
             &f.sibling,
-            UpdateOpts {
+            Update {
                 status: Some(Status::InProgress),
-                ..UpdateOpts::default()
+                ..Update::default()
             },
+            Guard::None,
         )
         .await
         .unwrap();
@@ -167,8 +172,8 @@ mod cases {
         reconcile_session(&f.bd, &journal, &f.source, session(&f.decisions), None)
             .await
             .unwrap();
-        let sibling = f.bd.show(&f.sibling).await.unwrap();
-        let original = f.bd.show(&f.decisions[0]).await.unwrap();
+        let sibling = f.bd.get(&f.sibling).await.unwrap();
+        let original = f.bd.get(&f.decisions[0]).await.unwrap();
         assert_eq!(
             reconcile_session(&f.bd, &journal, &sibling, session(&f.decisions[..1]), None)
                 .await
@@ -176,12 +181,12 @@ mod cases {
             AgentOutcome::Success
         );
         assert_eq!(tracker.ids().unwrap().len(), 2);
-        assert_eq!(f.bd.show(&f.decisions[0]).await.unwrap(), original);
+        assert_eq!(f.bd.get(&f.decisions[0]).await.unwrap(), original);
         assert_eq!(events(&f).len(), 3);
         f.bd.close(&f.decisions[0], Some("human answered the original choice"))
             .await
             .unwrap();
-        let answered = f.bd.show(&f.decisions[0]).await.unwrap();
+        let answered = f.bd.get(&f.decisions[0]).await.unwrap();
         let restart = AdmissionTracker::default();
         let second_machine = tempfile::tempdir().unwrap();
         assert_eq!(
@@ -197,23 +202,23 @@ mod cases {
             AgentOutcome::Success
         );
         assert!(restart.ids().unwrap().is_empty());
-        assert_eq!(f.bd.show(&f.decisions[0]).await.unwrap(), answered);
+        assert_eq!(f.bd.get(&f.decisions[0]).await.unwrap(), answered);
         assert_eq!(events(&f).len(), 3);
     }
 
     #[tokio::test]
     async fn native_misparented_candidate_claim_cannot_hide_from_producer_inventory() {
         let f = Fixture::new().await;
-        let id = f.bd.create(CreateOpts {
-            title: "misparented candidate".into(), issue_type: Some(IssueType::Decision),
-            status: Some(Status::Blocked), parent: Some(f.sibling.clone()), description: BRIEF.into(),
-            metadata: Some(serde_json::json!({"loom.decision_candidate": {"version":1,"producer":f.source.id,"root":f.root,"affected_work":[]}}).to_string()),
-            ..CreateOpts::default()
+        let id = f.bd.create(Create {
+            title: "misparented candidate".into(), kind: Some(IssueType::Decision), status: Some(Status::Blocked),
+            parent: Some(f.sibling.clone()), description: BRIEF.into(),
+            metadata: [("loom.decision_candidate".into(), serde_json::json!({"version":1,"producer":f.source.id,"root":f.root,"affected_work":[]}))].into(),
+            ..Create::default()
         }).await.unwrap();
         let before = [
-            f.bd.show(&f.decisions[0]).await.unwrap(),
-            f.bd.show(&f.decisions[1]).await.unwrap(),
-            f.bd.show(&id).await.unwrap(),
+            f.bd.get(&f.decisions[0]).await.unwrap(),
+            f.bd.get(&f.decisions[1]).await.unwrap(),
+            f.bd.get(&id).await.unwrap(),
         ];
         let outcome =
             reconcile_session(&f.bd, &f.journal(), &f.source, session(&f.decisions), None)
@@ -221,7 +226,7 @@ mod cases {
                 .unwrap();
         assert!(matches!(outcome, AgentOutcome::Failure { error } if error.contains(id.as_str())));
         for snapshot in before {
-            assert_eq!(f.bd.show(&snapshot.id).await.unwrap(), snapshot);
+            assert_eq!(f.bd.get(&snapshot.id).await.unwrap(), snapshot);
         }
         assert!(f.journal().load(&f.source.id).unwrap().is_none());
     }
@@ -232,7 +237,7 @@ mod cases {
         reconcile_session(&f.bd, &f.journal(), &f.source, session(&f.decisions), None)
             .await
             .unwrap();
-        let before = f.bd.show(&f.decisions[0]).await.unwrap();
+        let before = f.bd.get(&f.decisions[0]).await.unwrap();
         let mut corrupt = None;
         for (key, mut value) in f
             .journal()
@@ -274,7 +279,7 @@ mod cases {
                 .unwrap(),
             Some(value)
         );
-        assert_eq!(f.bd.show(&f.decisions[0]).await.unwrap(), before);
+        assert_eq!(f.bd.get(&f.decisions[0]).await.unwrap(), before);
         assert_eq!(
             f.journal().load(&f.source.id).unwrap().unwrap().phase,
             Phase::InventoryAdmitted
@@ -297,7 +302,7 @@ mod cases {
             .unwrap()
             .remove(0);
         f.journal().db().unwrap().remove_record(kind, &key).unwrap();
-        let before = f.bd.show(&f.decisions[0]).await.unwrap();
+        let before = f.bd.get(&f.decisions[0]).await.unwrap();
         assert!(f.journal().blocks_scope(&f.bd, &f.root).await.is_err());
         assert!(
             f.journal()
@@ -317,7 +322,7 @@ mod cases {
                 .unwrap()
                 .is_some()
         );
-        assert_eq!(f.bd.show(&f.decisions[0]).await.unwrap(), before);
+        assert_eq!(f.bd.get(&f.decisions[0]).await.unwrap(), before);
         assert_eq!(
             f.journal().load(&f.source.id).unwrap().unwrap().phase,
             Phase::InventoryAdmitted
@@ -329,32 +334,35 @@ mod cases {
         let f = Fixture::new().await;
         f.bd.update(
             &f.root,
-            UpdateOpts {
-                add_labels: vec!["loom:todo".into()],
-                ..UpdateOpts::default()
+            Update {
+                add_labels: vec![Label::new("loom:todo").unwrap()],
+                ..Update::default()
             },
+            Guard::None,
         )
         .await
         .unwrap();
-        let epic = f.bd.show(&f.root).await.unwrap();
+        let epic = f.bd.get(&f.root).await.unwrap();
         let mut ids = Vec::new();
         for description in [BRIEF, "incomplete decision brief"] {
             let id =
-                f.bd.create(CreateOpts {
+                f.bd.create(Create {
                     title: "Todo implementation decision".into(),
-                    issue_type: Some(IssueType::Decision),
+                    kind: Some(IssueType::Decision),
                     parent: Some(f.root.clone()),
                     description: description.into(),
-                    ..CreateOpts::default()
+                    ..Create::default()
                 })
                 .await
                 .unwrap();
-            f.bd.dep_add(&f.sibling, &id).await.unwrap();
+            f.bd.relate(&f.sibling, &id, Relation::Blocks)
+                .await
+                .unwrap();
             ids.push(id);
         }
         let snapshots = [
-            f.bd.show(&ids[0]).await.unwrap(),
-            f.bd.show(&ids[1]).await.unwrap(),
+            f.bd.get(&ids[0]).await.unwrap(),
+            f.bd.get(&ids[1]).await.unwrap(),
         ];
         assert!(
             super::super::super::admit_todo(&f.bd, &f.journal(), &epic, &HashSet::new())
@@ -362,7 +370,7 @@ mod cases {
                 .is_err()
         );
         for (id, before) in ids.iter().zip(snapshots) {
-            assert_eq!(f.bd.show(id).await.unwrap(), before);
+            assert_eq!(f.bd.get(id).await.unwrap(), before);
         }
         let admitted = super::super::super::admit_todo(
             &f.bd,
@@ -373,9 +381,9 @@ mod cases {
         .await
         .unwrap();
         assert_eq!(admitted.len(), 2);
-        assert_eq!(f.bd.show(&f.root).await.unwrap(), epic);
+        assert_eq!(f.bd.get(&f.root).await.unwrap(), epic);
         assert!(
-            f.bd.show(&ids[0])
+            f.bd.get(&ids[0])
                 .await
                 .unwrap()
                 .labels
@@ -383,7 +391,7 @@ mod cases {
                 .any(|label| label.as_str() == "loom:clarify")
         );
         assert!(
-            f.bd.show(&ids[1])
+            f.bd.get(&ids[1])
                 .await
                 .unwrap()
                 .labels

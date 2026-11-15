@@ -188,10 +188,11 @@ fn contexts(paths: &[PathBuf]) -> String {
     }
     result
 }
+// Private fixture data is cheaper to build than to look up in remote caches.
 fn recipe(shell: &Path, system: &str, body: &str, dependencies: &[PathBuf]) -> io::Result<Value> {
     let context = contexts(dependencies);
     let expression = format!(
-        "let d = builtins.derivation {{ name = \"loom-profile-fixture\"; system = {}; builder = builtins.storePath {}; args = [ \"-c\" \"printf '%s' \\\"$1\\\" > \\\"$out\\\"\" \"fixture\" (builtins.appendContext {} {{ {} }}) ]; }}; in {{ path = d.outPath; derivation = d.drvPath; }}",
+        "let d = builtins.derivation {{ name = \"loom-profile-fixture\"; allowSubstitutes = false; preferLocalBuild = true; system = {}; builder = builtins.storePath {}; args = [ \"-c\" \"printf '%s' \\\"$1\\\" > \\\"$out\\\"\" \"fixture\" (builtins.appendContext {} {{ {} }}) ]; }}; in {{ path = d.outPath; derivation = d.drvPath; }}",
         literal(system),
         literal(&shell.to_string_lossy()),
         literal(body),
@@ -297,6 +298,9 @@ pub fn publish_with_key(
     for (index, derivation) in derivations.iter().enumerate() {
         run(Command::new("nix-store")
             .arg("--realise")
+            // These private, tiny data recipes have all inputs locally. Looking
+            // for their unique outputs in remote caches only delays fixtures.
+            .arg("--no-substitute")
             .arg(derivation)
             .arg("--add-root")
             .arg(metadata.join(format!("output-{index}")))
@@ -314,11 +318,11 @@ pub fn publish_with_key(
             .ok_or_else(|| io::Error::other("fixture source parent"))?,
     )?;
     std::fs::copy(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../nix/verification.nix"),
+        crate::manifest_dir(env!("CARGO_MANIFEST_DIR")).join("../../nix/verification.nix"),
         &checked,
     )?;
     let flake = format!(
-        "{{ outputs = {{ self }}: let checked = import ./.profile-fixture/verification.nix; in {{ packages.{}.profile-catalogue = checked.check {{ resources = []; evaluation = [ (checked.resource {{ root = ./.; origin = \"flake.nix\"; }}) (checked.resource {{ root = ./.; origin = \".profile-fixture/verification.nix\"; }}) ]; build = _: builtins.derivation {{ name = \"fixture-catalogue.json\"; system = {}; builder = builtins.appendContext {} {{ {} = {{ path = true; }}; }}; args = [ \"-c\" \"printf '%s' \\\"$1\\\" > \\\"$out\\\"\" \"fixture\" (builtins.appendContext {} {{ {} }}) ]; }}; }}; }}; }}\n",
+        "{{ outputs = {{ self }}: let checked = import ./.profile-fixture/verification.nix; in {{ packages.{}.profile-catalogue = checked.check {{ runtime = \"native-process\"; purpose = \"artifact\"; resources = []; evaluation = [ (checked.resource {{ root = ./.; origin = \"flake.nix\"; }}) (checked.resource {{ root = ./.; origin = \".profile-fixture/verification.nix\"; }}) ]; build = _: builtins.derivation {{ name = \"fixture-catalogue.json\"; allowSubstitutes = false; preferLocalBuild = true; system = {}; builder = builtins.appendContext {} {{ {} = {{ path = true; }}; }}; args = [ \"-c\" \"printf '%s' \\\"$1\\\" > \\\"$out\\\"\" \"fixture\" (builtins.appendContext {} {{ {} }}) ]; }}; }}; }}; }}\n",
         literal(system),
         literal(system),
         literal(&shell.to_string_lossy()),

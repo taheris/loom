@@ -3121,6 +3121,46 @@ pub fn commit_all_in(workspace: &Path, msg: &str) -> Result<(), GitError> {
     )
 }
 
+/// Commit only the named fixture paths, preserving other untracked files.
+///
+/// # Errors
+/// Returns an error if staging or the isolated fixture commit fails.
+#[doc(hidden)]
+pub fn commit_paths_in(workspace: &Path, paths: &[&str], message: &str) -> Result<(), GitError> {
+    let mut arguments = vec!["add", "--"];
+    arguments.extend_from_slice(paths);
+    run_test_git(workspace, &arguments)?;
+    run_test_git(
+        workspace,
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "-c",
+            "commit.gpgSign=false",
+            "commit",
+            "-qm",
+            message,
+        ],
+    )
+}
+
+/// Read every configured remote name, not only `origin`.
+///
+/// # Errors
+/// Returns an error if Git execution or output decoding fails.
+pub fn read_remote_names(workspace: &Path) -> Result<Vec<String>, GitError> {
+    let output = sync_git_raw(workspace, &["remote"])?;
+    if !output.status.success() {
+        return Err(cli_error(&output));
+    }
+    Ok(String::from_utf8(output.stdout)?
+        .lines()
+        .map(str::to_owned)
+        .collect())
+}
+
 fn run_test_git(dir: &Path, args: &[&str]) -> Result<(), GitError> {
     let status = super::environment::std_git_command()
         .arg("-C")

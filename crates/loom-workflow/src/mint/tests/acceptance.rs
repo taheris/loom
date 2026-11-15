@@ -8,6 +8,7 @@ mod tests {
     use loom_driver::git::GitOid;
     use loom_driver::identifier::ProfileName;
     use loom_driver::profile_manifest::ProfileImageManifest;
+    use loom_issues::memory::Backend;
     use loom_protocol::acceptance::{
         Candidates, GoalReferences, METADATA_KEY, Reference, References,
     };
@@ -18,7 +19,8 @@ mod tests {
         dir: tempfile::TempDir,
         workspace: PathBuf,
         manifest: ProfileImageManifest,
-        bd: BdClient<StatefulBdRunner>,
+        bd: Backend,
+        root: BeadId,
     }
 
     impl Fixture {
@@ -33,7 +35,17 @@ mod tests {
             std::fs::create_dir_all(workspace.join("specs")).unwrap();
             std::fs::create_dir_all(workspace.join("docs")).unwrap();
             std::fs::write(workspace.join("specs/agent.md"), body).unwrap();
-            std::fs::write(workspace.join("docs/README.md"), "# Specs\n\n| Spec | Epic |\n| --- | --- |\n| [agent](../specs/agent.md) | `lm-mol` |\n").unwrap();
+            let bd = Backend::default();
+            let root = bd
+                .create(Create {
+                    title: "agent work".into(),
+                    kind: Some(loom_driver::bd::IssueType::Epic),
+                    labels: vec![Label::new("spec:agent").unwrap()],
+                    ..Create::default()
+                })
+                .await
+                .unwrap();
+            std::fs::write(workspace.join("docs/README.md"), format!("# Specs\n\n| Spec | Epic |\n| --- | --- |\n| [agent](../specs/agent.md) | `{root}` |\n")).unwrap();
             let manifest_path = dir.path().join("images.json");
             loom_test_support::profile_manifest::write(
             &manifest_path,
@@ -44,7 +56,8 @@ mod tests {
                 manifest: ProfileImageManifest::from_path(&manifest_path).unwrap(),
                 dir,
                 workspace,
-                bd: BdClient::with_runner(StatefulBdRunner::molecule()),
+                bd,
+                root,
             }
         }
 
@@ -82,11 +95,11 @@ mod tests {
             let BatchOutcome::Minted { bead_id, .. } = &summary.batches[0] else {
                 panic!("not minted");
             };
-            self.bd.show(bead_id).await.unwrap()
+            self.bd.get(bead_id).await.unwrap()
         }
 
         async fn prepare(&self, bead: &Bead) -> worker::Preparation {
-            worker::prepare_with_bd(
+            worker::prepare_with_tracking(
                 &self.bd,
                 worker::Request {
                     bead,
@@ -115,14 +128,19 @@ mod tests {
             self.bd
                 .update(
                     &bead.id,
-                    UpdateOpts {
-                        set_metadata: vec![(METADATA_KEY.into(), value.into())],
-                        ..UpdateOpts::default()
+                    Update {
+                        set_metadata: [(
+                            METADATA_KEY.into(),
+                            serde_json::Value::String(value.into()),
+                        )]
+                        .into(),
+                        ..Update::default()
                     },
+                    Guard::None,
                 )
                 .await
                 .unwrap();
-            self.bd.show(&bead.id).await.unwrap()
+            self.bd.get(&bead.id).await.unwrap()
         }
     }
 
@@ -194,22 +212,27 @@ mod tests {
             ConcernToken::SpecConventionsViolation,
             FindingRoute::Deferred,
         );
-        let molecule = MoleculeId::new("lm-mol").unwrap();
-        assert_eq!(
+        let molecule = MoleculeId::new(fixture.root.as_str()).unwrap();
+        let created =
             route_molecule_findings(&fixture.bd, &molecule, &[finding], &MintOptions::default())
-                .await
-                .minted,
-            1
-        );
-        let task_id = BeadId::new("lm-mol.1").unwrap();
+                .await;
+        assert_eq!(created.minted, 1);
+        let BatchOutcome::Minted {
+            bead_id: task_id, ..
+        } = &created.batches[0]
+        else {
+            panic!("not minted")
+        };
+        let task_id = task_id.clone();
         fixture
             .bd
             .update(
                 &task_id,
-                UpdateOpts {
-                    set_metadata: vec![("operator.note".into(), "keep".into())],
-                    ..UpdateOpts::default()
+                Update {
+                    set_metadata: [("operator.note".into(), "keep".into())].into(),
+                    ..Update::default()
                 },
+                Guard::None,
             )
             .await
             .unwrap();
@@ -231,7 +254,7 @@ mod tests {
         );
         let promoted = promote_deferred(&fixture.bd, &molecule, false).await;
         assert_eq!(promoted.promoted_deferred, 1, "{promoted:?}");
-        let task = fixture.bd.show(&task_id).await.unwrap();
+        let task = fixture.bd.get(&task_id).await.unwrap();
         assert_eq!(task.metadata["operator.note"], "keep");
         assert_eq!(task.status, loom_driver::bd::Status::Open);
         let prepared = ready(fixture.prepare(&task).await);
@@ -287,21 +310,22 @@ mod tests {
             .bd
             .update(
                 &source.id,
-                UpdateOpts {
+                Update {
                     status: Some(loom_driver::bd::Status::Closed),
-                    ..UpdateOpts::default()
+                    ..Update::default()
                 },
+                Guard::None,
             )
             .await
             .unwrap();
         let split_id = fixture
             .bd
-            .create(CreateOpts {
+            .create(Create {
                 title: "remaining repair".into(),
                 parent: source.parent.clone(),
-                issue_type: Some(loom_driver::bd::IssueType::Task),
-                labels: vec!["profile:rust".into()],
-                ..CreateOpts::default()
+                kind: Some(loom_driver::bd::IssueType::Task),
+                labels: vec![Label::new("profile:rust").unwrap()],
+                ..Create::default()
             })
             .await
             .unwrap();
@@ -309,34 +333,38 @@ mod tests {
             .bd
             .update(
                 &split_id,
-                UpdateOpts {
-                    set_metadata: vec![
+                Update {
+                    set_metadata: [
                         (
                             remediation::FOLLOW_UP_KEY.into(),
-                            serde_json::to_string(&remediation::FollowUp {
-                                source: source.id.clone(),
-                                goals: subset.clone(),
-                            })
-                            .unwrap(),
+                            serde_json::Value::String(
+                                serde_json::to_string(&remediation::FollowUp {
+                                    source: source.id.clone(),
+                                    goals: subset.clone(),
+                                })
+                                .unwrap(),
+                            ),
                         ),
                         ("operator.note".into(), "keep".into()),
-                    ],
-                    ..UpdateOpts::default()
+                    ]
+                    .into(),
+                    ..Update::default()
                 },
+                Guard::None,
             )
             .await
             .unwrap();
-        let split = fixture.bd.show(&split_id).await.unwrap();
+        let split = fixture.bd.get(&split_id).await.unwrap();
         let prepared = ready(fixture.prepare(&split).await);
         let Resolved::Remediation(resolved) = &prepared.acceptance else {
             panic!("wrong purpose");
         };
         assert_eq!(resolved.goals().len(), 1);
-        let split = fixture.bd.show(&split_id).await.unwrap();
+        let split = fixture.bd.get(&split_id).await.unwrap();
         assert_eq!(goals(&split), subset);
         assert_eq!(split.metadata["operator.note"], "keep");
         assert!(!split.metadata.contains_key(remediation::FOLLOW_UP_KEY));
-        let source = fixture.bd.show(&source.id).await.unwrap();
+        let source = fixture.bd.get(&source.id).await.unwrap();
         assert_eq!(goals(&source), original_goals);
         assert_eq!(source.status, loom_driver::bd::Status::Closed);
         let batch: serde_json::Value =
@@ -365,16 +393,17 @@ mod tests {
             .bd
             .update(
                 &task.id,
-                UpdateOpts {
+                Update {
                     unset_metadata: vec![METADATA_KEY.into()],
-                    ..UpdateOpts::default()
+                    ..Update::default()
                 },
+                Guard::None,
             )
             .await
             .unwrap();
         rejected(
             fixture
-                .prepare(&fixture.bd.show(&task.id).await.unwrap())
+                .prepare(&fixture.bd.get(&task.id).await.unwrap())
                 .await,
         );
         rejected(
@@ -416,14 +445,14 @@ mod tests {
         );
         let sibling_id = fixture
             .bd
-            .create(CreateOpts {
+            .create(Create {
                 title: "forged sibling".into(),
                 parent: task.parent.clone(),
-                ..CreateOpts::default()
+                ..Create::default()
             })
             .await
             .unwrap();
-        let sibling = fixture.bd.show(&sibling_id).await.unwrap();
+        let sibling = fixture.bd.get(&sibling_id).await.unwrap();
         rejected(
             fixture
                 .prepare(&fixture.set_acceptance(&sibling, &encoded).await)
@@ -447,16 +476,18 @@ mod tests {
             .bd
             .update(
                 &task.id,
-                UpdateOpts {
-                    set_metadata: vec![(remediation::BATCH_KEY.into(), batch.to_string())],
-                    ..UpdateOpts::default()
+                Update {
+                    set_metadata: [(remediation::BATCH_KEY.into(), batch.to_string().into())]
+                        .into(),
+                    ..Update::default()
                 },
+                Guard::None,
             )
             .await
             .unwrap();
         rejected(
             fixture
-                .prepare(&fixture.bd.show(&task.id).await.unwrap())
+                .prepare(&fixture.bd.get(&task.id).await.unwrap())
                 .await,
         );
         batch["findings"][0]["finding"]["evidence"] = serde_json::json!("copied evidence");
@@ -464,10 +495,12 @@ mod tests {
             .bd
             .update(
                 &task.id,
-                UpdateOpts {
-                    set_metadata: vec![(remediation::BATCH_KEY.into(), batch.to_string())],
-                    ..UpdateOpts::default()
+                Update {
+                    set_metadata: [(remediation::BATCH_KEY.into(), batch.to_string().into())]
+                        .into(),
+                    ..Update::default()
                 },
+                Guard::None,
             )
             .await
             .unwrap();
@@ -478,7 +511,7 @@ mod tests {
         .unwrap();
         rejected(
             fixture
-                .prepare(&fixture.bd.show(&task.id).await.unwrap())
+                .prepare(&fixture.bd.get(&task.id).await.unwrap())
                 .await,
         );
     }
@@ -515,15 +548,15 @@ mod tests {
         let reference = snapshot.obligations().next().unwrap().reference().clone();
         let id = fixture
             .bd
-            .create(CreateOpts {
+            .create(Create {
                 title: "ordinary pending work".into(),
-                labels: vec!["profile:rust".into()],
-                parent: Some(BeadId::new("lm-mol").unwrap()),
-                ..CreateOpts::default()
+                labels: vec![Label::new("profile:rust").unwrap()],
+                parent: Some(fixture.root.clone()),
+                ..Create::default()
             })
             .await
             .unwrap();
-        let task = fixture.bd.show(&id).await.unwrap();
+        let task = fixture.bd.get(&id).await.unwrap();
         let task = fixture
             .set_acceptance(
                 &task,
@@ -544,7 +577,7 @@ mod tests {
     #[tokio::test]
     async fn deferred_merge_and_promotion_never_convert_invalid_ordinary_bindings() {
         let fixture = Fixture::new("# Agent\n\n## Success Criteria\n\n- Missing verifier.\n").await;
-        let molecule = MoleculeId::new("lm-mol").unwrap();
+        let molecule = MoleculeId::new(fixture.root.as_str()).unwrap();
         let finding = fixture.criterion_finding(
             ConcernToken::SpecConventionsViolation,
             FindingRoute::Deferred,
@@ -553,11 +586,10 @@ mod tests {
             route_molecule_findings(&fixture.bd, &molecule, &[finding], &MintOptions::default())
                 .await;
         assert_eq!(created.minted, 1);
-        let task = fixture
-            .bd
-            .show(&BeadId::new("lm-mol.1").unwrap())
-            .await
-            .unwrap();
+        let BatchOutcome::Minted { bead_id, .. } = &created.batches[0] else {
+            panic!("not minted")
+        };
+        let task = fixture.bd.get(bead_id).await.unwrap();
         let criteria = References::parse([("agent", "criterion-0000000000000000")]).unwrap();
         let ordinary = fixture
             .set_acceptance(
@@ -576,7 +608,7 @@ mod tests {
         assert_eq!(merged.refused, 1, "{merged:?}");
         let promoted = promote_deferred(&fixture.bd, &molecule, false).await;
         assert_eq!(promoted.refused, 1, "{promoted:?}");
-        assert_eq!(fixture.bd.show(&task.id).await.unwrap(), ordinary);
+        assert_eq!(fixture.bd.get(&task.id).await.unwrap(), ordinary);
     }
 
     #[tokio::test]
@@ -618,16 +650,17 @@ mod tests {
             .bd
             .update(
                 &task.id,
-                UpdateOpts {
+                Update {
                     unset_metadata: vec![METADATA_KEY.into(), remediation::BATCH_KEY.into()],
-                    ..UpdateOpts::default()
+                    ..Update::default()
                 },
+                Guard::None,
             )
             .await
             .unwrap();
         rejected(
             fixture
-                .prepare(&fixture.bd.show(&task.id).await.unwrap())
+                .prepare(&fixture.bd.get(&task.id).await.unwrap())
                 .await,
         );
     }
@@ -650,14 +683,14 @@ mod tests {
             .await;
         let id = fixture
             .bd
-            .create(CreateOpts {
+            .create(Create {
                 title: "split".into(),
                 parent: source.parent.clone(),
-                ..CreateOpts::default()
+                ..Create::default()
             })
             .await
             .unwrap();
-        let task = fixture.bd.show(&id).await.unwrap();
+        let task = fixture.bd.get(&id).await.unwrap();
         let proposal = remediation::FollowUp {
             source: source.id.clone(),
             goals: goals(&unrelated),
@@ -683,7 +716,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert_eq!(fixture.bd.show(&source.id).await.unwrap(), source);
-        assert_eq!(fixture.bd.show(&id).await.unwrap(), ordinary);
+        assert_eq!(fixture.bd.get(&source.id).await.unwrap(), source);
+        assert_eq!(fixture.bd.get(&id).await.unwrap(), ordinary);
     }
 }

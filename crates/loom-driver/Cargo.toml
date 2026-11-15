@@ -1,10 +1,28 @@
 [package]
 name = "loom-driver"
+autotests = false
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
 license.workspace = true
 publish.workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
+
+# Keep exact subprocess entry points and logging capture targets unchanged.
+[[test]]
+name = "git_client"
+path = "tests/git_client.rs"
+
+[[test]]
+name = "lock_manager"
+path = "tests/lock_manager.rs"
+
+[[test]]
+name = "logging"
+path = "tests/logging.rs"
 
 [dependencies]
 loom-shared = { workspace = true }
