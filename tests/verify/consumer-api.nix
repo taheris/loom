@@ -77,6 +77,14 @@ let
     runtimes.pi = { };
   };
 in
+assert
+  map (source: source.origin) manifest.loom.sources == [
+    "scripts/worker-native-preflight.sh"
+    "scripts/configure-cargo-patches.sh"
+  ];
+assert builtins.all (
+  source: builtins.pathExists source.path && builtins.match "/nix/store/.*" source.path != null
+) manifest.loom.sources;
 assert (nativePackage artifact).loom.runtime == "native-process";
 assert builtins.all
   (runtime: (nativePackage (artifact // { loom = { inherit runtime; }; })).loom.runtime == runtime)

@@ -31,7 +31,21 @@ if [[ -z "${NEXTEST_TEST_THREADS:-}" ]]; then
     export NEXTEST_TEST_THREADS
 fi
 printf 'Native test scheduling: %s threads\n' "$NEXTEST_TEST_THREADS" >&2
-if cargo nextest run --workspace --ignore-default-filter 2>&1 | tee "$nextest_log"; then
+nextest=(cargo nextest run)
+if [[ -n "${LOOM_TEST_COMPILATION?the app must select its compiler owner}" ]]; then
+    printf 'Immutable test compiler: %s\n' "$LOOM_TEST_COMPILATION" >&2
+    export LOOM_TEST_SOURCE_ROOT="$repo_root" INSTA_WORKSPACE_ROOT="$repo_root"
+    nextest+=(
+        --ignore-default-filter --no-fail-fast
+        --cargo-metadata "$LOOM_TEST_COMPILATION/cargo.json"
+        --binaries-metadata "$LOOM_TEST_COMPILATION/binaries.json"
+        --workspace-remap "$repo_root"
+        --target-dir-remap "$LOOM_TEST_COMPILATION/target"
+    )
+else
+    nextest+=(--workspace --ignore-default-filter)
+fi
+if "${nextest[@]}" 2>&1 | tee "$nextest_log"; then
     :
 else
     nextest_status=("${PIPESTATUS[@]}")

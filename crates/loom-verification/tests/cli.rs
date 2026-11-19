@@ -193,9 +193,13 @@ esac"#,
         let fixture = Fixture::new(
             r#"[[ ! ${NIX_CONFIG+x} && ! ${NIX_PATH+x} ]]
 case "$1 $2" in
+  'flake archive')
+    [[ "$3" == "git+file://$CAPTURE" ]]
+    mkdir "$CAPTURE/captured"
+    printf '{"path":"%s/captured"}\n' "$CAPTURE" ;;
   'flake metadata')
-    [[ "$3" == "git+file://$CAPTURE" || "$3" == "path:$CAPTURE" ]]
-    printf '{"path":"%s","url":"path:%s"}\n' "$CAPTURE" "$CAPTURE" ;;
+    [[ "$3" == "path:$CAPTURE/captured" ]]
+    printf '{"path":"%s/captured","url":"path:%s/captured"}\n' "$CAPTURE" "$CAPTURE" ;;
   'config show') printf '{"system":{"value":"fixture-system"}}\n' ;;
   'eval --json') printf '[]\n' ;;
   *) exit 71 ;;
@@ -212,7 +216,11 @@ esac"#,
             .output()
             .unwrap();
         assert_eq!(json(&output), json!([]));
-        assert!(fixture.calls()[0].contains(&format!("git+file://{}", fixture.repo.display())));
+        assert!(fixture.calls()[0].contains(&format!(
+            "flake archive git+file://{}",
+            fixture.repo.display()
+        )));
+        assert!(fixture.repo.join("captured").is_dir());
     }
     #[test]
     fn native_malformed_metadata_fails_without_claiming_a_partition_pass() {
@@ -230,7 +238,7 @@ esac"#,
     #[test]
     fn preparation_check_never_acquires_and_parses_invalid_stdout_on_exit_zero() {
         let fixture = Fixture::new(
-            r#"[[ "$NIX_REMOTE" == local ]]
+            r#"[[ "$NIX_REMOTE" == daemon ]]
 [[ "$(basename "$0")" == nix-store && "$1 $2" == '--check-validity --print-invalid' ]]
 printf '%s\n' "$3"
 "#,
@@ -255,9 +263,9 @@ printf '%s\n' "$3"
         );
     }
     #[test]
-    fn preparation_denial_blocks_dispatch_and_retains_bounded_local_diagnostic() {
+    fn preparation_denial_blocks_dispatch_and_retains_bounded_store_diagnostic() {
         let fixture = Fixture::new(
-            r#"[[ "$NIX_REMOTE" == local ]]
+            r#"[[ "$NIX_REMOTE" == daemon ]]
 printf 'network denied\n' >&2
 exit 124"#,
         );

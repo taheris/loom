@@ -4,6 +4,8 @@ mod aliases;
 mod preflight;
 #[path = "nix/process.rs"]
 mod process;
+#[path = "nix/store.rs"]
+mod store;
 
 use super::{context, contracts, fixture, name, path, write};
 use std::collections::BTreeSet;
@@ -718,11 +720,85 @@ fn batched_native_construction_keeps_distinct_source_partitions() {
 }
 
 #[test]
+fn equivalent_source_partitions_preserve_distinct_provenance_and_recipes() {
+    let dir = fixture();
+    native_project(&dir, "", true, true);
+    add_sibling_native_check(
+        &dir,
+        r#"[ (checked.resource {
+          root = ./.;
+          name = "second-source";
+          filter = path: type: type == "directory" || path == toString (./. + "/README.md");
+        }) ]"#,
+        "",
+    );
+    let (snapshot, inventory) = context(&dir);
+    let system = loom_gate::runner::result::current_platform();
+    let bindings = ["heading", "second"].map(|attribute| {
+        let subject = name(&format!("nix:check:flake.nix:{system}:{attribute}"));
+        (subject.clone(), subject)
+    });
+    let definitions = Definition::hermetic_baselines(&snapshot, &inventory, &bindings).unwrap();
+    let first = definitions[0].nix_graph().unwrap();
+    let second = definitions[1].nix_graph().unwrap();
+    assert_eq!(first.origins(), second.origins());
+    assert!(first.origins().contains(&path("README.md")));
+    assert_ne!(first.source(), second.source());
+    assert_ne!(first.identity(), second.identity());
+    let mut invalid = bindings.to_vec();
+    invalid.push((name("unresolved"), name("absent-native-subject")));
+    assert!(Definition::hermetic_baselines(&snapshot, &inventory, &invalid).is_err());
+    write(dir.path(), "README.md", "# Changed after discovery\n");
+    assert!(Definition::hermetic_baselines(&snapshot, &inventory, &bindings).is_err());
+}
+
+#[test]
+fn native_baseline_batch_preserves_foreign_aliases_without_accepting_source_subjects() {
+    let dir = fixture();
+    native_project(&dir, "", true, true);
+    add_sibling_native_check(&dir, "[ source ]", "");
+    let host = loom_gate::runner::result::current_platform();
+    let foreign = if host == "aarch64-darwin" {
+        "x86_64-linux"
+    } else {
+        "aarch64-darwin"
+    };
+    let flake = std::fs::read_to_string(dir.path().join("flake.nix")).unwrap();
+    write(dir.path(), "flake.nix", &flake.replace(&host, foreign));
+    let (snapshot, inventory) = context(&dir);
+    let bindings = ["heading", "second"].map(|attribute| {
+        (
+            name(attribute),
+            name(&format!("nix:check:flake.nix:{foreign}:{attribute}")),
+        )
+    });
+    let definitions = Definition::hermetic_baselines(&snapshot, &inventory, &bindings).unwrap();
+    for (definition, (target, native)) in definitions.iter().zip(&bindings) {
+        assert_eq!(definition.description().target(), target);
+        assert!(definition.native_applicability_covers(native));
+        assert!(definition.nix_graph().is_none());
+    }
+    let source = inventory
+        .subjects()
+        .values()
+        .find(|subject| {
+            subject.nix_target().is_none()
+                && definitions[0].native_applicability_covers(subject.name())
+        })
+        .unwrap();
+    let invalid = [
+        bindings[0].clone(),
+        (name("source-is-not-a-native-output"), source.name().clone()),
+    ];
+    assert!(Definition::hermetic_baselines(&snapshot, &inventory, &invalid).is_err());
+}
+
+#[test]
 fn native_partition_batches_keep_every_isolated_source_set_across_the_batch_boundary() {
     let dir = fixture();
     native_project(&dir, "", true, true);
     let system = loom_gate::runner::result::current_platform();
-    for index in 0..7 {
+    for index in 0..9 {
         write(
             dir.path(),
             &format!("data-{index}/value"),
@@ -744,13 +820,13 @@ fn native_partition_batches_keep_every_isolated_source_set_across_the_batch_boun
         );
     }
     let (snapshot, inventory) = context(&dir);
-    for index in 0..7 {
+    for index in 0..9 {
         let subject = name(&format!("nix:check:flake.nix:{system}:partition_{index}"));
         let definition =
             Definition::hermetic_baseline(&snapshot, &inventory, subject.clone(), &subject)
                 .unwrap();
         let origins = definition.nix_graph().unwrap().origins();
-        for sibling in 0..7 {
+        for sibling in 0..9 {
             assert_eq!(
                 origins.contains(&path(&format!("data-{sibling}/value"))),
                 sibling == index
@@ -765,13 +841,13 @@ fn native_partition_batch_rejects_an_undeclared_read_in_the_last_partition() {
     native_project(&dir, "", true, true);
     let system = loom_gate::runner::result::current_platform();
     write(dir.path(), "undeclared.bin", "not an admitted resource\n");
-    for index in 0..7 {
+    for index in 0..9 {
         write(
             dir.path(),
             &format!("data-{index}/value"),
             &format!("native partition {index}\n"),
         );
-        let attributes = if index == 6 {
+        let attributes = if index == 8 {
             "LOOM_UNDECLARED = builtins.pathExists ./undeclared.bin;"
         } else {
             ""
@@ -1193,6 +1269,82 @@ fn declared_check_names_do_not_admit_non_derivation_values() {
 }
 
 #[test]
+fn captured_native_recipe_leases_follow_single_and_batch_definition_lifetimes() {
+    for batched in [false, true] {
+        let dir = fixture();
+        native_project(&dir, "", true, true);
+        write(
+            dir.path(),
+            "README.md",
+            &format!("# Retained {}\n", dir.path().display()),
+        );
+        let platform = use_host_system(&dir);
+        let (snapshot, inventory) = context(&dir);
+        let subject = name(&format!("nix:check:flake.nix:{platform}:heading"));
+        let definitions = if batched {
+            Definition::hermetic_baselines(
+                &snapshot,
+                &inventory,
+                &[(name("heading"), subject.clone())],
+            )
+            .unwrap()
+        } else {
+            vec![
+                Definition::hermetic_baseline(&snapshot, &inventory, name("heading"), &subject)
+                    .unwrap(),
+            ]
+        };
+        let graph = definitions[0].nix_graph().unwrap();
+        let recipe = graph.derivation().as_str().to_owned();
+        let source = graph.source().as_str().to_owned();
+        assert!(
+            graph
+                .outputs()
+                .unwrap()
+                .values()
+                .all(|output| !Path::new(output.as_str()).exists())
+        );
+        let roots = || {
+            let output = std::process::Command::new("nix-store")
+                .args(["--query", "--roots", &recipe, &source])
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            String::from_utf8(output.stdout)
+                .unwrap()
+                .lines()
+                .map(str::to_owned)
+                .collect::<BTreeSet<_>>()
+        };
+        drop(inventory);
+        let held = roots();
+        assert!(!held.is_empty());
+        assert!(
+            held.iter().any(|root| {
+                let Some((link, _)) = root.split_once(" -> ") else {
+                    return false;
+                };
+                let Ok(contents) = std::fs::read_to_string(link) else {
+                    return false;
+                };
+                contents.lines().any(|path| path == source)
+                    && !contents.lines().any(|path| {
+                        Path::new(path)
+                            .extension()
+                            .is_some_and(|extension| extension == "drv")
+                    })
+            }),
+            "captured resources need their own lease, not just recipe references"
+        );
+        let retained = definitions[0].clone();
+        drop(definitions);
+        assert!(held.is_subset(&roots()));
+        drop(retained);
+        assert!(held.is_disjoint(&roots()));
+    }
+}
+
+#[test]
 fn native_graph_description_resolves_to_the_actual_store_execution() {
     let dir = fixture();
     native_project(&dir, "", true, true);
@@ -1353,12 +1505,28 @@ fn immutable_tool_artifacts_do_not_authorize_reexecuting_their_impure_build_hist
         .unwrap();
     let graph = units[0].nix_graph().unwrap();
     assert!(graph.resources().contains_key(&artifact));
+    let roots = || {
+        let output = std::process::Command::new("nix-store")
+            .args(["--query", "--roots", artifact.as_str()])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap()
+    };
+    assert!(
+        !roots().trim().is_empty(),
+        "a recipe lease alone does not retain realized artifacts"
+    );
     let observed = units[0].run().unwrap();
     match observed.outcome() {
         Outcome::Pass => assert!(observed.observations().iter().any(|item| matches!(item, Observation::ExecutionGraph { digest } if digest == graph.identity()))),
         Outcome::Unavailable { capability, .. } => assert_eq!(*capability, Capability::NixSandbox),
         outcome => panic!("unexpected artifact-backed execution: {outcome:?}"),
     }
+    drop(units);
+    drop(registry);
+    drop(inventory);
+    assert_eq!(roots().trim(), "");
 }
 
 #[test]

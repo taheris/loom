@@ -284,7 +284,7 @@ impl super::Graph {
             ));
         };
         let profile = match self.runtime {
-            super::Runtime::Nix | super::Runtime::NativeProcess => {
+            super::Runtime::Nix | super::Runtime::NativeProcess | super::Runtime::NativeStore => {
                 return Err(super::Error::Result);
             }
             super::Runtime::NativeCgroup => Profile::Delegated,
@@ -307,53 +307,7 @@ impl super::Graph {
         }
         let reporter = self.reporter.as_ref().ok_or(super::Error::Result)?;
         let node = self.nodes.get(reporter).ok_or(super::Error::Root)?;
-        let inputs = super::frontier::require_pinned(&self.nodes, reporter, |paths| {
-            super::present_paths(&self.tool, paths)
-        })?;
-        let _inputs = super::pin::Inputs::acquire(&self.tool, &inputs)?;
-        self.require_current()?;
-        let installables: Vec<String> = node
-            .dependencies
-            .iter()
-            .map(|(path, outputs)| {
-                format!(
-                    "{}^{}",
-                    path.as_str(),
-                    outputs
-                        .iter()
-                        .map(super::Name::as_str)
-                        .collect::<Vec<_>>()
-                        .join(",")
-                )
-            })
-            .collect();
-        if !installables.is_empty() {
-            let mut args = vec![
-                "build",
-                "--no-link",
-                "--offline",
-                "--no-substitute",
-                "--option",
-                "sandbox",
-                "true",
-                "--option",
-                "sandbox-fallback",
-                "false",
-                "--option",
-                "builders",
-                "",
-            ];
-            args.extend(installables.iter().map(String::as_str));
-            let prepared = super::invoke(&self.tool, &args)?;
-            if !prepared.status.success() {
-                return Err(super::Error::Report {
-                    detail: format!(
-                        "native compiler/input preparation failed: {}",
-                        super::diagnostic(&prepared.stderr)
-                    ),
-                });
-            }
-        }
+        let _inputs = self.prepare_reporter(reporter, node)?;
         let directory = tempfile::Builder::new().prefix("loom-native-").tempdir()?;
         let clock = SystemClock::new();
         let mut environment = node.env.clone();

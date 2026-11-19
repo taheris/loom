@@ -450,10 +450,20 @@ mod tests {
                 subjects[name].nix_target().unwrap().clone()
             })
             .collect();
-        let available: Vec<_> = constructed
-            .iter()
-            .map(|name| subjects[name].nix_target().unwrap().clone())
-            .collect();
+        // Retain provenance from the consumers' actual tool/fixture producers,
+        // without evaluating unrelated image and optional backend recipes.
+        let mut available = bindings.clone();
+        for attribute in [
+            "loom",
+            "verification-tool",
+            "native-rust-fixture",
+            "native-smoke-fixture",
+        ] {
+            let name =
+                Name::try_from(format!("nix:package:flake.nix:{system}:{attribute}")).unwrap();
+            assert!(constructed.contains(&name));
+            available.push(subjects[&name].nix_target().unwrap().clone());
+        }
         let graphs = Graph::construct_selected(&snapshot, &available, &bindings).unwrap();
         assert_eq!(graphs.len(), names.len());
         for (index, graph) in graphs.iter().enumerate() {

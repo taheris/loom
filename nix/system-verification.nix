@@ -33,7 +33,12 @@ in
 let
   fixtureSource = if fixtureResource == null then loom.stagedSrc else fixtureResource.path;
   fixtureResources = if fixtureResource == null then loom.testResources else [ fixtureResource ];
-  inherit (pkgs.lib) optional optionalString escapeShellArg;
+  inherit (pkgs.lib)
+    optional
+    optionalString
+    escapeShellArg
+    makeBinPath
+    ;
   fixtureRunner = checked.resource {
     root = ../.;
     origin = "nix/private-fixture-tests.sh";
@@ -149,6 +154,7 @@ let
     else
       pkgs.writeShellScript "${name}-private" ''
         set -euo pipefail
+        export PATH="${makeBinPath [ pkgs.findutils ]}:$PATH"
         exec ${pkgs.bash}/bin/bash ${fixtureRunner.path} --test-process ${runner}/bin/${name}-producer
       '';
 in

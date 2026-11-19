@@ -16,10 +16,8 @@ pub fn assert_native_wait_parking() {
     std::fs::create_dir_all(state.join("home")).unwrap();
     let bin = workspace.join("native-bd-bin");
     std::fs::create_dir(&bin).unwrap();
-    let native = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-        .map(|path| path.join("bd"))
-        .find(|path| path.is_file())
-        .expect("native Beads must be provisioned for the native CLI regression");
+    // Consume the admitted adapter tool, never an ambient Wrix namespace launcher.
+    let native = std::path::Path::new(env!("LOOM_ISSUES_BD_BIN"));
     let mut script = String::from("set -euo pipefail\n");
     for (name, _) in std::env::vars_os() {
         if name.to_string_lossy().starts_with("BEADS_") {

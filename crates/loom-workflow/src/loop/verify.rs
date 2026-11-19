@@ -408,8 +408,9 @@ mod execution_tests {
     #[tokio::test]
     async fn verifier_deadline_terminates_and_reaps_the_running_process() {
         use loom_driver::clock::{BoxFuture, Clock};
-        use tokio::io::{AsyncBufReadExt, BufReader};
-        use tokio::net::TcpListener;
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::{UnixListener, UnixStream};
+        const SOCKET: &str = "LOOM_TEST_VERIFIER_DEADLINE_SOCKET";
         struct TriggerClock(tokio::sync::Notify);
         impl Clock for TriggerClock {
             fn now(&self) -> std::time::Instant {
@@ -422,13 +423,23 @@ mod execution_tests {
                 Box::pin(self.0.notified())
             }
         }
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("fixture listener");
-        let port = listener.local_addr().expect("listener address").port();
-        let (_root, workspace, mut command) = fixture(&format!(
-            "set -euo pipefail\nexec 3<>/dev/tcp/127.0.0.1/{port}\nprintf 'ready\\n' >&3\nread -r release <&3\nprintf 'late write\\n' > .loom/late-write\n"
-        ));
+        if let Some(socket) = std::env::var_os(SOCKET) {
+            let mut stream = UnixStream::connect(socket).await.expect("fixture peer");
+            stream.write_all(b"ready\n").await.expect("startup signal");
+            let mut release = [0];
+            stream.read_exact(&mut release).await.expect("release");
+            std::fs::write(".loom/late-write", "late write\n").expect("late write");
+            return;
+        }
+        let (root, workspace, mut command) = fixture(
+            "set -euo pipefail\nexec \"$LOOM_TEST_VERIFIER_BINARY\" --exact r#loop::verify::execution_tests::verifier_deadline_terminates_and_reaps_the_running_process --nocapture\n",
+        );
+        let socket = root.path().join("gate.sock");
+        let listener = UnixListener::bind(&socket).expect("fixture listener");
+        command.env(SOCKET, &socket).env(
+            "LOOM_TEST_VERIFIER_BINARY",
+            std::env::current_exe().unwrap(),
+        );
         let clock = TriggerClock(tokio::sync::Notify::new());
         let run = execute_gate(&mut command, &workspace, &clock, Duration::from_secs(30), 1);
         let observe = async {

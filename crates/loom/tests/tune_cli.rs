@@ -988,7 +988,17 @@ fn template_tune_candidate_validation() {
         &bin_dir,
         &state_dir,
         &args,
-        &[("BD_CREATE_ID", "lm-tune.3")],
+        &[
+            ("BD_CREATE_ID", "lm-tune.3"),
+            (
+                "LOOM_TEST_SOURCE_ROOT",
+                workspace.to_str().expect("fixture path"),
+            ),
+            (
+                "INSTA_WORKSPACE_ROOT",
+                workspace.to_str().expect("fixture path"),
+            ),
+        ],
     );
     assert_success(&output, &args);
 
@@ -1033,6 +1043,14 @@ fn template_tune_candidate_validation() {
     assert!(
         committed_paths.contains("crates/loom-templates/tests/snapshots/"),
         "representative snapshots were not regenerated: {committed_paths}",
+    );
+    assert!(
+        git_stdout(
+            &workspace,
+            &["status", "--porcelain", "--untracked-files=no"]
+        )
+        .is_empty(),
+        "candidate validation changed caller sources"
     );
 }
 

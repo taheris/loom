@@ -51,6 +51,11 @@ fn make_workspace() -> TempDir {
     dir
 }
 
+fn shipped_file(relative: &str) -> String {
+    let root = loom_test_support::manifest_dir(env!("CARGO_MANIFEST_DIR")).join("../..");
+    std::fs::read_to_string(root.join(relative)).unwrap()
+}
+
 fn seed(root: &Path, rel: &str, body: &str) -> PathBuf {
     let full = root.join(rel);
     if let Some(parent) = full.parent() {
@@ -5015,10 +5020,10 @@ fn workspace_compile_checks_validate_captured_native_constructors() {
     seed(
         ws.path(),
         "nix/flake/apps.nix",
-        include_str!("../../../nix/flake/apps.nix"),
+        &shipped_file("nix/flake/apps.nix"),
     );
-    let workspace = include_str!("../../../nix/workspace.nix");
-    seed(ws.path(), "nix/workspace.nix", workspace);
+    let workspace = shipped_file("nix/workspace.nix");
+    seed(ws.path(), "nix/workspace.nix", &workspace);
     assert_pass(&invoke(
         &["workspace_compile_checks_are_full_test_app_only"],
         Some(ws.path()),
@@ -5117,27 +5122,27 @@ fn seed_test_nix_surface(root: &Path) {
     seed(
         root,
         "nix/native-smoke-nix.nix",
-        include_str!("../../../nix/native-smoke-nix.nix"),
+        &shipped_file("nix/native-smoke-nix.nix"),
     );
     seed(
         root,
         "nix/flake/tests.nix",
-        include_str!("../../../nix/flake/tests.nix"),
+        &shipped_file("nix/flake/tests.nix"),
     );
     seed(
         root,
         "nix/workspace.nix",
-        include_str!("../../../nix/workspace.nix"),
+        &shipped_file("nix/workspace.nix"),
     );
     seed(
         root,
         "nix/flake/apps.nix",
-        "test = app testApp \"test\";\ntest-required = app requiredTestApp \"test-required\";\nsmoke = app smokeApp \"smoke\";\nfuzz-loom = app fuzzApp \"fuzz-loom\";\nsmokePrekHooks = wrixLib.prekHooks;\nfullScript = source \"scripts/full-test.sh\";\nrequiredScript = source \"scripts/required-test.sh\";\ntext = builtins.readFile ../../scripts/full-test.sh;\ntext = builtins.readFile ../../scripts/required-test.sh;\nevaluation = [ fullScript ];\nevaluation = [ requiredScript ];\n",
+        &shipped_file("nix/flake/apps.nix"),
     );
     seed(
         root,
         "nix/flake/checks.nix",
-        include_str!("../../../nix/flake/checks.nix"),
+        &shipped_file("nix/flake/checks.nix"),
     );
     seed(
         root,
@@ -5152,7 +5157,7 @@ fn seed_test_nix_surface(root: &Path) {
     seed(
         root,
         "tests/loom/default.nix",
-        include_str!("../../../tests/loom/default.nix"),
+        &shipped_file("tests/loom/default.nix"),
     );
     seed(
         root,
@@ -5162,7 +5167,7 @@ fn seed_test_nix_surface(root: &Path) {
     seed(
         root,
         "scripts/required-test.sh",
-        include_str!("../../../scripts/required-test.sh"),
+        &shipped_file("scripts/required-test.sh"),
     );
     seed(
         root,
@@ -5190,6 +5195,32 @@ fn test_nix_surface_contract_pass() {
 }
 
 #[test]
+fn test_nix_surface_contract_rejects_unbound_or_unmapped_suite_compilers() {
+    for (file, required) in [
+        ("nix/flake/apps.nix", "compilation = loom.testCompilation;"),
+        (
+            "scripts/required-test.sh",
+            "--binaries-metadata \"$LOOM_TEST_COMPILATION/binaries.json\"",
+        ),
+        (
+            "scripts/required-test.sh",
+            "--workspace-remap \"$repo_root\"",
+        ),
+    ] {
+        let ws = make_workspace();
+        seed_test_nix_surface(ws.path());
+        let path = ws.path().join(file);
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains(required));
+        std::fs::write(path, body.replace(required, "")).unwrap();
+        assert_fail(
+            &invoke(&["test_nix_surface_contract"], Some(ws.path()), None),
+            "missing active test-surface wiring",
+        );
+    }
+}
+
+#[test]
 fn test_nix_surface_contract_fail_when_smoke_sdk_omits_the_real_strict_build() {
     let ws = make_workspace();
     seed_test_nix_surface(ws.path());
@@ -5206,8 +5237,7 @@ fn test_nix_surface_contract_fail_when_smoke_sdk_omits_the_real_strict_build() {
 fn test_nix_surface_contract_fail_when_archive_destination_is_not_created() {
     let ws = make_workspace();
     seed_test_nix_surface(ws.path());
-    let checks =
-        include_str!("../../../nix/flake/checks.nix").replacen("mkdir -p \"$HOME/tests\"", "", 1);
+    let checks = shipped_file("nix/flake/checks.nix").replacen("mkdir -p \"$HOME/tests\"", "", 1);
     seed(
         ws.path(),
         "nix/flake/checks.nix",
@@ -5222,7 +5252,7 @@ fn test_nix_surface_contract_fail_when_archive_runner_lacks_its_own_ca_bundle() 
     let ws = make_workspace();
     seed_test_nix_surface(ws.path());
     let export = "export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
-    let checks = include_str!("../../../nix/flake/checks.nix").replacen(export, "", 1);
+    let checks = shipped_file("nix/flake/checks.nix").replacen(export, "", 1);
     assert!(
         checks.contains(export),
         "another producer still supplies its own bundle"

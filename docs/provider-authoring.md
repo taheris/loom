@@ -204,7 +204,17 @@ build-command and shell-startup overrides, and requires each subject's runtime
 source closure. A Cargo label on an unrelated derivation is rejected. Runtime
 helper resources receive mandatory duties through their validated native
 consumers; this does not turn unconsumed files into implicit fixtures or erase
-existing Rust roles.
+existing Rust roles. Test producers include Git in their runtime build inputs:
+the constructor initializes its freshly copied workspace before fixture setup,
+never an operator checkout. SDK registration does not own Git initialization.
+
+Complete Cargo test reporters may explicitly declare `runtime = "native-store"`
+when canonical store builds and filesystem reads are required. Gate prepares
+compiler inputs strictly, then runs the captured reporter locally with private
+state, fresh reports, store/configuration identity and all freshness guards.
+This is not hermetic evidence or a failed-sandbox retry. The local reporter has
+a 30-minute deadline and a 12 GiB storage floor. Dispatch it through Gate;
+`nix build` cannot supply this host execution boundary.
 
 A system report may request `runtime = "native-cgroup"` when it needs real
 native process-generation control. This is a closed isolated execution profile,

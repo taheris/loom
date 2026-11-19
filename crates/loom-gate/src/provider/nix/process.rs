@@ -8,13 +8,29 @@ use super::{Digest, Error};
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Context {
-    LocalAgent { image: Digest },
+    LocalAgent {
+        image: Digest,
+    },
+    CanonicalStore {
+        tool: std::path::PathBuf,
+        identity: Digest,
+    },
     Sandboxed,
 }
 
 impl Context {
     pub(super) fn capture() -> Result<Self, Error> {
         Self::at(Path::new("/etc/wrix/image-agent"))
+    }
+
+    pub(super) fn capture_store(tool: &Path) -> Result<Self, Error> {
+        Ok(Self::CanonicalStore {
+            tool: tool.to_owned(),
+            identity: Digest::of(&serde_json::to_vec(&(
+                super::query(tool, &["store", "info", "--json"])?,
+                super::query(tool, &["config", "show", "--json"])?,
+            ))?),
+        })
     }
 
     fn at(marker: &Path) -> Result<Self, Error> {
@@ -63,7 +79,11 @@ impl Context {
     }
 
     pub(super) fn require_current(&self) -> Result<(), Error> {
-        if *self != Self::capture()? {
+        let current = match self {
+            Self::CanonicalStore { tool, .. } => Self::capture_store(tool)?,
+            Self::LocalAgent { .. } | Self::Sandboxed => Self::capture()?,
+        };
+        if *self != current {
             return Err(Error::GraphChanged);
         }
         Ok(())
@@ -77,7 +97,7 @@ pub(super) fn policy(context: Option<&Context>, arguments: &mut Vec<&str>) {
         "--max-jobs",
         "1",
         "--cores",
-        "2",
+        if local { "2" } else { "4" },
         "--option",
         "sandbox",
         if local { "false" } else { "true" },
@@ -100,6 +120,51 @@ pub(super) fn policy(context: Option<&Context>, arguments: &mut Vec<&str>) {
     }
 }
 
+impl super::Graph {
+    pub(super) fn prepare_reporter(
+        &self,
+        reporter: &super::StorePath,
+        node: &super::Node,
+    ) -> Result<super::pin::Inputs, Error> {
+        let inputs = super::frontier::require_pinned(&self.nodes, reporter, |paths| {
+            super::present_paths(&self.tool, paths)
+        })?;
+        let inputs = super::pin::Inputs::acquire(&self.tool, &inputs)?;
+        self.require_current()?;
+        let installables: Vec<_> = node
+            .dependencies
+            .iter()
+            .map(|(path, outputs)| {
+                format!(
+                    "{}^{}",
+                    path.as_str(),
+                    outputs
+                        .iter()
+                        .map(super::Name::as_str)
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )
+            })
+            .collect();
+        if !installables.is_empty() {
+            let mut arguments = vec!["build", "--no-link", "--offline", "--no-substitute"];
+            policy(None, &mut arguments);
+            arguments.extend(installables.iter().map(String::as_str));
+            let output = super::invoke(&self.tool, &arguments)?;
+            if !output.status.success() {
+                return Err(Error::Report {
+                    detail: format!(
+                        "native compiler/input preparation failed: {}",
+                        super::diagnostic(&output.stderr)
+                    ),
+                });
+            }
+        }
+        self.require_current()?;
+        Ok(inputs)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,11 +181,12 @@ mod tests {
         ] {
             let mut arguments = vec!["build"];
             policy(context.as_ref(), &mut arguments);
+            let local = context.as_ref().is_some_and(Context::local);
+            let cores = if local { "2" } else { "4" };
             assert_eq!(
                 &arguments[..5],
-                ["build", "--max-jobs", "1", "--cores", "2"]
+                ["build", "--max-jobs", "1", "--cores", cores]
             );
-            let local = context.as_ref().is_some_and(Context::local);
             let sandbox = if local { "false" } else { "true" };
             assert!(
                 arguments

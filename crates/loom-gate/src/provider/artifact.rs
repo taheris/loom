@@ -122,6 +122,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn validation_pass_reads_shared_artifacts_once_but_rejects_conflicting_captures() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), b"before").unwrap();
+        let time = file.as_file().metadata().unwrap().modified().unwrap();
+        let before = read(file.path()).unwrap();
+        let after = Digest::of(b"after!");
+        let first = crate::inventory::Name::try_from("first".to_owned()).unwrap();
+        let second = crate::inventory::Name::try_from("second".to_owned()).unwrap();
+        let hashes = HASHES.get();
+        let mut current = super::super::Current::default();
+        current
+            .require_artifact(file.path(), &before, &first)
+            .unwrap();
+        current
+            .require_artifact(file.path(), &before, &second)
+            .unwrap();
+        assert!(matches!(
+            current.require_artifact(file.path(), &after, &second),
+            Err(Error::BuildChanged { target }) if target == second
+        ));
+        assert_eq!(HASHES.get() - hashes, 1);
+        drop(current);
+
+        // The next effect's validation must read again, even when timestamps and
+        // lengths match. No previous phase's observation authorizes execution.
+        std::fs::write(file.path(), b"after!").unwrap();
+        file.as_file()
+            .set_times(std::fs::FileTimes::new().set_modified(time))
+            .unwrap();
+        let mut current = super::super::Current::default();
+        assert!(matches!(
+            current.require_artifact(file.path(), &before, &first),
+            Err(Error::BuildChanged { target }) if target == first
+        ));
+        current
+            .require_artifact(file.path(), &after, &second)
+            .unwrap();
+        assert_eq!(HASHES.get() - hashes, 2);
+    }
+
+    #[test]
     fn mutable_artifacts_are_rehashed_even_with_identical_size_and_modification_time() {
         let file = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(file.path(), b"before").unwrap();

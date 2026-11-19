@@ -107,6 +107,7 @@ impl Fixture {
             .current_dir(&self.workspace)
             .env("PATH", path)
             .env("PRE_PUSH_TEST_LOG", &self.log)
+            .env("LOOM_TEST_COMPILATION", "")
             .env_remove("LOOM_VERIFY_TIERS");
         command
     }
@@ -147,7 +148,7 @@ fn write_nix_fixture(path: impl AsRef<Path>, body: &str) -> std::io::Result<()> 
     // Only external Nix metadata is modeled; the real Rust preflight runs.
     let prefix = r#"
 case "${1:-} ${2:-}" in
-  'flake metadata')
+  'flake archive' | 'flake metadata')
     if [[ "$3" == git+file://* ]]; then printf 'native-resource-preflight\ttiers=<unset>\n' >> "$PRE_PUSH_TEST_LOG"; fi
     if [[ "${PRE_PUSH_INVALID_NATIVE_METADATA:-0}" == 1 ]]; then printf '{}\n'; else printf '{"path":"%s","url":"path:%s"}\n' "$PWD" "$PWD"; fi
     exit 0 ;;
@@ -656,6 +657,47 @@ fn required_suite_keeps_all_native_tests_without_repeating_lint_or_nix_work() {
             "cargo\tbuild\t--workspace\ttiers=<unset>",
             "cargo\tnextest\trun\t--workspace\t--ignore-default-filter\ttiers=<unset>",
         ]
+    );
+}
+
+#[test]
+fn required_suite_reuses_the_selected_compiler_without_reusing_its_verdict() {
+    let fixture = Fixture::new();
+    install_recording_command(&fixture.tools, "nix");
+    let compiler = fixture.workspace.join("immutable-compiler");
+    let output = fixture
+        .recording_command("bash")
+        .arg("scripts/required-test.sh")
+        .env("LOOM_TEST_COMPILATION", &compiler)
+        .output()
+        .expect("run compiler-owned suite");
+    assert_success(&output, "compiler-owned suite");
+    let log = std::fs::read_to_string(&fixture.log).expect("read actual command log");
+    let executions: Vec<_> = log
+        .lines()
+        .filter(|line| line.starts_with("cargo\tnextest\trun"))
+        .collect();
+    assert_eq!(executions.len(), 1);
+    let execution = executions[0];
+    for argument in [
+        "--ignore-default-filter".to_owned(),
+        "--no-fail-fast".to_owned(),
+        compiler.join("cargo.json").display().to_string(),
+        compiler.join("binaries.json").display().to_string(),
+        compiler.join("target").display().to_string(),
+        fixture.workspace.display().to_string(),
+    ] {
+        assert!(
+            execution.split('\t').any(|field| field == argument),
+            "{execution}"
+        );
+    }
+    assert!(!execution.split('\t').any(|field| field == "--workspace"));
+    assert_eq!(
+        log.lines()
+            .filter(|line| line.starts_with("cargo\tbuild\t--workspace"))
+            .count(),
+        1
     );
 }
 

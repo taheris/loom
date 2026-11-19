@@ -159,7 +159,12 @@ impl Observed {
             )
         {
             Err(super::nix::Error::Report {
-                detail: "result projection has no supervised execution report".into(),
+                detail: match &self.outcome {
+                    Outcome::Fail { detail } => format!(
+                        "result projection has no supervised execution report: producer failed: {detail}"
+                    ),
+                    _ => "result projection has no supervised execution report".into(),
+                },
             }
             .into())
         } else {

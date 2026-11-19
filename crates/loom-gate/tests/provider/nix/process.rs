@@ -185,6 +185,20 @@ fn native_process_runs_real_recipe_without_claiming_sandbox_confinement() {
 }
 
 #[test]
+fn native_store_rejects_non_cargo_test_execution() {
+    let dir = fixture();
+    process_project(&dir);
+    let flake = std::fs::read_to_string(dir.path().join("flake.nix")).unwrap();
+    write(
+        dir.path(),
+        "flake.nix",
+        &flake.replace("native-process", "native-store"),
+    );
+    let snapshot = loom_gate::inventory::snapshot::Snapshot::discover(dir.path()).unwrap();
+    assert!(loom_gate::inventory::Inventory::discover(&snapshot).is_err());
+}
+
+#[test]
 fn native_process_failure_is_real_and_stale_source_cannot_reuse_a_pass() {
     let dir = fixture();
     let platform = process_project(&dir);

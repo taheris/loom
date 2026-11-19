@@ -24,6 +24,7 @@ _: {
               CARGO_PROFILE = "dev";
               LOOM_PREK_BIN = "${loom.hookRunner}/bin/prek";
               LOOM_ISSUES_BD_BIN = "${pkgs.beads}/bin/bd";
+              LOOM_TEST_DOLT_BIN = "${loom.dolt}/bin/dolt";
               nativeBuildInputs = [
                 loom.writableWorkspaceArtifacts
               ]
@@ -62,10 +63,11 @@ _: {
         runtimeInputs = [
           pkgs.cargo-nextest
           pkgs.coreutils
+          pkgs.findutils
           pkgs.bash
           pkgs.stdenv.cc
           pkgs.git
-          pkgs.dolt
+          loom.dolt
           loom.toolchain
         ];
         text = ''
@@ -111,6 +113,7 @@ _: {
       };
       isolated = pkgs.writeShellScript "cargo-retention-private" ''
         set -euo pipefail
+        export PATH="${pkgs.lib.makeBinPath [ pkgs.findutils ]}:$PATH"
         exec ${pkgs.bash}/bin/bash ${fixtureRunner.path} ${producer}/bin/cargo-retention-producer
       '';
     in

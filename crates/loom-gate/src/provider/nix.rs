@@ -21,8 +21,13 @@ mod current;
 mod frontier;
 mod managed;
 mod pin;
+#[cfg(test)]
+mod private_store;
 pub mod process;
+pub(super) mod readiness;
+mod recipe;
 pub(crate) mod report;
+mod store_execution;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -31,6 +36,7 @@ pub enum Runtime {
     Nix,
     /// Explicit ordinary process execution inside the caller's existing isolation.
     NativeProcess,
+    NativeStore,
     NativeCgroup,
     NativeContainer,
 }
@@ -122,6 +128,9 @@ impl CargoOperation {
                     "chmod -R u+w \"$runtime\"\n",
                     "export LOOM_TEST_SOURCE_ROOT=\"$runtime\"\n",
                     "cd \"$runtime\"\n",
+                    "git init -q\n",
+                    "git add --all\n",
+                    "git -c user.name='Loom native suite' -c user.email='native@example.invalid' -c commit.gpgsign=false commit -q -m 'Capture native suite source'\n",
                     "bash \"$LOOM_PRIVATE_FIXTURE_RUNNER\" --build-campaign bash \"$LOOM_REPORT_SUPERVISOR\" cargo nextest run --cargo-metadata \"$cargoArtifacts/cargo.json\" --binaries-metadata \"$cargoArtifacts/binaries.json\" --workspace-remap \"$runtime\" --target-dir-remap \"$cargoArtifacts/target\" --ignore-default-filter --no-fail-fast --message-format libtest-json-plus\n",
                 )
             }
@@ -344,6 +353,51 @@ impl Definition {
         Self::construct_native(snapshot, inventory, target, native, Offering::Baseline)
     }
 
+    /// Bind native baselines together, revalidating their complete graphs in one read.
+    /// This shares no execution outcomes or validation across calls.
+    ///
+    /// # Errors
+    /// Rejects the entire batch on stale context or an invalid native binding.
+    pub fn hermetic_baselines(
+        snapshot: &Snapshot,
+        inventory: &Inventory,
+        targets: &[(Name, Name)],
+    ) -> Result<Vec<Self>, super::Error> {
+        super::require_context(snapshot, inventory)?;
+        let mut definitions = Vec::<Self>::new();
+        for (target, native) in targets {
+            if inventory.subject(native)?.nix_target().is_none() {
+                return Err(Error::Native {
+                    subject: native.clone(),
+                }
+                .into());
+            }
+            // One platform operation already accounts for its sibling exports.
+            // Preserve explicit aliases without rediscovering the same operation.
+            let definition = if let Some(previous) = definitions
+                .iter()
+                .find(|definition| definition.native_applicability_covers(native))
+            {
+                previous.clone().named(target.clone())?
+            } else {
+                Self::bind_native(
+                    snapshot,
+                    inventory,
+                    target.clone(),
+                    native,
+                    Offering::Baseline,
+                )?
+            };
+            definitions.push(definition);
+        }
+        let mut current = super::Current::new(&definitions)?;
+        for definition in &definitions {
+            current.require(definition)?;
+        }
+        super::require_context(snapshot, inventory)?;
+        Ok(definitions)
+    }
+
     /// Construct from one discovered native check; the captured project is the staged source.
     ///
     /// # Errors
@@ -373,6 +427,25 @@ impl Definition {
         offering: Offering<'_>,
     ) -> Result<Self, super::Error> {
         super::require_context(snapshot, inventory)?;
+        let definition = Self::bind_native(snapshot, inventory, target.clone(), native, offering)?;
+        definition
+            .require_current()
+            .map_err(|source| super::Error::Construction {
+                target,
+                producer: definition.description().origin().clone(),
+                source: Box::new(source),
+            })?;
+        super::require_context(snapshot, inventory)?;
+        Ok(definition)
+    }
+
+    fn bind_native(
+        snapshot: &Snapshot,
+        inventory: &Inventory,
+        target: Name,
+        native: &Name,
+        offering: Offering<'_>,
+    ) -> Result<Self, super::Error> {
         let subject = inventory.subject(native)?;
         let binding = subject.nix_target().ok_or_else(|| Error::Native {
             subject: native.clone(),
@@ -401,20 +474,12 @@ impl Definition {
         {
             return Ok(definition);
         }
-        // Discovery already validates native graphs when it resolves real resource
-        // readers. Reuse only these immutable constructor facts, never outcomes;
-        // every definition still rechecks the snapshot, graph, tool and resources.
+        // Bind immutable discovery facts here. The public constructors revalidate
+        // source, graph, tools and resources before returning any definitions.
         let graph = if let Some(graph) = inventory.native_graph(native) {
             if graph.tool != locate_tool()? {
                 return Err(Error::GraphChanged.into());
             }
-            graph
-                .require_current()
-                .map_err(|source| super::Error::Construction {
-                    target: target.clone(),
-                    producer: binding.flake().clone(),
-                    source: Box::new(source.into()),
-                })?;
             graph.clone()
         } else {
             Arc::new(
@@ -523,7 +588,7 @@ impl Definition {
             responsibilities,
             inputs,
         };
-        let candidate = if graph.runtime == Runtime::NativeProcess {
+        let candidate = if matches!(graph.runtime, Runtime::NativeProcess | Runtime::NativeStore) {
             Candidate::NativeProcess {
                 contract,
                 execution,
@@ -594,6 +659,8 @@ fn baseline(
 /// A graph is constructed by evaluating the captured native definition, not deserialized by callers.
 #[derive(Debug)]
 pub struct Graph {
+    // Availability ownership, not verification evidence or a freshness cache.
+    _retained: Vec<std::sync::Arc<pin::Inputs>>,
     tool: PathBuf,
     artifact: Digest,
     root: StorePath,
@@ -602,17 +669,16 @@ pub struct Graph {
     origins: BTreeSet<ResourcePath>,
     explicit_file_origins: BTreeSet<ResourcePath>,
     evaluation_origins: BTreeSet<ResourcePath>,
+    recipes: recipe::Captured,
     nodes: Nodes,
     execution: frontier::Execution,
     provenance: Vec<Source>,
     resources: BTreeMap<StorePath, Resource>,
     identity: Digest,
-    kind: crate::inventory::nix::Kind,
     evaluation: BTreeSet<StorePath>,
     cargo: Option<CargoOperation>,
     catalogue: Option<StorePath>,
     report: Option<report::Contract>,
-    locator: Locator,
     reporter: Option<StorePath>,
     runtime: Runtime,
     purpose: Purpose,
@@ -769,6 +835,8 @@ struct Partition {
 
 /// A single source-discovery transaction shares evaluation work, not execution results.
 struct Construction {
+    recipes: recipe::Captured,
+    retained: Vec<std::sync::Arc<pin::Inputs>>,
     tool: PathBuf,
     artifact: Digest,
     metadata: Metadata,
@@ -777,7 +845,7 @@ struct Construction {
     sources: BTreeSet<Source>,
     groups: BTreeMap<Vec<u8>, Vec<crate::inventory::nix::Target>>,
     partitions: BTreeMap<Vec<u8>, Partition>,
-    presence: BTreeMap<StorePath, bool>,
+    presence: frontier::Presence,
     resources: BTreeMap<StorePath, Resource>,
 }
 
@@ -852,6 +920,20 @@ fn read_metadata(tool: &Path, reference: &str) -> Result<Metadata, Error> {
     )?)?)
 }
 
+fn retain_definitions<'a>(
+    tool: &Path,
+    metadata: &Metadata,
+    definitions: impl IntoIterator<Item = &'a Native>,
+) -> Result<std::sync::Arc<pin::Inputs>, Error> {
+    let mut paths = BTreeSet::from([metadata.path.clone()]);
+    for definition in definitions {
+        paths.insert(definition.root.clone());
+        paths.extend(definition.catalogue.iter().cloned());
+        paths.extend(definition.reporter.iter().cloned());
+    }
+    Ok(std::sync::Arc::new(pin::Inputs::acquire(tool, &paths)?))
+}
+
 impl Construction {
     fn new(
         tool: PathBuf,
@@ -879,13 +961,17 @@ impl Construction {
         if selected.len() != targets.len() || requested.len() != targets.len() {
             return Err(Error::Root);
         }
-        let nodes = read_graphs(
+        let retained = vec![retain_definitions(
             &tool,
-            &selected
-                .iter()
-                .map(|(_, definition)| definition.root.clone())
-                .collect::<Vec<_>>(),
-        )?;
+            &metadata,
+            selected.iter().map(|(_, definition)| definition),
+        )?];
+        let roots = selected
+            .iter()
+            .map(|(_, definition)| definition.root.clone())
+            .collect::<Vec<_>>();
+        let nodes = read_graphs(&tool, &roots)?;
+        let recipes = recipe::capture(&tool, &roots, &nodes)?;
         let mut groups = BTreeMap::<_, Vec<_>>::new();
         let mut indexed = BTreeMap::new();
         for (native, definition) in selected {
@@ -900,6 +986,8 @@ impl Construction {
             indexed.insert(target_key(native)?, definition);
         }
         Ok(Self {
+            recipes,
+            retained,
             tool,
             artifact,
             metadata,
@@ -908,29 +996,14 @@ impl Construction {
             sources,
             groups,
             partitions: BTreeMap::new(),
-            presence: BTreeMap::new(),
+            presence: frontier::Presence::default(),
             resources: BTreeMap::new(),
         })
     }
 
     fn present(&mut self, paths: &BTreeSet<StorePath>) -> Result<BTreeSet<StorePath>, Error> {
-        let missing = paths
-            .iter()
-            .filter(|path| !self.presence.contains_key(*path))
-            .cloned()
-            .collect::<BTreeSet<_>>();
-        if !missing.is_empty() {
-            let present = present_paths(&self.tool, &missing)?;
-            self.presence.extend(missing.into_iter().map(|path| {
-                let exists = present.contains(&path);
-                (path, exists)
-            }));
-        }
-        Ok(paths
-            .iter()
-            .filter(|path| self.presence.get(*path) == Some(&true))
-            .cloned()
-            .collect())
+        self.presence
+            .query(paths, |paths| present_paths(&self.tool, paths))
     }
 
     fn resources(
@@ -946,6 +1019,9 @@ impl Construction {
             .cloned()
             .collect::<BTreeSet<_>>();
         if !missing.is_empty() {
+            self.retained.push(std::sync::Arc::new(pin::Inputs::acquire(
+                &self.tool, &missing,
+            )?));
             self.resources
                 .extend(read_resource_closure(&self.tool, &missing)?);
         }
@@ -962,7 +1038,7 @@ impl Construction {
     ) -> Result<(Metadata, Native), Error> {
         let key = partition_key(native, definition, sources)?;
         if self.partitions.is_empty() {
-            let mut pending = Vec::new();
+            let mut staged_groups = BTreeMap::new();
             for (group, targets) in &self.groups {
                 let target = targets.first().ok_or(Error::Partition)?;
                 let directory = target.flake().as_path().parent().ok_or(Error::StorePath)?;
@@ -999,13 +1075,37 @@ impl Construction {
                             .cloned(),
                     );
                 }
+                // Different provenance declarations can select exactly the same
+                // files. Evaluate that isolated tree once, retaining every target
+                // and its original provenance key; never union distinct trees.
+                let (keys, members) = staged_groups
+                    .entry((directory.to_path_buf(), selected))
+                    .or_insert_with(|| (Vec::new(), Vec::new()));
+                keys.push(group.clone());
+                members.extend(targets.iter().cloned());
+            }
+            tracing::debug!(
+                provenance_groups = self.groups.len(),
+                source_partitions = staged_groups.len(),
+                "grouped identical native source partitions"
+            );
+            let mut pending = Vec::new();
+            for ((directory, selected), (groups, targets)) in staged_groups {
                 let staged = snapshot.stage_paths(&selected)?;
                 let metadata = read_metadata(
                     &self.tool,
                     &format!("path:{}", staged.path().join(directory).display()),
                 )?;
-                pending.push((group.clone(), targets.clone(), metadata, staged));
+                pending.push((groups, targets, metadata, staged));
             }
+            // Keep isolated lookup trees alive for every graph that uses this transaction.
+            self.retained.push(std::sync::Arc::new(pin::Inputs::acquire(
+                &self.tool,
+                &pending
+                    .iter()
+                    .map(|(_, _, metadata, _)| metadata.path.clone())
+                    .collect(),
+            )?));
             // Bound evaluator memory while sharing pinned imports within each batch.
             for batch in pending.chunks(4) {
                 let projects: Vec<_> = batch
@@ -1013,19 +1113,21 @@ impl Construction {
                     .map(|(_, targets, metadata, _)| (metadata, targets.as_slice()))
                     .collect();
                 let evaluated = evaluate_projects(&self.tool, &projects)?;
-                for ((group, targets, metadata, _), definitions) in batch.iter().zip(evaluated) {
+                for ((groups, targets, metadata, _), definitions) in batch.iter().zip(evaluated) {
                     let definitions = targets
                         .iter()
                         .zip(definitions)
                         .map(|(target, definition)| Ok((target_key(target)?, definition)))
-                        .collect::<Result<_, Error>>()?;
-                    self.partitions.insert(
-                        group.clone(),
-                        Partition {
-                            metadata: metadata.clone(),
-                            definitions,
-                        },
-                    );
+                        .collect::<Result<BTreeMap<_, _>, Error>>()?;
+                    for group in groups {
+                        self.partitions.insert(
+                            group.clone(),
+                            Partition {
+                                metadata: metadata.clone(),
+                                definitions: definitions.clone(),
+                            },
+                        );
+                    }
                 }
             }
         }
@@ -1157,6 +1259,11 @@ impl Graph {
         {
             return Err(Error::Result);
         }
+        let mut retained = if let Some(batch) = batch.as_ref() {
+            batch.retained.clone()
+        } else {
+            vec![retain_definitions(&tool, &metadata, [&definition])?]
+        };
         let root = definition.root.clone();
         let nodes = if let Some(batch) = batch.as_ref() {
             subgraph(&batch.nodes, &root)?
@@ -1172,6 +1279,28 @@ impl Graph {
             operation.require_execution(nodes.get(executable).ok_or(Error::Root)?)?;
         }
         require_catalogue(&definition, &nodes)?;
+        if definition.runtime == Runtime::NativeStore
+            && (definition.purpose != Purpose::Check
+                || definition.cargo != Some(CargoOperation::Test)
+                || definition.app.is_some())
+        {
+            return Err(Error::Result);
+        }
+        let recipes = if let Some(batch) = batch.as_ref() {
+            nodes
+                .keys()
+                .map(|path| {
+                    batch
+                        .recipes
+                        .get(path)
+                        .cloned()
+                        .map(|resource| (path.clone(), resource))
+                        .ok_or(Error::Root)
+                })
+                .collect::<Result<_, _>>()?
+        } else {
+            recipe::capture(&tool, std::slice::from_ref(&root), &nodes)?
+        };
         if matches!(
             definition.runtime,
             Runtime::NativeCgroup | Runtime::NativeContainer
@@ -1338,6 +1467,11 @@ impl Graph {
             let isolated = evaluate(&tool, &partition, native)?;
             (partition, isolated)
         };
+        if let Some(batch) = batch.as_ref() {
+            retained.clone_from(&batch.retained);
+        } else {
+            retained.push(retain_definitions(&tool, &partition, [&isolated])?);
+        }
         if isolated.app != definition.app
             || isolated.version != definition.version
             || isolated.root != root
@@ -1368,9 +1502,13 @@ impl Graph {
             });
         }
         let resources = if let Some(batch) = batch {
-            batch.resources(&nodes, &evaluation, &execution)?
+            let resources = batch.resources(&nodes, &evaluation, &execution)?;
+            retained.clone_from(&batch.retained);
+            resources
         } else {
-            read_resources(&tool, &nodes, &evaluation, &execution)?
+            let sources = resource_sources(&tool, &nodes, &evaluation, &execution)?;
+            retained.push(std::sync::Arc::new(pin::Inputs::acquire(&tool, &sources)?));
+            read_resource_closure(&tool, &sources)?
         };
         let locator = Locator {
             flake: partition.path,
@@ -1386,10 +1524,10 @@ impl Graph {
         } else {
             None
         };
-        let process = if definition.runtime == Runtime::NativeProcess {
-            Some(process::Context::capture()?)
-        } else {
-            None
+        let process = match definition.runtime {
+            Runtime::NativeProcess => Some(process::Context::capture()?),
+            Runtime::NativeStore => Some(process::Context::capture_store(&tool)?),
+            Runtime::Nix | Runtime::NativeCgroup | Runtime::NativeContainer => None,
         };
         let provenance: Vec<_> = sources
             .iter()
@@ -1411,13 +1549,16 @@ impl Graph {
             &explicit_file_origins,
             &evaluation_origins,
             native.kind(),
-            (&nodes, &execution),
+            // Verified recipe NARs bind every decoded field without serializing the graph again.
+            (&execution, &recipes),
             &resources,
             &tool,
             &artifact,
         ))?);
         snapshot.require_current()?;
         Ok(Self {
+            _retained: retained,
+            recipes,
             tool,
             artifact,
             root,
@@ -1431,12 +1572,10 @@ impl Graph {
             provenance,
             resources,
             identity,
-            kind: native.kind(),
             evaluation,
             cargo: definition.cargo,
             catalogue: definition.catalogue,
             report: definition.report,
-            locator,
             reporter: definition.reporter,
             runtime: definition.runtime,
             purpose: definition.purpose,
@@ -1475,6 +1614,8 @@ impl Graph {
         }
         // New graph fields require an explicit sharing decision, not command-string equality.
         let Self {
+            _retained: _,
+            recipes,
             tool,
             artifact,
             root,
@@ -1487,7 +1628,6 @@ impl Graph {
             execution,
             provenance,
             resources,
-            kind: _,
             evaluation,
             cargo,
             catalogue,
@@ -1498,7 +1638,6 @@ impl Graph {
             managed,
             process,
             identity: _,
-            locator: _,
         } = self;
         root == &other.root
             && tool == &other.tool
@@ -1508,6 +1647,7 @@ impl Graph {
             && origins == &other.origins
             && explicit_file_origins == &other.explicit_file_origins
             && evaluation_origins == &other.evaluation_origins
+            && recipes == &other.recipes
             && nodes == &other.nodes
             && execution == &other.execution
             && provenance == &other.provenance
@@ -1573,49 +1713,22 @@ impl Graph {
             if graphs.iter().any(|graph| graph.artifact != artifact) {
                 return Err(Error::ToolChanged);
             }
-            let roots = graphs
-                .iter()
-                .map(|graph| graph.root.clone())
-                .collect::<Vec<_>>();
-            let nodes = read_graphs(tool, &roots)?;
-            let evaluation = graphs
-                .iter()
-                .flat_map(|graph| graph.evaluation.iter().cloned())
-                .collect();
-            let execution = frontier::Execution {
-                nodes: graphs
-                    .iter()
-                    .flat_map(|graph| graph.execution.nodes.iter().cloned())
-                    .collect(),
-                inputs: graphs
-                    .iter()
-                    .flat_map(|graph| graph.execution.inputs.iter().cloned())
-                    .collect(),
-                cold_inputs: graphs
-                    .iter()
-                    .flat_map(|graph| graph.execution.cold_inputs.iter().cloned())
-                    .collect(),
-            };
-            let resources = read_resources(tool, &nodes, &evaluation, &execution)?;
-            current::require_nodes(&nodes, graphs.iter().map(|graph| &graph.nodes))?;
+            recipe::require_current_with_resources(
+                tool,
+                graphs.iter().map(|graph| &graph.recipes),
+                graphs.iter().map(|graph| &graph.resources),
+            )?;
+            current::require_consistent(graphs.iter().map(|graph| &graph.nodes))?;
+            let mut processes = Vec::new();
             for graph in graphs {
-                if let Some(path) = graph
-                    .resources
-                    .keys()
-                    .find(|path| resources.get(*path) != graph.resources.get(*path))
-                {
-                    return Err(Error::GraphDrift {
-                        detail: format!(
-                            "native resource changed during batch validation: {}",
-                            path.as_str()
-                        ),
-                    });
-                }
                 if let Some(executor) = &graph.managed {
                     executor.require_current()?;
                 }
-                if let Some(process) = &graph.process {
+                if let Some(process) = &graph.process
+                    && !processes.contains(&process)
+                {
                     process.require_current()?;
+                    processes.push(process);
                 }
             }
         }
@@ -1623,73 +1736,7 @@ impl Graph {
     }
 
     pub(super) fn require_current(&self) -> Result<(), Error> {
-        if Digest::of(&std::fs::read(&self.tool)?) != self.artifact {
-            return Err(Error::ToolChanged);
-        }
-        let nodes = read_graph(&self.tool, &self.root)?;
-        let resources = read_resources(&self.tool, &nodes, &self.evaluation, &self.execution)?;
-        if let Some(executor) = &self.managed {
-            executor.require_current()?;
-        }
-        if let Some(process) = &self.process {
-            process.require_current()?;
-        }
-        let identity = Digest::of(&serde_json::to_vec(&(
-            (self.runtime, self.purpose),
-            (&self.managed, &self.process),
-            &self.report,
-            &self.reporter,
-            &self.locator,
-            &self.root,
-            &self.source,
-            (&self.inputs, &self.provenance),
-            &self.origins,
-            &self.explicit_file_origins,
-            &self.evaluation_origins,
-            self.kind,
-            (&nodes, &self.execution),
-            &resources,
-            &self.tool,
-            &self.artifact,
-        ))?);
-        if identity != self.identity {
-            let detail = if let Some(path) = self
-                .nodes
-                .keys()
-                .chain(nodes.keys())
-                .find(|path| self.nodes.get(*path) != nodes.get(*path))
-            {
-                let fields = match (self.nodes.get(path), nodes.get(path)) {
-                    (Some(old), Some(new)) => format!(
-                        "builder={}, args={}, environment keys={:?}, structured={}, outputs={}, sources={}, dependencies={}",
-                        old.builder != new.builder,
-                        old.args != new.args,
-                        old.env
-                            .keys()
-                            .chain(new.env.keys())
-                            .filter(|key| old.env.get(*key) != new.env.get(*key))
-                            .collect::<BTreeSet<_>>(),
-                        old.structured != new.structured,
-                        old.outputs != new.outputs,
-                        old.sources != new.sources,
-                        old.dependencies != new.dependencies
-                    ),
-                    _ => "derivation membership".to_owned(),
-                };
-                format!("{path:?}: {fields}")
-            } else if let Some(path) = self
-                .resources
-                .keys()
-                .chain(resources.keys())
-                .find(|path| self.resources.get(*path) != resources.get(*path))
-            {
-                format!("resource contents or references changed: {path:?}")
-            } else {
-                "captured definition context changed".to_owned()
-            };
-            return Err(Error::GraphDrift { detail });
-        }
-        Ok(())
+        Self::require_current_many(&[self])
     }
 
     fn presence(&self, outputs: &BTreeMap<Name, StorePath>) -> Result<Presence, Error> {
@@ -1701,28 +1748,26 @@ impl Graph {
         })
     }
 
-    pub(super) fn cold_inputs(&self) -> Result<BTreeSet<StorePath>, Error> {
-        let platform: Platforms =
-            serde_json::from_slice(&query(&self.tool, &["config", "show", "--json"])?)?;
+    fn cold_inputs(
+        &self,
+        platform: &Platforms,
+        mut present: impl FnMut(&BTreeSet<StorePath>) -> Result<BTreeSet<StorePath>, Error>,
+    ) -> Result<BTreeSet<StorePath>, Error> {
         let root = self.nodes.get(&self.root).ok_or(Error::Root)?;
         if root.system != platform.system.value
             && (!platform.extra.value.contains(&root.system)
                 || matches!(
                     self.runtime,
-                    Runtime::NativeCgroup | Runtime::NativeContainer
+                    Runtime::NativeStore | Runtime::NativeCgroup | Runtime::NativeContainer
                 ))
         {
             return Ok(BTreeSet::new());
         }
         let execution = if self.purpose == Purpose::Artifact {
-            frontier::artifact(&self.nodes, &self.root, |paths| {
-                present_paths(&self.tool, paths)
-            })?
+            frontier::artifact(&self.nodes, &self.root, &mut present)?
         } else {
             let requested = self.reporter.as_ref().unwrap_or(&self.root);
-            frontier::capture(&self.nodes, [requested.clone()], |paths| {
-                present_paths(&self.tool, paths)
-            })?
+            frontier::capture(&self.nodes, [requested.clone()], &mut present)?
         };
         Ok(execution.cold_inputs)
     }
@@ -1755,7 +1800,10 @@ impl Graph {
         let root = self.nodes.get(requested).ok_or(Error::Root)?;
         let platform: Platforms =
             serde_json::from_slice(&query(&self.tool, &["config", "show", "--json"])?)?;
-        if root.system != platform.system.value && !platform.extra.value.contains(&root.system) {
+        if root.system != platform.system.value
+            && (self.runtime == Runtime::NativeStore
+                || !platform.extra.value.contains(&root.system))
+        {
             return Ok(Observed::execution(
                 target,
                 Outcome::Inapplicable {
@@ -1782,6 +1830,9 @@ impl Graph {
                 ));
             }
             return self.run_managed(target, contract.ok_or(Error::Result)?);
+        }
+        if self.runtime == Runtime::NativeStore && requested == &self.root {
+            return self.run_store(target, contract.ok_or(Error::Result)?);
         }
         let fresh = if requested == &self.root && contract.is_some() {
             Some(self.fresh_report()?)
@@ -2153,15 +2204,6 @@ fn resource_sources(
     Ok(sources)
 }
 
-fn read_resources(
-    tool: &Path,
-    nodes: &Nodes,
-    evaluation: &BTreeSet<StorePath>,
-    execution: &frontier::Execution,
-) -> Result<BTreeMap<StorePath, Resource>, Error> {
-    read_resource_closure(tool, &resource_sources(tool, nodes, evaluation, execution)?)
-}
-
 fn resource_closure(
     resources: &BTreeMap<StorePath, Resource>,
     sources: &BTreeSet<StorePath>,
@@ -2328,19 +2370,36 @@ fn native_command(tool: &Path, args: &[&str]) -> Command {
 mod command_tests;
 
 fn invoke(tool: &Path, args: &[&str]) -> Result<Output, Error> {
+    invoke_command(native_command(tool, args), args.first().copied())
+}
+
+fn invoke_command(mut command: Command, operation: Option<&str>) -> Result<Output, Error> {
     let clock = loom_driver::clock::SystemClock::new();
     let started = loom_driver::clock::Clock::now(&clock);
-    tracing::debug!(
-        operation = args.first().copied(),
-        "native Nix operation started"
-    );
-    let output = native_command(tool, args).output()?;
-    tracing::debug!(operation = args.first().copied(), elapsed = ?loom_driver::clock::Clock::now(&clock).saturating_duration_since(started), code = output.status.code(), stdout_bytes = output.stdout.len(), "native Nix operation finished");
+    tracing::debug!(operation, "native Nix operation started");
+    let output = command.output()?;
+    tracing::debug!(operation, elapsed = ?loom_driver::clock::Clock::now(&clock).saturating_duration_since(started), code = output.status.code(), stdout_bytes = output.stdout.len(), "native Nix operation finished");
     Ok(output)
 }
 
 fn query(tool: &Path, args: &[&str]) -> Result<Vec<u8>, Error> {
-    let output = invoke(tool, args)?;
+    query_output(invoke(tool, args)?)
+}
+
+fn query_paths(tool: &Path, args: &[&str], paths: &BTreeSet<StorePath>) -> Result<Vec<u8>, Error> {
+    use std::io::{Seek as _, Write as _};
+
+    let mut input = tempfile::tempfile()?;
+    for path in paths {
+        writeln!(input, "{}", path.as_str())?;
+    }
+    input.rewind()?;
+    let mut command = native_command(tool, args);
+    command.arg("--stdin").stdin(input);
+    query_output(invoke_command(command, args.first().copied())?)
+}
+
+fn query_output(output: Output) -> Result<Vec<u8>, Error> {
     if !output.status.success() {
         return Err(Error::Query {
             detail: diagnostic(&output.stderr),

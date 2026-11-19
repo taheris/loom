@@ -66,60 +66,32 @@ _: {
           '';
         }
       );
-      installTest = name: target: ''
-        mkdir -p "$out/bin"
-        binary=$(${pkgs.lib.getBin pkgs.jq}/bin/jq --slurp --exit-status --raw-output --arg target '${target}' '
-          [.[] | select(.reason == "compiler-artifact" and .target.name == $target and .profile.test == true and .executable != null)]
-          | if length == 1 then .[0].executable else error("expected exactly one compiler-owned test binary") end
-        ' "$TMPDIR/cargo-messages.jsonl")
-        [[ -f "$binary" && -x "$binary" ]]
-        cp "$binary" "$out/bin/${name}"
-      '';
-      todoAcceptance = loom.craneLib.buildPackage {
-        pname = "loom-todo-acceptance";
-        version = "1";
-        src = loom.compilerSource.path;
-        inherit (loom) cargoVendorDir;
-        # Only this exact target is installed; do not copy every workspace test executable.
-        cargoArtifacts = loom.testCargoArtifacts;
-        nativeBuildInputs = [ loom.writableWorkspaceArtifacts ];
-        CARGO_PROFILE = "dev";
-        preBuild = ''export HOME=$(mktemp -d); export CARGO_TARGET_DIR="$PWD/target"'';
-        postBuild = "test ! -e ${loom.compilerSource.path}/target";
-        buildPhaseCargoCommand = ''cargo build --offline --locked --profile dev --manifest-path ${loom.compilerSource.path}/Cargo.toml --package loom-workflow --test todo_production --message-format=json-render-diagnostics > "$TMPDIR/cargo-messages.jsonl"'';
-        doNotPostBuildInstallCargoBinaries = true;
-        doInstallCargoArtifacts = false;
-        doCheck = false;
-        installPhaseCommand = installTest "todo-acceptance-persistence" "todo_production";
-      };
-      remediationAcceptance = loom.craneLib.buildPackage {
-        pname = "loom-remediation-acceptance";
-        version = "1";
-        LOOM_ISSUES_BD_BIN = "${pkgs.beads}/bin/bd";
-        src = loom.compilerSource.path;
-        inherit (loom) cargoVendorDir;
-        # Preserve the library-test entry points without importing unrelated test binaries.
-        cargoArtifacts = loom.testCargoArtifacts;
-        nativeBuildInputs = [ loom.writableWorkspaceArtifacts ];
-        CARGO_PROFILE = "dev";
-        preBuild = ''export HOME=$(mktemp -d); export CARGO_TARGET_DIR="$PWD/target"'';
-        postBuild = "test ! -e ${loom.compilerSource.path}/target";
-        buildPhaseCargoCommand = ''cargo test --offline --locked --profile dev --manifest-path ${loom.compilerSource.path}/Cargo.toml --package loom-workflow --lib --no-run --message-format=json-render-diagnostics > "$TMPDIR/cargo-messages.jsonl"'';
-        doNotPostBuildInstallCargoBinaries = true;
-        doInstallCargoArtifacts = false;
-        doCheck = false;
-        installPhaseCommand = installTest "remediation-acceptance" "loom_workflow";
-      };
+      installTest =
+        name: target:
+        pkgs.runCommand name { } ''
+          mkdir -p "$out/bin"
+          binary=$(${pkgs.lib.getBin pkgs.jq}/bin/jq --exit-status --raw-output \
+            --arg target '${target}' --slurpfile cargo ${loom.testCompilation}/cargo.json '
+            [$cargo[0].packages[] | select(.name == "loom-workflow") | .id] as $packages
+            | [."rust-binaries"[] | select(."binary-name" == $target and (."package-id" as $id | $packages | index($id)))]
+            | if length == 1 then .[0]."binary-path" else error("expected exactly one compiler-owned test binary") end
+          ' ${loom.testCompilation}/binaries.json)
+          [[ -f "$binary" && -x "$binary" ]]
+          ln -s "$binary" "$out/bin/${name}"
+        '';
+      todoAcceptance = installTest "todo-acceptance-persistence" "todo_production";
+      remediationAcceptance = installTest "remediation-acceptance" "loom_workflow";
       app = pkgs.writeShellApplication {
         name = "test-quint";
         runtimeInputs = [
           tools
           pkgs.coreutils
+          pkgs.findutils
           pkgs.jq
           pkgs.git
           pkgs.bash
           pkgs.beads
-          pkgs.dolt
+          loom.dolt
           verificationTool
           pkgs.gnused
           pkgs.gnugrep
@@ -173,6 +145,7 @@ _: {
           runtimeInputs = [
             tools
             pkgs.coreutils
+            pkgs.findutils
             pkgs.jq
             pkgs.git
             pkgs.bash
@@ -290,7 +263,7 @@ _: {
       };
       checks.todo-acceptance-persistence =
         let
-          nativeSources = map checkResource [ "scripts/run-private-fixture-tests" ];
+          nativeSources = map checkResource [ "nix/private-fixture-tests.sh" ];
         in
         checked.check {
           runtime = "native-process";
@@ -311,7 +284,7 @@ _: {
 
       checks.remediation-acceptance =
         let
-          nativeSources = map checkResource [ "scripts/run-private-fixture-tests" ];
+          nativeSources = map checkResource [ "nix/private-fixture-tests.sh" ];
         in
         checked.check {
           runtime = "native-process";
@@ -332,7 +305,7 @@ _: {
 
       checks.phase-context =
         let
-          nativeSources = map checkResource [ "scripts/run-private-fixture-tests" ];
+          nativeSources = map checkResource [ "nix/private-fixture-tests.sh" ];
         in
         checked.check {
           runtime = "native-process";
@@ -348,7 +321,7 @@ _: {
                   pkgs.coreutils
                   pkgs.git
                   pkgs.beads
-                  pkgs.dolt
+                  loom.dolt
                   pkgs.gnused
                   pkgs.jq
                 ];
@@ -368,9 +341,8 @@ _: {
       checks.private-fixture-tests =
         let
           nativeSources = map checkResource [
-            "scripts/run-private-fixture-tests"
-            "tests/fixtures/private-fixture-tests.sh"
             "nix/private-fixture-tests.sh"
+            "tests/fixtures/private-fixture-tests.sh"
             "nix/test-scheduling.sh"
           ];
         in
@@ -396,9 +368,8 @@ _: {
               }
               ''
                 set -euo pipefail
-                for runner in ${(builtins.elemAt nativeSources 0).path} ${(builtins.elemAt nativeSources 2).path}; do
-                  bash ${(builtins.elemAt nativeSources 0).path} bash ${(builtins.elemAt nativeSources 1).path} "$runner" ${(builtins.elemAt nativeSources 3).path}
-                done
+                bash ${(builtins.elemAt nativeSources 0).path} bash ${(builtins.elemAt nativeSources 1).path} \
+                  ${(builtins.elemAt nativeSources 0).path} ${(builtins.elemAt nativeSources 2).path}
                 touch "$out"
               '';
         };

@@ -18,15 +18,15 @@ case "$1" in
   phase-context)
     : "${LOOM_TASK_ACCEPTANCE_BIN:?missing provisioned context acceptance runner}"
     : "${LOOM_QUINT_SOURCE:?missing context acceptance input bundle}"
-    bash "$LOOM_QUINT_SOURCE/scripts/run-private-fixture-tests" "$LOOM_TASK_ACCEPTANCE_BIN" "phase_context_tests::" --nocapture
-    bash "$LOOM_QUINT_SOURCE/scripts/run-private-fixture-tests" "$LOOM_TASK_ACCEPTANCE_BIN" "todo::dossier::tests::" --nocapture
-    exec bash "$LOOM_QUINT_SOURCE/scripts/run-private-fixture-tests" "$LOOM_TASK_ACCEPTANCE_BIN" "mint::acceptance::dispatch_tests::" --nocapture
+    bash "$LOOM_QUINT_SOURCE/nix/private-fixture-tests.sh" "$LOOM_TASK_ACCEPTANCE_BIN" "phase_context_tests::" --nocapture
+    bash "$LOOM_QUINT_SOURCE/nix/private-fixture-tests.sh" "$LOOM_TASK_ACCEPTANCE_BIN" "todo::dossier::tests::" --nocapture
+    exec bash "$LOOM_QUINT_SOURCE/nix/private-fixture-tests.sh" "$LOOM_TASK_ACCEPTANCE_BIN" "mint::acceptance::dispatch_tests::" --nocapture
     ;;
   task-acceptance-dispatch)
     : "${LOOM_TASK_ACCEPTANCE_BIN:?missing provisioned task acceptance runner}"
     : "${LOOM_QUINT_SOURCE:?missing acceptance input bundle}"
-    bash "$LOOM_QUINT_SOURCE/scripts/run-private-fixture-tests" "$LOOM_TASK_ACCEPTANCE_BIN" "r#loop::worker::" --nocapture
-    exec bash "$LOOM_QUINT_SOURCE/scripts/run-private-fixture-tests" "$LOOM_TASK_ACCEPTANCE_BIN" "mint::acceptance::dispatch_tests::" --nocapture
+    bash "$LOOM_QUINT_SOURCE/nix/private-fixture-tests.sh" "$LOOM_TASK_ACCEPTANCE_BIN" "r#loop::worker::" --nocapture
+    exec bash "$LOOM_QUINT_SOURCE/nix/private-fixture-tests.sh" "$LOOM_TASK_ACCEPTANCE_BIN" "mint::acceptance::dispatch_tests::" --nocapture
     ;;
   provisioning-and-batching)
     campaigns=(routine bridge-replay)

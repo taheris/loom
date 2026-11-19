@@ -34,6 +34,7 @@ let
     nativeBuildInputs = [
       nextest
       pkgs.jq
+      pkgs.git
     ];
   };
   candidate =

@@ -10,9 +10,33 @@ pub(super) fn require_nodes<'a>(
     observed: &Nodes,
     captured: impl IntoIterator<Item = &'a Nodes>,
 ) -> Result<(), Error> {
-    let changed = || Error::GraphDrift {
+    let expected = merge(captured)?;
+    if observed.len() != expected.len()
+        || expected
+            .into_iter()
+            .any(|(path, node)| observed.get(path) != Some(node))
+    {
+        return Err(changed());
+    }
+    Ok(())
+}
+
+pub(super) fn require_consistent<'a>(
+    captured: impl IntoIterator<Item = &'a Nodes>,
+) -> Result<(), Error> {
+    merge(captured)?;
+    Ok(())
+}
+
+fn changed() -> Error {
+    Error::GraphDrift {
         detail: "native dependency graph changed during batch validation".into(),
-    };
+    }
+}
+
+fn merge<'a>(
+    captured: impl IntoIterator<Item = &'a Nodes>,
+) -> Result<BTreeMap<&'a StorePath, &'a Arc<Node>>, Error> {
     let mut expected = BTreeMap::<&StorePath, &Arc<Node>>::new();
     for nodes in captured {
         for (path, node) in nodes {
@@ -28,14 +52,7 @@ pub(super) fn require_nodes<'a>(
             }
         }
     }
-    if observed.len() != expected.len()
-        || expected
-            .into_iter()
-            .any(|(path, node)| observed.get(path) != Some(node))
-    {
-        return Err(changed());
-    }
-    Ok(())
+    Ok(expected)
 }
 
 #[cfg(test)]
@@ -137,6 +154,9 @@ printf '}\n'
         let second: Nodes = [(path("compiler.drv"), node("after"))].into();
         assert!(require_nodes(&second, [&first, &second]).is_err());
         assert!(require_nodes(&second, [&second, &first]).is_err());
+        assert!(require_consistent([&first, &second]).is_err());
+        assert!(require_consistent([&second, &first]).is_err());
+        require_consistent([&first, &first]).unwrap();
     }
 
     fn resource(references: &BTreeSet<StorePath>) -> super::super::Resource {

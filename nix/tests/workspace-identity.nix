@@ -32,6 +32,10 @@ let
   runtime = construct { nativeTestInputs = [ runtimeTool ]; };
   readme = construct { src = without "README.md"; };
   docs = construct { src = without "docs/README.md"; };
+  shellTest = construct { src = without "tests/verify/agent-landing.sh"; };
+  nixTemplate = construct { src = without "nix/workspace.nix"; };
+  embeddedScript = construct { src = without "scripts/worker-native-preflight.sh"; };
+  fixtureRunner = construct { src = without "nix/private-fixture-tests.sh"; };
   rust = construct { src = without "crates/loom-gate/src/provider/tracked.rs"; };
   manifest = construct { src = without "crates/loom-events/Cargo.toml"; };
   toolchain = construct {
@@ -72,7 +76,13 @@ assert baseline.stagedSrc.drvPath != rust.stagedSrc.drvPath;
 assert baseline.cargoArtifacts.drvPath == docs.cargoArtifacts.drvPath;
 assert baseline.bin.drvPath == docs.bin.drvPath;
 assert baseline.stagedSrc.drvPath != docs.stagedSrc.drvPath;
+assert baseline.bin.drvPath == shellTest.bin.drvPath;
+assert baseline.nextest.drvPath != shellTest.nextest.drvPath;
+assert baseline.bin.drvPath != embeddedScript.bin.drvPath;
+assert baseline.bin.drvPath != fixtureRunner.bin.drvPath;
 assert baseline.testCompilation.drvPath == docs.testCompilation.drvPath;
+assert baseline.testCompilation.drvPath == nixTemplate.testCompilation.drvPath;
+assert baseline.nextest.drvPath != nixTemplate.nextest.drvPath;
 assert baseline.testCompilation.drvPath == runtime.testCompilation.drvPath;
 assert baseline.testCargoArtifacts.installCargoArtifactsMode == "use-zstd";
 assert baseline.testCompilation.prePatch == ''export CARGO_TARGET_DIR="$out/target"'';
@@ -109,15 +119,7 @@ pkgs.runCommand "workspace-build-identity"
     cmp ${baseline.compilerSource.path}/clippy.toml ${src + "/clippy.toml"}
     cmp ${baseline.cargoArtifacts.cargoLock} ${src + "/Cargo.lock"}
     ${optionalString pkgs.stdenv.hostPlatform.isDarwin ''
-      : "''${DYLD_LIBRARY_PATH:?compiler runtime hook was not applied}"
-      test -d "$DYLD_LIBRARY_PATH"
-      for library in "$DYLD_LIBRARY_PATH"/*; do
-        case "$(basename "$library")" in
-          librustc_driver-*.dylib) ;;
-          *) printf 'Unexpected compiler runtime library: %s\n' "$library" >&2; exit 1 ;;
-        esac
-        test "$(readlink "$library")" = "${baseline.toolchain}/lib/$(basename "$library")"
-      done
+      test "''${DYLD_FALLBACK_LIBRARY_PATH:?compiler runtime hook was not applied}" = "${baseline.toolchain}/lib"
       ${baseline.toolchain}/bin/rustc --version
       ${baseline.toolchain}/bin/rustdoc --version
       ${pkgs.stdenv.cc}/bin/cc --version

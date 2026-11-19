@@ -5,11 +5,13 @@ pub mod effect;
 pub mod nix;
 pub mod plan;
 mod policy;
+#[cfg(test)]
+mod resolution_tests;
 pub mod tracked;
 mod wire;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use displaydoc::Display;
@@ -298,10 +300,50 @@ impl Definition {
     }
 }
 
+/// Parsed inputs belong to one immutable snapshot/inventory pair, never an approval.
+struct Resolution<'a> {
+    snapshot: &'a Snapshot,
+    inventory: &'a Inventory,
+    obligations: BTreeSet<Responsibility>,
+    declarations: BTreeMap<ResourcePath, Arc<crate::annotation::ParsedSpecs>>,
+}
+
+impl<'a> Resolution<'a> {
+    fn new(snapshot: &'a Snapshot, inventory: &'a Inventory) -> Self {
+        Self {
+            snapshot,
+            inventory,
+            obligations: inventory
+                .obligations()
+                .iter()
+                .map(Responsibility::from_obligation)
+                .collect(),
+            declarations: BTreeMap::new(),
+        }
+    }
+
+    fn declarations(
+        &mut self,
+        contract: &ResourcePath,
+    ) -> Result<Arc<crate::annotation::ParsedSpecs>, Error> {
+        let parsed = match self.declarations.entry(contract.clone()) {
+            std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(Arc::new(crate::annotation::parse_content(
+                    contract.as_path(),
+                    self.snapshot.text(contract)?,
+                )?))
+            }
+        };
+        Ok(parsed.clone())
+    }
+}
+
 /// One pure validation pass may share immutable graph checks across aliases.
 /// This is private, invocation-local, nonserializable, and contains no verdicts.
 #[derive(Default)]
 struct Current {
+    artifacts: BTreeMap<PathBuf, Digest>,
     graphs: Vec<Digest>,
     platforms: Vec<Arc<nix::applicability::Applicability>>,
 }
@@ -322,8 +364,37 @@ impl Current {
         Ok(current)
     }
 
+    fn require_artifact(
+        &mut self,
+        executable: &Path,
+        artifact: &Digest,
+        target: &Name,
+    ) -> Result<(), Error> {
+        let observed = match self.artifacts.entry(executable.to_path_buf()) {
+            std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(read_artifact(executable)?)
+            }
+        };
+        if observed != artifact {
+            return Err(Error::BuildChanged {
+                target: target.clone(),
+            });
+        }
+        Ok(())
+    }
+
     fn require(&mut self, definition: &Definition) -> Result<(), Error> {
-        if let Execution::Nix(graph) | Execution::Report { graph, .. } = &definition.execution {
+        if let Execution::Tracked {
+            executable,
+            artifact,
+            ..
+        } = &definition.execution
+        {
+            self.require_artifact(executable, artifact, definition.candidate.target())
+        } else if let Execution::Nix(graph) | Execution::Report { graph, .. } =
+            &definition.execution
+        {
             if self.graphs.contains(graph.identity()) {
                 return Ok(());
             }
@@ -587,6 +658,7 @@ impl Registry {
                 .keys()
                 .filter_map(|target| self.definitions.get(target)),
         )?;
+        let mut resolution = Resolution::new(snapshot, inventory);
         let mut units = BTreeMap::new();
         for (target, owners) in contracts {
             if owners.is_empty() {
@@ -598,8 +670,7 @@ impl Registry {
             for contract in owners {
                 let unit = self
                     .resolve_current(
-                        snapshot,
-                        inventory,
+                        &mut resolution,
                         definition.description(),
                         contract.clone(),
                         &mut current,
@@ -636,8 +707,7 @@ impl Registry {
     ) -> Result<Unit, Error> {
         require_context(snapshot, inventory)?;
         let unit = self.resolve_current(
-            snapshot,
-            inventory,
+            &mut Resolution::new(snapshot, inventory),
             candidate,
             contract,
             &mut Current::default(),
@@ -648,12 +718,13 @@ impl Registry {
 
     fn resolve_current(
         &self,
-        snapshot: &Snapshot,
-        inventory: &Inventory,
+        resolution: &mut Resolution<'_>,
         candidate: &Candidate,
         contract: ResourcePath,
         current: &mut Current,
     ) -> Result<Unit, Error> {
+        let snapshot = resolution.snapshot;
+        let inventory = resolution.inventory;
         if snapshot.identity() != inventory.snapshot() {
             return Err(Error::Inventory);
         }
@@ -687,19 +758,20 @@ impl Registry {
                 path: contract.clone(),
             }
         })?;
-        let annotations: Vec<_> =
-            crate::annotation::parse_content(contract.as_path(), snapshot.text(&contract)?)?
-                .annotations
-                .into_iter()
-                .filter(|annotation| {
-                    matches!(
-                        annotation.tier,
-                        crate::annotation::Tier::Check
-                            | crate::annotation::Tier::Test
-                            | crate::annotation::Tier::System
-                    ) && annotation.target == target.as_str()
-                })
-                .collect();
+        let annotations: Vec<_> = resolution
+            .declarations(&contract)?
+            .annotations
+            .iter()
+            .filter(|annotation| {
+                matches!(
+                    annotation.tier,
+                    crate::annotation::Tier::Check
+                        | crate::annotation::Tier::Test
+                        | crate::annotation::Tier::System
+                ) && annotation.target == target.as_str()
+            })
+            .cloned()
+            .collect();
         if annotations.is_empty() {
             return Err(Error::Annotation {
                 target: target.clone(),
@@ -716,12 +788,10 @@ impl Registry {
                 contract,
             });
         }
-        let obligations: BTreeSet<_> = inventory
-            .obligations()
-            .iter()
-            .map(Responsibility::from_obligation)
-            .collect();
-        if !candidate.responsibilities().is_subset(&obligations) {
+        if !candidate
+            .responsibilities()
+            .is_subset(&resolution.obligations)
+        {
             return Err(Error::Responsibility {
                 target: target.clone(),
             });
@@ -848,7 +918,14 @@ impl Unit {
     /// Boundary violations and a changed checkout are failures, not empty input observations.
     pub fn run(&self) -> Result<Observed, Error> {
         self.require_current()?;
-        let observed = match &self.definition.execution {
+        let observed = self.observe()?;
+        self.require_current()?;
+        Ok(observed)
+    }
+
+    /// The enclosing selection must validate the complete context before and after observation.
+    fn observe(&self) -> Result<Observed, Error> {
+        Ok(match &self.definition.execution {
             Execution::Tracked { check, members, .. } => {
                 let mut context = Context::new(&self.snapshot, &self.inputs, members);
                 let result = check(&mut context)?;
@@ -860,9 +937,7 @@ impl Unit {
                 .project(self.target().clone(), Some(target))?,
             Execution::Effect(engine) => engine.run(self.target().clone())?,
             Execution::NativePlatform(operation) => operation.observe(self.target().clone())?,
-        };
-        self.require_current()?;
-        Ok(observed)
+        })
     }
 
     fn project(&self, observed: &Observed) -> Result<Observed, Error> {

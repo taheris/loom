@@ -86,3 +86,12 @@ repos:
         stages: [pre-push]
         always_run: true
         pass_filenames: false
+
+      - id: native-tcp-readiness
+        name: Require real native TCP SQL readiness control
+        entry: bin/pre-push-checks --hook-id native-tcp-readiness --hook-entry "cargo nextest run --package loom-workflow --features native-tcp-tests --lib -E test(native_tracker_readiness_requires_the_beads_socket_even_with_healthy_tcp_sql)" -- cargo nextest run --package loom-workflow --features native-tcp-tests --lib -E 'test(native_tracker_readiness_requires_the_beads_socket_even_with_healthy_tcp_sql)'
+        language: system
+        stages: [pre-push]
+        files: '(^crates/|^nix/|^scripts/|^tests/|^\.cargo/|^\.pre-commit-config\.yaml$|^flake\.(nix|lock)$|^rust-toolchain\.toml$|(^|/)Cargo\.(toml|lock)$)'
+        pass_filenames: false
+        require_serial: true

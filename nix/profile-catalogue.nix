@@ -44,11 +44,11 @@ in
 if (wrixLib.capabilities.profileCatalogue or null) != 1 then
   throw "Loom selected provisioning requires Wrix profile catalogue v1; update the Wrix input"
 else
-  pkgs.writeTextFile {
-    name = "loom-profile-catalogue.json";
-    text = toJSON catalogue;
-    passthru = {
-      inherit catalogue provisions;
-      inherit (legacy) sandboxes profiles runtimes;
-    };
+  {
+    # This is evaluator-owned data, not a shell execution. toFile preserves the
+    # opaque recipe references (and their GC closure) without granting a builder
+    # access to every unselected image recipe merely to write literal JSON.
+    outPath = builtins.toFile "loom-profile-catalogue.json" (toJSON catalogue);
+    inherit catalogue provisions;
+    inherit (legacy) sandboxes profiles runtimes;
   }

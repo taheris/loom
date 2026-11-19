@@ -334,6 +334,7 @@ impl<'a> Selection<'a> {
         self.plan.require_current()?;
         let mut checked = Vec::<&Unit>::new();
         let mut derivations = BTreeSet::new();
+        let mut readiness = super::super::nix::readiness::Readiness::default();
         for decision in self
             .decisions
             .iter()
@@ -346,7 +347,13 @@ impl<'a> Selection<'a> {
                 continue;
             }
             if let Some(graph) = decision.unit.nix_graph() {
-                derivations.extend(graph.cold_inputs()?);
+                let cold = readiness.cold_inputs(graph)?;
+                tracing::debug!(
+                    target = decision.unit.target().as_str(),
+                    cold_inputs = cold.len(),
+                    "checked selected native readiness"
+                );
+                derivations.extend(cold);
             }
             checked.push(decision.unit);
         }
@@ -504,7 +511,7 @@ impl Iterator for Observations<'_, '_> {
             self.selection.plan.require_current()?;
             let clock = loom_driver::clock::SystemClock::new();
             let start = loom_driver::clock::Clock::now(&clock);
-            let observed = decision.unit.run()?;
+            let observed = decision.unit.observe()?;
             let duration = loom_driver::clock::Clock::now(&clock).saturating_duration_since(start);
             let mut captured = BTreeMap::new();
             for alias in self.selection.decisions.iter().filter(|alias| {

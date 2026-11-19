@@ -24,9 +24,6 @@ _: {
       ciRegistration = pkgs.runCommand "ci-shell-registration" { } ''
         cat ${loom.testRegistration}/registration ${ciRuntimeRegistration}/registration > "$out"
       '';
-      bootstrapRegistration = pkgs.runCommand "profile-bootstrap-registration" { } ''
-        cat ${loom.testRegistration}/registration ${profileBootstrapRegistration}/registration > "$out"
-      '';
       scenarios = {
         verification-system-smoke = {
           name = "smoke";
@@ -35,7 +32,7 @@ _: {
         };
         verification-system-profile-bootstrap = {
           name = "profile-bootstrap";
-          nixRegistration = bootstrapRegistration;
+          nixRegistration = "${profileBootstrapRegistration}/registration";
           program = config.apps.test-profile-bootstrap.program;
         };
         verification-system-ci-shell = {
@@ -49,8 +46,32 @@ _: {
           program = config.apps.test-decision-admission.program;
         };
       };
+      # Darwin's read-only sandbox cannot host a writable canonical Nix store.
+      packages = builtins.mapAttrs (
+        _: scenario: if pkgs.stdenv.hostPlatform.isDarwin then loom.nextest else verify scenario
+      ) scenarios;
+      programs = builtins.toFile "native-system-programs.json" (
+        builtins.toJSON (
+          builtins.listToAttrs (
+            map (scenario: {
+              inherit (scenario) name;
+              value =
+                let
+                  recipes = builtins.attrNames (builtins.getContext scenario.program);
+                  recipe = builtins.head recipes;
+                in
+                assert builtins.length recipes == 1;
+                {
+                  program = builtins.unsafeDiscardStringContext scenario.program;
+                  derivation = builtins.appendContext recipe { "${recipe}".path = true; };
+                };
+            }) (builtins.attrValues scenarios)
+          )
+        )
+      );
     in
     {
-      packages = builtins.mapAttrs (_: scenario: verify scenario) scenarios;
+      inherit packages;
+      legacyPackages.native-system-programs = programs;
     };
 }

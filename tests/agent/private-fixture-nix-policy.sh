@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "$#" != 2 ]]; then
-    printf 'Usage: private-fixture-nix-policy.sh <native-wrapper> <packaged-wrapper>\n' >&2
+if [[ "$#" != 1 ]]; then
+    printf 'Usage: private-fixture-nix-policy.sh <wrapper>\n' >&2
     exit 2
 fi
 
@@ -10,11 +10,12 @@ root=$(mktemp -d)
 trap 'rm -rf -- "$root"' EXIT
 mkdir -p "$root/home" "$root/registry"
 : > "$root/registration"
+# Exercise the runner's actual private physical store, without a tool adapter.
 export NIX_BIN
 NIX_BIN=$(command -v nix)
 export NEXTEST_TEST_THREADS=1
 unset LOOM_TEST_NIX_REGISTRATION
-export NIX_CONFIG=$'experimental-features = nix-command flakes\nsubstitute = true\ncores = 2'
+export NIX_CONFIG=$'experimental-features = nix-command flakes\nsubstitute = true\ncores = 2\nrequire-sigs = false\nstore = daemon'
 
 for wrapper in "$@"; do
     wrapper=$(realpath -e -- "$wrapper")
@@ -42,15 +43,17 @@ CHILD
 set -euo pipefail
 test "${CARGO_HOME:-$HOME/.cargo}" != /homeless-shelter/.cargo
 CHILD
+    for registration in "$root/registration" "${LOOM_POLICY_REGISTRATION:-$root/registration}"; do
     for sandbox in true false; do
-        workspace="$root/policy-${wrapper##*/}-$sandbox"
-        mkdir -p "$workspace"
+        workspace=$(mktemp -d "$root/policy.XXXXXXXX")
+        expected_seed=
+        if [[ -s "$registration" ]]; then expected_seed="${LOOM_POLICY_SEED:?missing declared seed}"; fi
         printf 'isolated policy fixture\n' > "$workspace/README"
         (
             cd "$workspace"
             NIX_CONFIG="${NIX_CONFIG}"$'\nsandbox = '"$sandbox" \
                 EXPECTED_SANDBOX="$sandbox" \
-                LOOM_TEST_NIX_REGISTRATION="$root/registration" \
+                EXPECTED_SEED="$expected_seed" LOOM_TEST_NIX_REGISTRATION="$registration" \
                 LOOM_NATIVE_NIX_BIN="$NIX_BIN" \
                 bash "$wrapper" --build-campaign bash <<'CHILD'
 set -euo pipefail
@@ -61,7 +64,28 @@ test "$("$NIX_BIN" config show allow-import-from-derivation)" = false
 test -z "$("$NIX_BIN" config show substituters)"
 test -z "$("$NIX_BIN" config show builders)"
 test "$("$NIX_BIN" config show cores)" = 2
+# Adapters discard ambient selectors, but must retain the private store policy.
+unset NIX_CONFIG NIX_REMOTE
+test "$("$NIX_BIN" config show store)" = "local://?real=$TMPDIR/store"
+test "$("$NIX_BIN" config show sandbox)" = "$EXPECTED_SANDBOX"
+test "$("$NIX_BIN" config show sandbox-fallback)" = false
+"$NIX_BIN" store ping --json > /dev/null
+test -d "$TMPDIR/store/.links"
+test -f "$NIX_STATE_DIR/db/db.sqlite"
+test ! -e .git
+if [[ -n "$EXPECTED_SEED" ]]; then
+    physical="$TMPDIR/store/${EXPECTED_SEED##*/}"
+    cmp "$EXPECTED_SEED" "$physical"
+    chmod u+w "$physical"
+    printf 'corrupted SDK bytes\n' > "$physical"
+    if "$NIX_BIN"-store --verify --check-contents; then
+        printf 'Private SDK content corruption was accepted\n' >&2
+        exit 1
+    fi
+    test "$(< "$EXPECTED_SEED")" = 'declared SDK bytes'
+fi
 CHILD
         )
+    done
     done
 done

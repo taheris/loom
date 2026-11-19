@@ -37,7 +37,7 @@ async fn selected_plan_reports_all_cold_inputs_before_any_verifier_executes() {
           read -r heading < "$src/README.md"
           [[ "$heading" == '# '* ]] || exit 1
           "$tools/bin/mkdir" -p "$out/bin"
-          "$tools/bin/cp" "$BASH" "$out/bin/later"
+          "$tools/bin/cp" "$builder" "$out/bin/later"
           # Keep Bash alive until cp finishes closing its logging descriptors.
           exit "$?"
         '' ];

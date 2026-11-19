@@ -72,6 +72,32 @@ let
     filter = srcFilter;
   };
   cleanedSrc = workspaceSource.path;
+  # The release binary embeds these external scripts, not the repository's
+  # shell test campaigns. Test compilation/execution retain workspaceSource.
+  binarySource = checked.resource {
+    root = src;
+    name = "loom-binary-source";
+    filter =
+      path: type:
+      let
+        original = if src._isLibCleanSourceWith or false then src.origSrc else src;
+        relative = removePrefix "${toString original}/" path;
+      in
+      srcFilter path type
+      && (
+        type == "directory"
+        || !(builtins.any (prefix: hasPrefix prefix relative) [
+          "tests/"
+          "scripts/"
+          "nix/"
+        ])
+        || builtins.elem relative [
+          "nix/private-fixture-tests.sh"
+          "nix/test-scheduling.sh"
+          "scripts/worker-native-preflight.sh"
+        ]
+      );
+  };
   compilerSource = checked.resource {
     root = src;
     name = "loom-test-compiler-source";
@@ -95,21 +121,13 @@ let
         "nix/report-supervisor.sh"
         "nix/private-fixture-tests.sh"
         "nix/test-scheduling.sh"
-        "nix/flake/apps.nix"
-        "nix/flake/checks.nix"
-        "nix/flake/tests.nix"
-        "nix/native-smoke-nix.nix"
-        "nix/workspace.nix"
         "bin/pre-push-checks"
         "scripts/worker-native-preflight.sh"
-        "scripts/run-private-fixture-tests"
-        "scripts/required-test.sh"
         "tests/fixtures/planning_prompt_interview_modes.md"
         "tests/fixtures/verifier/sandbox-results.sh"
         "tests/fixtures/quint/campaign.json"
         "tests/smoke/spec.md"
         "tests/mock-pi/pi.sh"
-        "tests/loom/default.nix"
       ];
   };
   evaluation = [
@@ -204,9 +222,10 @@ let
       LOOM_PREK_BIN = { value = "${hookRunner}/bin/prek", force = true }
       LOOM_ISSUES_BD_BIN = { value = "${pkgs.beads}/bin/bd", force = true }
       LOOM_NATIVE_NIX_BIN = { value = "${pkgs.nix}/bin/nix", force = true }
+      LOOM_TEST_DOLT_BIN = { value = "${dolt}/bin/dolt", force = true }
+      LOOM_NATIVE_SHELL_BIN = { value = "${pkgs.runtimeShell}", force = true }
       ${optionalString pkgs.stdenv.hostPlatform.isLinux ''
         LOOM_NATIVE_FLOCK_BIN = { value = "${pkgs.util-linux}/bin/flock", force = true }
-        LOOM_NATIVE_SHELL_BIN = { value = "${pkgs.runtimeShell}", force = true }
         LOOM_NATIVE_STAT_BIN = { value = "${pkgs.coreutils}/bin/stat", force = true }
       ''}
     '').overrideAttrs
@@ -217,19 +236,12 @@ let
         };
       };
 
-  darwinCompilerLibraries = pkgs.runCommand "loom-rustc-driver-libraries" { } ''
-    mkdir -p "$out/lib"
-    for library in ${resolvedToolchain}/lib/librustc_driver-*.dylib; do
-      test -f "$library"
-      ln -s "$library" "$out/lib/$(basename "$library")"
-    done
-  '';
-
-  # Darwin dyld may resolve deduplicated compiler inodes through another store alias.
+  # Darwin dyld may resolve deduplicated compiler inodes through another store
+  # alias. Fall back to the selected toolchain, without overriding Clang's LLVM.
   darwinCompilerHooks = optional pkgs.stdenv.hostPlatform.isDarwin (
     pkgs.makeSetupHook { name = "loom-test-darwin-libraries"; } (
       pkgs.writeText "loom-test-darwin-libraries.sh" ''
-        export DYLD_LIBRARY_PATH="${darwinCompilerLibraries}/lib"
+        export DYLD_FALLBACK_LIBRARY_PATH="${resolvedToolchain}/lib"
       ''
     )
   );
@@ -340,14 +352,15 @@ let
   bin = checked.artifact {
     runtime = "native-process";
     inherit evaluation;
-    resources = [ workspaceSource ];
+    resources = [ binarySource ];
     build =
       _:
       craneLib.buildPackage (
         commonArgs
         // {
+          src = binarySource.path;
           LOOM_PREK_BIN = "${hookRunner}/bin/prek";
-          LOOM_BUILTIN_SOURCE_ROOT = "${cleanedSrc}/crates/loom-skill";
+          LOOM_BUILTIN_SOURCE_ROOT = "${binarySource.path}/crates/loom-skill";
           inherit cargoArtifacts;
           doCheck = false;
         }
@@ -374,6 +387,8 @@ let
       LOOM_PREK_BIN = "${hookRunner}/bin/prek";
       src = compilerSource.path;
       LOOM_ISSUES_BD_BIN = "${pkgs.beads}/bin/bd";
+      LOOM_TEST_DOLT_BIN = "${dolt}/bin/dolt";
+      LOOM_NATIVE_SHELL_BIN = pkgs.runtimeShell;
       CARGO_PROFILE = "dev";
       cargoArtifacts = testCompilation;
       nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ writableWorkspaceArtifacts ];
@@ -400,11 +415,13 @@ let
     args = commonArgs // {
       LOOM_PREK_BIN = "${hookRunner}/bin/prek";
       LOOM_ISSUES_BD_BIN = "${pkgs.beads}/bin/bd";
+      LOOM_TEST_DOLT_BIN = "${dolt}/bin/dolt";
       src = stagedSrc;
       inherit cargoArtifacts;
     };
   };
 
+  dolt = import ./dolt.nix { inherit pkgs; };
   nativeSmokeFixture = import ./tests/native-smoke-fixture.nix { inherit pkgs; };
   # Metadata-only query; the supplied compiler closure is rooted below.
   queryCompiler = builtins.unsafeDiscardStringContext (toString resolvedToolchain);
@@ -419,7 +436,8 @@ let
     [
       pkgs.cacert
       pkgs.cargo-nextest
-      pkgs.dolt
+      pkgs.findutils
+      dolt
       pkgs.beads
       pkgs.flock
       pkgs.jq
@@ -502,8 +520,10 @@ let
   };
 
   checkArgs = commonArgs // {
+    LOOM_NATIVE_SHELL_BIN = pkgs.runtimeShell;
     LOOM_PREK_BIN = "${hookRunner}/bin/prek";
     LOOM_ISSUES_BD_BIN = "${pkgs.beads}/bin/bd";
+    LOOM_TEST_DOLT_BIN = "${dolt}/bin/dolt";
     src = stagedSrc;
     inherit cargoArtifacts;
     nativeBuildInputs = map getBin (
@@ -511,7 +531,7 @@ let
       ++ [
         pkgs.cacert
         pkgs.cargo-nextest
-        pkgs.dolt
+        dolt
         pkgs.flock
         pkgs.jq
         pkgs.openssh
@@ -535,7 +555,7 @@ let
   nextest = checked.cargo {
     inherit craneLib evaluation;
     operation = "test";
-    runtime = "native-process";
+    runtime = if pkgs.stdenv.hostPlatform.isDarwin then "native-store" else "native-process";
     resources = compilerResources;
     compilationInputs =
       commonArgs.nativeBuildInputs
@@ -557,18 +577,57 @@ let
         ]
         ++ testCompilerHooks;
       LOOM_TEST_RUNTIME_PATH = lib.makeBinPath testInputs;
-      LOOM_TEST_NIX_REGISTRATION = "${testRegistration}/registration";
-      LOOM_TEST_NIX_INPUTS = nativeTestSources;
+      LOOM_TEST_NIX_REGISTRATION =
+        if pkgs.stdenv.hostPlatform.isDarwin then "" else "${testRegistration}/registration";
+      LOOM_TEST_NIX_INPUTS = if pkgs.stdenv.hostPlatform.isDarwin then [ ] else nativeTestSources;
       LOOM_NATIVE_RUST_FIXTURE = nativeRustFixture;
       LOOM_NATIVE_SMOKE_FIXTURE = nativeSmokeFixture;
       GIT_CONFIG_GLOBAL = "${stagedSrc}/tests/fixtures/git/test-gitconfig";
       SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
     };
   };
+  # The checked walk integration binary constructs canonical Nix graphs; the
+  # complete native-store producer owns it, not this confined companion.
+  confinedTests = checked.check {
+    inherit evaluation;
+    runtime = "native-process";
+    resources = testResources;
+    build =
+      _:
+      craneLib.mkCargoDerivation (
+        checkArgs
+        // {
+          pname = "loom-confined-runtime";
+          cargoArtifacts = null;
+          nativeBuildInputs = checkArgs.nativeBuildInputs ++ testCompilerHooks;
+          LOOM_TEST_RUNTIME_PATH = lib.makeBinPath testInputs;
+          LOOM_TEST_SCHEDULING = ./test-scheduling.sh;
+          NEXTEST_EXPERIMENTAL_LIBTEST_JSON = "1";
+          doCheck = false;
+          doInstallCargoArtifacts = false;
+          installPhaseCommand = ''mkdir -p "$out"'';
+          buildPhaseCargoCommand = ''
+            export HOME=$(mktemp -d)
+            export LOOM_TEST_SOURCE_ROOT="$PWD"
+            export GIT_CONFIG_SYSTEM=/dev/null
+            git init -q
+            git add --all
+            git -c user.name='Loom native suite' -c user.email='native@example.invalid' -c commit.gpgsign=false commit -q -m 'Capture native suite source'
+            bash ${./private-fixture-tests.sh} --build-campaign cargo-nextest nextest run \
+              --cargo-metadata ${testCompilation}/cargo.json \
+              --binaries-metadata ${testCompilation}/binaries.json \
+              --workspace-remap "$PWD" --target-dir-remap ${testCompilation}/target \
+              --ignore-default-filter --no-fail-fast --no-tests=fail --message-format libtest-json-plus \
+              -E 'package(=loom-agent) | package(=loom-events) | package(=loom-issues) | package(=loom-protocol) | package(=loom-render) | package(=loom-shared) | package(=loom-skill) | package(=loom-templates) | package(=loom-tune) | (package(=loom-walk) & !binary(=checked)) | test(test_support::native::) | test(verifier_deadline_terminates_and_reaps_the_running_process)'
+          '';
+        }
+      );
+  };
   testCompilation = nextest.compilation;
   nativeRustFixture = import ./tests/native-rust-fixture.nix {
     inherit pkgs crane;
     toolchain = resolvedToolchain;
+    compilerHooks = testCompilerHooks;
     nextest = pkgs.cargo-nextest;
   };
 in
@@ -578,6 +637,7 @@ in
     verificationBuild
     clippy
     clippyAllTargets
+    confinedTests
     nextest
     cargoArtifacts
     testCargoArtifacts
@@ -585,6 +645,7 @@ in
     writableWorkspaceArtifacts
     testCompilation
     cargoConfig
+    dolt
     hookRunner
     craneLib
     stagedSrc

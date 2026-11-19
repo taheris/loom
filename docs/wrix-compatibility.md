@@ -69,13 +69,19 @@ not unwrap scripts. Every image-backed launch still passes exactly the selected
 immutable `--profile-config`; changing the executable does not select an image.
 
 `mkProfileCatalogue` exports a schema-versioned, recipe-only
-`profile-catalogue`. The driver discovers it from clean, signature-verified
-published operator source; no profile-manifest or catalogue environment variable
-is supported. Shell entry and `mkLoomBin` do not materialize an image matrix or
-carry profile metadata. Dispatch validates the selected recipe/output binding,
-realizes just its single-entry manifest with signature enforcement, and retains
-catalogue and selected output roots in private external state. Source and
-association changes fail closed around every bounded provisioning command.
+`profile-catalogue`. Loom exposes this evaluator-owned store file through
+`legacyPackages.<system>.profile-catalogue`, retaining the usual
+`nix build .#profile-catalogue --out-link …` interface. It is not a shell
+builder with the entire unselected recipe closure in its sandbox. Opaque recipe
+references remain in the store file's GC closure. The driver accepts Nix's
+store-data result as well as the previous derivation-result format. The driver
+discovers it from clean, signature-verified published operator source; no
+profile-manifest or catalogue environment variable is supported. Shell entry and
+`mkLoomBin` do not materialize an image matrix or carry profile metadata.
+Dispatch validates the selected recipe/output binding, realizes just its
+single-entry manifest with signature enforcement, and retains catalogue and
+selected output roots in private external state. Source and association changes
+fail closed around every bounded provisioning command.
 
 Selected manifests carry image-owned `native_preflight` metadata alongside the
 exact immutable profile configuration. Native availability requests worker

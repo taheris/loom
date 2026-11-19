@@ -12,9 +12,15 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 fn main() -> Result<()> {
     let arguments: Vec<_> = std::env::args_os().skip(1).collect();
-    if arguments.len() != 2 {
-        return Err("expected the immutable fixture and CLI artifacts".into());
-    }
+    let store_only = match arguments.as_slice() {
+        [_, _] => false,
+        [_, _, mode] if mode == "native-store" => true,
+        _ => {
+            return Err(
+                "expected fixture and CLI artifacts, optionally followed by native-store".into(),
+            );
+        }
+    };
     let root = tempfile::tempdir()?.keep();
     writeln!(
         std::io::stderr(),
@@ -36,6 +42,9 @@ fn main() -> Result<()> {
     progress("locking declared fixture inputs")?;
     command(&project, "nix", &["flake", "lock", "--offline"])?;
 
+    if store_only {
+        return canonical_store(&project, Path::new(&arguments[1]));
+    }
     native_catalogue(&project)?;
 
     cli(&project, Path::new(&arguments[1]), "cold", 0)?;
@@ -77,6 +86,70 @@ fn main() -> Result<()> {
     )?;
     std::fs::write(project.join("payload/input.txt"), "valid\n")?;
     cli(&project, Path::new(&arguments[1]), "correction-recovery", 0)?;
+    canonical_store(&project, Path::new(&arguments[1]))?;
+    Ok(())
+}
+
+fn canonical_store(project: &Path, artifact: &Path) -> Result<()> {
+    let flake = project.join("flake.nix");
+    std::fs::write(
+        &flake,
+        std::fs::read_to_string(&flake)?.replace(
+            "runtime = \"native-process\";",
+            "runtime = if operation == \"test\" then \"native-store\" else \"native-process\";",
+        ),
+    )?;
+    let snapshot = Snapshot::discover(project)?;
+    let inventory = Inventory::discover(&snapshot)?;
+    let suites = Definition::native_rust_suites(&snapshot, &inventory)?;
+    let producer = suites.first().ok_or("missing native-store producer")?;
+    let suite = Definition::hermetic_baseline(
+        &snapshot,
+        &inventory,
+        Name::try_from("native_case".to_owned())?,
+        producer.description().target(),
+    )?;
+    if !matches!(
+        suite.description(),
+        loom_gate::provider::Candidate::NativeProcess { .. }
+    ) || !suite
+        .description()
+        .capabilities()
+        .contains(&loom_gate::provider::Capability::CanonicalNixStore)
+        || suite
+            .description()
+            .capabilities()
+            .contains(&loom_gate::provider::Capability::NixSandbox)
+    {
+        return Err("native-store claimed hermetic execution".into());
+    }
+    let registry = loom_gate::provider::Registry::new(&snapshot, vec![suite.clone()])?;
+    let origin = loom_gate::inventory::snapshot::ResourcePath::try_from(
+        Path::new("specs/probe/tests.md").to_path_buf(),
+    )?;
+    let unit = registry.resolve(&snapshot, &inventory, suite.description(), origin.clone())?;
+    let mut forged = serde_json::to_value(suite.description())?;
+    forged["kind"] = "hermetic-nix".into();
+    let forged = loom_gate::provider::Candidate::parse(&forged.to_string())?;
+    if registry
+        .resolve(&snapshot, &inventory, &forged, origin)
+        .is_ok()
+    {
+        return Err("native-store accepted hermetic relabelling".into());
+    }
+    let source = project.join("src/lib.rs");
+    let mut body = std::fs::read_to_string(&source)?;
+    body.push_str(&std::fs::read_to_string(
+        project.join("payload/native-store.rs"),
+    )?);
+    std::fs::write(source, body)?;
+    if unit.run().is_ok() {
+        return Err("native-store executed after source changed".into());
+    }
+    cli(project, artifact, "native-store", 0)?;
+    std::fs::write(project.join("payload/input.txt"), "invalid\n")?;
+    cli(project, artifact, "native-store-failure", 1)?;
+    std::fs::write(project.join("payload/input.txt"), "valid\n")?;
     Ok(())
 }
 
@@ -381,9 +454,14 @@ fn cli_scope(
         || !native_case["observations"]
             .as_array()
             .is_some_and(|observations| {
-                observations
-                    .iter()
-                    .any(|item| item["kind"] == "fresh-execution")
+                observations.iter().any(|item| {
+                    item["kind"]
+                        == if phase.starts_with("native-store") {
+                            "native-execution"
+                        } else {
+                            "fresh-execution"
+                        }
+                })
             })
     {
         return Err(format!(

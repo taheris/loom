@@ -147,17 +147,16 @@ ambient executable name or runtime pin environment value cannot select this
 contract.
 
 The ordinary Nextest profile wraps listing and execution with
-`scripts/run-private-fixture-tests`. Each invocation gets private temporary and
-state roots. Runtime Cargo targets point at a private path that is created only
-if used. Explicit `--build-campaign` preserves the primary compilation's
-admitted Cargo target and warm artifacts; Nextest still isolates every test
-subprocess. It must not clear a target supplied by a compiling caller's
-execution guard. Empty compiler-wrapper values disable Cargo-configured wrappers
-(unsetting them would re-enable configuration). Compiler-cache directories and
-server sockets are private too. The runner propagates the child's exit status
-and removes its disposable fixture root on success or failure. Descendants
-inherit that state selection. Nix suite wrappers may still wrap the whole
-campaign as well.
+`nix/private-fixture-tests.sh`. Each invocation gets private temporary and state
+roots. Runtime Cargo targets point at a private path that is created only if
+used. Explicit `--build-campaign` preserves the primary compilation's admitted
+Cargo target and warm artifacts; Nextest still isolates every test subprocess.
+It must not clear a target supplied by a compiling caller's execution guard.
+Empty compiler-wrapper values disable Cargo-configured wrappers (unsetting them
+would re-enable configuration). Compiler-cache directories and server sockets
+are private too. The runner propagates the child's exit status and removes its
+disposable fixture root on success or failure. Descendants inherit that state
+selection. Nix suite wrappers may still wrap the whole campaign as well.
 
 The `test-support` feature also gives unwrapped trusted-command calls a private
 fixture root owned by their execution guard, rather than falling back to the
@@ -167,8 +166,8 @@ the private runner exports it, and standalone lifecycle fixtures set it together
 with their disposable `XDG_STATE_HOME`. It is a test-only convention, not a
 production lifetime or collection authority. Production builds without that
 feature continue using the operator pool. For standalone Cargo tests, prefer
-`bash scripts/run-private-fixture-tests cargo test ...` to isolate all process
-state, not just managed Cargo commands.
+`bash nix/private-fixture-tests.sh cargo test ...` to isolate all process state,
+not just managed Cargo commands.
 
 Marker CLI/hook tests live in `crates/loom/tests/marker_cli.rs`, where Cargo
 supplies the current prebuilt CLI. The former gate-library `cargo run` fallback
@@ -288,7 +287,7 @@ safety-state reset.
 
 ```bash
 bash scripts/configure-cargo-patches.sh
-bash scripts/run-private-fixture-tests --build-campaign cargo nextest run -p loom-driver -p loom-workflow \
+bash nix/private-fixture-tests.sh --build-campaign cargo nextest run -p loom-driver -p loom-workflow \
   -E 'test(cargo_retention) | test(worker_cargo_target_reuse_honors_policy_before_spawn)'
 bash scripts/verify-native-cargo-lifetime
 ```

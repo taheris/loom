@@ -105,9 +105,15 @@ in
         overlays = [
           nextestOverlay
           leanWrixLayers
-          (_final: _prev: {
-            beads = inputs.wrix.packages.${system}.beads;
-          })
+          (
+            _final: previous:
+            {
+              beads = inputs.wrix.packages.${system}.beads;
+            }
+            // previous.lib.optionalAttrs previous.stdenv.hostPlatform.isDarwin {
+              skopeo = import ../host-skopeo.nix { pkgs = previous; };
+            }
+          )
         ];
         config.allowUnfree = true;
       };

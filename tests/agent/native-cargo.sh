@@ -86,6 +86,11 @@ grep -v '^LOOM_NATIVE_NIX_BIN = ' "$config" > "$fixture/legacy-nix-config.toml"
 bash scripts/configure-cargo-patches.sh "$fixture/legacy-nix-config.toml" "$version" "$checksum"
 [[ "$(readlink .cargo/nix-patches.toml)" == "$NIX_PATCH_BUILD_RESULT" ]]
 [[ -s "$NIX_PATCH_BUILD_CALLS" ]]
+rm "$NIX_PATCH_BUILD_CALLS"
+grep -v '^LOOM_TEST_DOLT_BIN = ' "$config" > "$fixture/legacy-dolt-config.toml"
+bash scripts/configure-cargo-patches.sh "$fixture/legacy-dolt-config.toml" "$version" "$checksum"
+[[ "$(readlink .cargo/nix-patches.toml)" == "$NIX_PATCH_BUILD_RESULT" ]]
+[[ -s "$NIX_PATCH_BUILD_CALLS" ]]
 if [[ $(uname -s) == Linux ]]; then
     for capability in LOOM_NATIVE_FLOCK_BIN LOOM_NATIVE_SHELL_BIN LOOM_NATIVE_STAT_BIN; do
         rm "$NIX_PATCH_BUILD_CALLS"

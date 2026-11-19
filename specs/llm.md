@@ -827,9 +827,9 @@ and `--no-default-features` to catch feature-gating regressions.
   behind `#[cfg(feature = "openai-compat")]` [check](nix build .#verification-llm-native-compile)
 
 <!-- prettier-ignore -->
-- Wiremock contract test exercises a 200 happy path, 401, 429 + Retry-After,
+- HTTP-over-Unix-socket contract test exercises a 200 happy path, 401, 429 + Retry-After,
   500, and a malformed-JSON response against `OpenAiCompatClient`; each maps to
-  the expected `LlmError` variant and `retry_advice` [check](nix report .#verification-llm-compat::loom-llm::loom_llm$client::openai_compat::tests::openai_compat_wiremock_contract_covers_status_classes)
+  the expected `LlmError` variant and `retry_advice` [check](nix report .#verification-llm-compat::loom-llm::loom_llm$client::openai_compat::tests::openai_compat_http_contract_covers_status_classes)
 
 ### `LlmError`
 

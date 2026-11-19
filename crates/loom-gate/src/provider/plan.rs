@@ -37,6 +37,7 @@ impl Registry {
     pub fn admit(&self, snapshot: &Snapshot, inventory: &Inventory) -> Result<Plan, Error> {
         super::require_context(snapshot, inventory)?;
         let mut current = super::Current::new(self.definitions.values())?;
+        let mut resolution = super::Resolution::new(snapshot, inventory);
         let mut units: BTreeMap<Name, Unit> = self
             .resolve_baselines(snapshot, inventory, &mut current)?
             .into_iter()
@@ -46,8 +47,7 @@ impl Registry {
         let mut pending = Vec::new();
         let mut deferred = Vec::new();
         for contract in crate::inventory::contracts(snapshot)? {
-            let declarations =
-                crate::annotation::parse_content(contract.as_path(), snapshot.text(&contract)?)?;
+            let declarations = resolution.declarations(&contract)?;
             pending.extend(
                 declarations
                     .annotations
@@ -71,10 +71,10 @@ impl Registry {
             let mut resolved = BTreeSet::new();
             for annotation in declarations
                 .annotations
-                .into_iter()
+                .iter()
                 .filter(|annotation| annotation.tier != Tier::Judge)
             {
-                let target = Name::try_from(annotation.target)?;
+                let target = Name::try_from(annotation.target.clone())?;
                 if (annotation.pending && !self.definitions.contains_key(&target))
                     || !resolved.insert(target.clone())
                 {
@@ -89,8 +89,7 @@ impl Registry {
                     })?;
                 let unit = self
                     .resolve_current(
-                        snapshot,
-                        inventory,
+                        &mut resolution,
                         definition.description(),
                         contract.clone(),
                         &mut current,

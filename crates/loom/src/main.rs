@@ -1647,6 +1647,7 @@ fn run_gate_verify(workspace: &Path, args: &GateScope) -> anyhow::Result<()> {
         };
         loom_gate::append_gate_run_lifecycle_events(&path, &run)?;
     } else if combined != 0 {
+        drop(admission);
         std::process::exit(combined);
     }
     Ok(())
@@ -1905,18 +1906,14 @@ fn dispatch_checked(
             "deterministic verification cannot execute a judge target; use `loom gate judge --target <target>` for diagnostic inspection"
         );
     }
-    let selected = admission.select(args, tiers)?;
+    let (selected, whole_selection) = admission.select(args, tiers)?;
     let skip_policies = admission.skip_policies()?;
-    let whole_selection = match admission {
-        checked_gate::Admission::Whole(plan, _) => Some(plan.select_tiers(args, tiers)?),
-        checked_gate::Admission::Diagnostic { .. } => None,
-    };
     let mut invocations = whole_selection
         .as_ref()
         .map(loom_gate::provider::plan::selection::Selection::observations)
         .transpose()?;
     admission.require_current()?;
-    if let Some(explanation) = admission.explain(args, tiers)? {
+    if let Some(explanation) = admission.explain(whole_selection.as_ref())? {
         eprintln!("loom gate plan: {explanation}");
     }
     if admission.is_diagnostic() {
@@ -2134,6 +2131,7 @@ fn run_gate_single_tier(workspace: &Path, args: &GateScope, tier: Tier) -> anyho
     let admission = checked_gate::Admission::load(workspace, args)?;
     let code = dispatch_checked(workspace, args, &[tier], &admission)?;
     if code != 0 {
+        drop(admission);
         std::process::exit(code);
     }
     Ok(())

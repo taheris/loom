@@ -389,7 +389,11 @@ fn classify_reqwest_status_error(status: reqwest::StatusCode, body: String) -> L
 }
 
 #[cfg(test)]
+mod http_fixture;
+
+#[cfg(test)]
 mod tests {
+    use super::http_fixture::{Server, json_reply, reply};
     use super::*;
     use crate::client::RetryAdvice;
     use crate::model_id::AnthropicModel;
@@ -399,16 +403,9 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
     use tokio::sync::Barrier;
-    use wiremock::matchers::{header, header_exists, method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn test_api_key() -> ApiKey {
         ApiKey::new("sk-test".to_string()).expect("non-empty key")
-    }
-
-    fn mock_base_url(server: &MockServer) -> Url {
-        let raw = format!("{}/v1", server.uri());
-        Url::parse(&raw).expect("mock base URL parses")
     }
 
     fn test_envelope_builder() -> EnvelopeBuilder {
@@ -433,40 +430,23 @@ mod tests {
     /// `<base_url>/chat/completions` with the model name, the messages
     /// array (including the system prefix when set), `max_tokens` when
     /// supplied, and the Bearer credential when configured. The
-    /// wiremock matcher pins each of those wire-shape promises.
+    /// captured HTTP request pins each of those wire-shape promises.
     #[tokio::test]
     async fn openai_compat_client_sends_chat_completions_shape_to_configured_url() {
-        let server = MockServer::start().await;
+        let server = Server::start(json_reply(&serde_json::json!({
+            "id": "chatcmpl-1",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "llama-3.1-70b",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "hello"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
+        })));
 
-        Mock::given(method("POST"))
-            .and(path("/v1/chat/completions"))
-            .and(header("authorization", "Bearer sk-test"))
-            .and(header_exists("content-type"))
-            .and(wiremock::matchers::body_json(serde_json::json!({
-                "model": "llama-3.1-70b",
-                "messages": [
-                    {"role": "system", "content": "be terse"},
-                    {"role": "user", "content": "hi"},
-                ],
-                "max_tokens": 256,
-            })))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "id": "chatcmpl-1",
-                "object": "chat.completion",
-                "created": 0,
-                "model": "llama-3.1-70b",
-                "choices": [{
-                    "index": 0,
-                    "message": {"role": "assistant", "content": "hello"},
-                    "finish_reason": "stop"
-                }],
-                "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
-            })))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let client = OpenAiCompatClient::new(mock_base_url(&server), Some(test_api_key()));
+        let client = server.client(Some(test_api_key()));
         let req = CompletionRequest::new(ModelId::OpenAiCompat(
             "llama-3.1-70b".parse().expect("model name"),
         ))
@@ -477,19 +457,25 @@ mod tests {
         assert_eq!(response.text, "hello");
         assert_eq!(response.usage.input, 3);
         assert_eq!(response.usage.output, 2);
+        let requests = server.finish(1).await;
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(requests[0].body()).unwrap(),
+            serde_json::json!({
+                "model": "llama-3.1-70b",
+                "messages": [
+                    {"role": "system", "content": "be terse"},
+                    {"role": "user", "content": "hi"},
+                ],
+                "max_tokens": 256,
+            })
+        );
     }
 
-    /// `OpenAiCompatClient::complete` returns
-    /// [`LlmError::IncompatibleModel`] synchronously when handed a
-    /// `ModelId` from a different schema. The check sits at the top of
-    /// the impl ahead of any HTTP setup, so no wiremock mock is
-    /// required — if a network call leaked through, the test would
-    /// fail with a connection error against the bound-but-unmocked
-    /// port.
+    /// Incompatible models fail before HTTP I/O, even with a live fixture server.
     #[tokio::test]
     async fn openai_compat_client_rejects_non_compat_modelids() {
-        let server = MockServer::start().await;
-        let client = OpenAiCompatClient::new(mock_base_url(&server), Some(test_api_key()));
+        let server = Server::start(reply(500, "unexpected request"));
+        let client = server.client(Some(test_api_key()));
         let req = CompletionRequest::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46));
         match client.complete(req).await {
             Err(LlmError::IncompatibleModel { model, expected }) => {
@@ -498,20 +484,13 @@ mod tests {
             }
             other => panic!("expected IncompatibleModel, got {other:?}"),
         }
-        assert!(
-            server
-                .received_requests()
-                .await
-                .unwrap_or_default()
-                .is_empty(),
-            "synchronous fast-path must not issue a network call",
-        );
+        server.finish(0).await;
     }
 
     #[tokio::test]
     async fn openai_compat_multimodal_returns_unsupported_without_network() {
-        let server = MockServer::start().await;
-        let client = OpenAiCompatClient::new(mock_base_url(&server), Some(test_api_key()));
+        let server = Server::start(reply(500, "unexpected request"));
+        let client = server.client(Some(test_api_key()));
         let req = CompletionRequest::new(ModelId::OpenAiCompat(
             "llama-3.1-70b".parse().expect("model name"),
         ))
@@ -528,39 +507,29 @@ mod tests {
             }
             other => panic!("expected UnsupportedCapability, got {other:?}"),
         }
-        assert!(
-            server
-                .received_requests()
-                .await
-                .unwrap_or_default()
-                .is_empty(),
-            "unsupported multimodal request must not issue a network call",
-        );
+        server.finish(0).await;
     }
 
     async fn run_status_class_case(
-        template: ResponseTemplate,
+        response: hyper::Response<String>,
     ) -> Result<CompletionResponse, LlmError> {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/v1/chat/completions"))
-            .respond_with(template)
-            .mount(&server)
-            .await;
-        let client = OpenAiCompatClient::new(mock_base_url(&server), Some(test_api_key()));
+        let server = Server::start(response);
+        let client = server.client(Some(test_api_key()));
         let req = CompletionRequest::new(ModelId::OpenAiCompat(
             "llama-3.1-70b".parse().expect("model name"),
         ))
         .user("hi");
-        client.complete(req).await
+        let result = client.complete(req).await;
+        server.finish(1).await;
+        result
     }
 
     /// Exercises five status-class outcomes against a single
-    /// `OpenAiCompatClient`, each behind its own scoped wiremock mock.
+    /// `OpenAiCompatClient`, each behind its own scoped HTTP fixture.
     /// The contract pins both the typed [`LlmError`] variant and the
     /// classification the [`RetryAdvice`] table promises consumers.
     #[tokio::test]
-    async fn openai_compat_wiremock_contract_covers_status_classes() {
+    async fn openai_compat_http_contract_covers_status_classes() {
         let success_payload = serde_json::json!({
             "id": "chatcmpl-ok",
             "object": "chat.completion",
@@ -574,15 +543,12 @@ mod tests {
             "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
         });
 
-        let response =
-            run_status_class_case(ResponseTemplate::new(200).set_body_json(success_payload))
-                .await
-                .expect("200 path returns Ok");
+        let response = run_status_class_case(json_reply(&success_payload))
+            .await
+            .expect("200 path returns Ok");
         assert_eq!(response.text, "ok");
 
-        match run_status_class_case(ResponseTemplate::new(401).set_body_string("unauthorized"))
-            .await
-        {
+        match run_status_class_case(reply(401, "unauthorized")).await {
             Err(err @ LlmError::AuthFailed { .. }) => {
                 assert_eq!(err.retry_advice(), RetryAdvice::NonRetryable);
             }
@@ -590,9 +556,11 @@ mod tests {
         }
 
         match run_status_class_case(
-            ResponseTemplate::new(429)
-                .insert_header("retry-after", "30")
-                .set_body_string("slow down"),
+            hyper::Response::builder()
+                .status(429)
+                .header("retry-after", "30")
+                .body("slow down".to_owned())
+                .unwrap(),
         )
         .await
         {
@@ -605,7 +573,7 @@ mod tests {
             other => panic!("expected RateLimited, got {other:?}"),
         }
 
-        match run_status_class_case(ResponseTemplate::new(500).set_body_string("boom")).await {
+        match run_status_class_case(reply(500, "boom")).await {
             Err(LlmError::ProviderHttp { status, .. }) => {
                 assert_eq!(status, 500);
                 assert_eq!(
@@ -620,7 +588,7 @@ mod tests {
             other => panic!("expected ProviderHttp, got {other:?}"),
         }
 
-        match run_status_class_case(ResponseTemplate::new(200).set_body_string("not json")).await {
+        match run_status_class_case(reply(200, "not json")).await {
             Err(err @ LlmError::MalformedJson(_)) => {
                 assert_eq!(err.retry_advice(), RetryAdvice::Retryable);
             }
@@ -650,27 +618,23 @@ mod tests {
     /// provider's `usage` block.
     #[tokio::test]
     async fn openai_compat_complete_emits_token_usage_event() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/v1/chat/completions"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "id": "chatcmpl-1",
-                "object": "chat.completion",
-                "created": 0,
-                "model": "llama-3.1-70b",
-                "choices": [{
-                    "index": 0,
-                    "message": {"role": "assistant", "content": "ok"},
-                    "finish_reason": "stop"
-                }],
-                "usage": {"prompt_tokens": 7, "completion_tokens": 11, "total_tokens": 18}
-            })))
-            .mount(&server)
-            .await;
+        let server = Server::start(json_reply(&serde_json::json!({
+            "id": "chatcmpl-1",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "llama-3.1-70b",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "ok"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 7, "completion_tokens": 11, "total_tokens": 18}
+        })));
 
         let sink = RecordingSink::default();
         let recorded = sink.events.clone();
-        let client = OpenAiCompatClient::new(mock_base_url(&server), Some(test_api_key()))
+        let client = server
+            .client(Some(test_api_key()))
             .with_envelope_builder(test_envelope_builder())
             .with_event_sink(sink);
         let req = CompletionRequest::new(ModelId::OpenAiCompat(
@@ -680,6 +644,7 @@ mod tests {
         let response = client.complete(req).await.expect("call succeeds");
         assert_eq!(response.usage.input, 7);
         assert_eq!(response.usage.output, 11);
+        server.finish(1).await;
 
         let events = recorded.lock().expect("recorded events");
         assert_eq!(events.len(), 1, "exactly one driver event emitted");
@@ -704,38 +669,32 @@ mod tests {
     async fn openai_compat_emits_all_usage_events_under_concurrent_completions() {
         const CALLS: usize = 8;
 
-        let server = MockServer::start().await;
         let expected_calls = u64::try_from(CALLS).expect("completion count fits u64");
-        Mock::given(method("POST"))
-            .and(path("/v1/chat/completions"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_delay(Duration::from_millis(20))
-                    .set_body_json(serde_json::json!({
-                        "id": "chatcmpl-concurrent",
-                        "object": "chat.completion",
-                        "created": 0,
-                        "model": "llama-3.1-70b",
-                        "choices": [{
-                            "index": 0,
-                            "message": {"role": "assistant", "content": "ok"},
-                            "finish_reason": "stop"
-                        }],
-                        "usage": {
-                            "prompt_tokens": 7,
-                            "completion_tokens": 11,
-                            "total_tokens": 18
-                        }
-                    })),
-            )
-            .expect(expected_calls)
-            .mount(&server)
-            .await;
+        let server = Server::delayed(
+            json_reply(&serde_json::json!({
+                "id": "chatcmpl-concurrent",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "llama-3.1-70b",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {
+                    "prompt_tokens": 7,
+                    "completion_tokens": 11,
+                    "total_tokens": 18
+                }
+            })),
+            Duration::from_millis(20),
+        );
 
         let sink = RecordingSink::default();
         let recorded = sink.events.clone();
         let client = Arc::new(
-            OpenAiCompatClient::new(mock_base_url(&server), Some(test_api_key()))
+            server
+                .client(Some(test_api_key()))
                 .with_envelope_builder(test_envelope_builder())
                 .with_event_sink(sink),
         );
@@ -761,6 +720,7 @@ mod tests {
                 .expect("mock completion succeeds");
         }
 
+        server.finish(CALLS).await;
         let events = recorded.lock().expect("recorded events");
         assert_eq!(events.len(), CALLS);
         let mut sequences = events

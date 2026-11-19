@@ -161,6 +161,29 @@ fn a_shared_passing_projection_cannot_replace_the_independent_baseline() {
 }
 
 #[test]
+fn missing_reports_reject_projections_and_retain_producer_failure() {
+    use crate::provider::tracked::{Observed, Outcome};
+
+    let target = Name::try_from("case".to_owned()).unwrap();
+    for outcome in [
+        Outcome::Pass,
+        Outcome::Fail {
+            detail: "compiler refused missing pinned input".into(),
+        },
+    ] {
+        let observed = Observed::execution(target.clone(), outcome.clone(), Vec::new());
+        let error = observed.project(target.clone(), Some(&target)).unwrap_err();
+        let crate::provider::Error::Nix(Error::Report { detail }) = error else {
+            panic!("expected a missing-report rejection, got {error:?}");
+        };
+        assert!(detail.contains("no supervised execution report"));
+        if let Outcome::Fail { detail: failure } = outcome {
+            assert!(detail.contains(&failure));
+        }
+    }
+}
+
+#[test]
 fn completed_nonzero_status_is_retained_when_no_case_actually_failed() {
     let contract = contract(Parser::JsonLines, &["passing"]);
     let output = captured(
@@ -350,23 +373,28 @@ fn fresh_recipe_reinstantiation_preserves_actual_native_derivation_fields() {
             .unwrap()
             .as_ref()
             .clone();
-        let control_nonce = tempfile::tempdir().unwrap();
-        let unleased = evaluate(
-            &super::fresh_expression(&original, control_nonce.path().to_str().unwrap()).unwrap(),
-        );
-        let store = tool.with_file_name("nix-store");
-        let unprotected =
-            crate::provider::nix::invoke(&store, &["--delete", unleased.as_str()]).unwrap();
-        assert!(unprotected.status.success());
-        assert!(!Path::new(unleased.as_str()).exists());
         let (fresh_path, lease) = super::fresh_recipe(
             &tool,
             &super::fresh_expression(&original, "actual-recipe-roundtrip").unwrap(),
         )
         .unwrap();
-        let collection =
-            crate::provider::nix::invoke(&store, &["--delete", fresh_path.as_str()]).unwrap();
-        assert!(!collection.status.success());
+        // Real collection belongs to pin's positive/negative lease test. Here
+        // verify fresh_recipe actually roots this derivation for its lifetime.
+        let roots = || {
+            String::from_utf8(
+                crate::provider::nix::query(
+                    &tool.with_file_name("nix-store"),
+                    &["--query", "--roots", fresh_path.as_str()],
+                )
+                .unwrap(),
+            )
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect::<std::collections::BTreeSet<_>>()
+        };
+        let held_roots = roots();
+        assert!(!held_roots.is_empty());
         assert!(Path::new(fresh_path.as_str()).is_file());
         let mut fresh_graph = crate::provider::nix::read_graph(&tool, &fresh_path).unwrap();
         let mut fresh = fresh_graph.remove(&fresh_path).unwrap().as_ref().clone();
@@ -391,6 +419,7 @@ fn fresh_recipe_reinstantiation_preserves_actual_native_derivation_fields() {
         assert_eq!(original, fresh);
         assert_eq!(original_graph, fresh_graph);
         drop(lease);
+        assert_eq!(held_roots.difference(&roots()).count(), 1);
     }
 }
 

@@ -1501,7 +1501,7 @@ letting the entrypoint run the wrong runtime.
 - Loom spawns containers via
   `wrix --profile-config <file> spawn     --spawn-config <file> --stdio` with
   the correct profile/runtime image, never via `podman run` directly
-  [test](wrix_spawn_invocation_records_correct_argv)
+  [test](todo_pi_session_preserves_spawn_stdio_and_event_contracts)
 
 - Every `wrix spawn` child process receives `WRIX_AGENT` from the resolved
   backend runtime, independent of whether the parent shell has `WRIX_AGENT` set
@@ -1512,7 +1512,7 @@ letting the entrypoint run the wrong runtime.
   [test](wrix_spawn_logs_backend_runtime_and_image_ref)
 
 - Container receives agent stdin/stdout via pipe
-  [test](child_stdin_is_a_pipe_not_a_tty)
+  [test](todo_pi_session_preserves_spawn_stdio_and_event_contracts)
 
 ### Unit tests
 

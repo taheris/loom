@@ -1,7 +1,6 @@
 #![cfg(test)]
 
 use std::ffi::OsString;
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command as NativeCommand, Stdio};
 use std::sync::Arc;
@@ -16,12 +15,15 @@ const DATABASE: &str = "mint";
 struct Server {
     child: Child,
     directory: tempfile::TempDir,
-    port: u16,
     home: PathBuf,
 }
 
 impl Server {
     async fn start(home: &Path) -> Self {
+        Self::start_on_port(home, 0).await
+    }
+
+    async fn start_on_port(home: &Path, port: u16) -> Self {
         let directory = tempfile::Builder::new()
             .prefix("loom-bd-")
             .tempdir()
@@ -29,7 +31,7 @@ impl Server {
         let data = directory.path().join("data");
         let database = data.join(DATABASE);
         std::fs::create_dir_all(&database).unwrap();
-        let mut initialize = Command::new("dolt");
+        let mut initialize = Command::new(env!("LOOM_TEST_DOLT_BIN"));
         isolate(initialize.as_std_mut(), home);
         initialize
             .args([
@@ -52,11 +54,9 @@ impl Server {
             "{}",
             String::from_utf8_lossy(&initialized.stderr)
         );
-        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let port = listener.local_addr().unwrap().port();
         let socket = directory.path().join("server.sock");
         let log = std::fs::File::create(directory.path().join("server.log")).unwrap();
-        let mut command = NativeCommand::new("dolt");
+        let mut command = NativeCommand::new(env!("LOOM_TEST_DOLT_BIN"));
         isolate(&mut command, home);
         command
             .args([
@@ -76,12 +76,9 @@ impl Server {
             .stdin(Stdio::null())
             .stdout(log.try_clone().unwrap())
             .stderr(log);
-        // Dolt rejects port zero; startup must fail visibly if another listener wins this port.
-        drop(listener);
         let mut server = Self {
             child: command.spawn().expect("start fixture Dolt"),
             directory,
-            port,
             home: home.to_path_buf(),
         };
         let clock = SystemClock::new();
@@ -99,26 +96,32 @@ impl Server {
 
     async fn ready(&self) -> std::io::Result<()> {
         drop(std::os::unix::net::UnixStream::connect(self.socket())?);
-        self.sql_ready().await
+        self.sql_ready_at(&self.socket()).await
     }
 
-    async fn sql_ready(&self) -> std::io::Result<()> {
+    async fn sql_ready_at(&self, socket: &Path) -> std::io::Result<()> {
+        self.sql_ready_on(&format!("unix:{}", socket.display()), None)
+            .await
+    }
+
+    async fn sql_ready_on(&self, host: &str, port: Option<u16>) -> std::io::Result<()> {
         // A greeting precedes usable SQL sessions; probe without retrying an uncertain mutation.
-        let mut command = Command::new("dolt");
+        let mut command = Command::new(env!("LOOM_TEST_DOLT_BIN"));
         isolate(command.as_std_mut(), &self.home);
-        command
-            .args(["--host", "127.0.0.1", "--port"])
-            .arg(self.port.to_string())
-            .args([
-                "--user",
-                "root",
-                "--password",
-                "",
-                "--no-tls",
-                "sql",
-                "--query",
-                "USE mint; SELECT 1",
-            ]);
+        command.arg("--host").arg(host);
+        if let Some(port) = port {
+            command.arg("--port").arg(port.to_string());
+        }
+        command.args([
+            "--user",
+            "root",
+            "--password",
+            "",
+            "--no-tls",
+            "sql",
+            "--query",
+            "USE mint; SELECT 1",
+        ]);
         let output =
             loom_driver::process::output(&mut command, &SystemClock::new(), Duration::from_secs(2))
                 .await
@@ -278,16 +281,79 @@ pub async fn client(root: &Path) -> BdClient<IsolatedBeads> {
 }
 
 #[tokio::test]
-async fn native_tracker_readiness_requires_the_beads_socket_even_with_healthy_tcp_sql() {
+async fn native_tracker_readiness_requires_the_beads_socket_even_with_healthy_sql_elsewhere() {
     let home = tempfile::tempdir().unwrap();
     let server = Server::start(home.path()).await;
     let socket = server.socket();
     let withheld = server.directory.path().join("withheld.sock");
     std::fs::rename(&socket, &withheld).unwrap();
-    server.sql_ready().await.unwrap();
+    server.sql_ready_at(&withheld).await.unwrap();
     let error = server.ready().await.unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
     std::fs::rename(&withheld, &socket).unwrap();
+    server.ready().await.unwrap();
+}
+
+// Mandatory pre-push native TCP control, separate from confined UDS
+// fixtures. No runtime permission failure is translated into a passing result.
+#[cfg(feature = "native-tcp-tests")]
+#[tokio::test]
+async fn native_tracker_readiness_requires_the_beads_socket_even_with_healthy_tcp_sql() {
+    let home = tempfile::tempdir().unwrap();
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let server = Server::start_on_port(home.path(), port).await;
+    server.sql_ready_on("127.0.0.1", Some(port)).await.unwrap();
+    let withheld = server.directory.path().join("withheld.sock");
+    std::fs::rename(server.socket(), &withheld).unwrap();
+    server.sql_ready_on("127.0.0.1", Some(port)).await.unwrap();
+    assert_eq!(
+        server.ready().await.unwrap_err().kind(),
+        std::io::ErrorKind::NotFound
+    );
+    std::fs::rename(withheld, server.socket()).unwrap();
+    server.ready().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_tracker_unix_only_mode_requires_an_explicit_socket() {
+    let home = tempfile::tempdir().unwrap();
+    let mut command = Command::new(env!("LOOM_TEST_DOLT_BIN"));
+    isolate(command.as_std_mut(), home.path());
+    command
+        .args(["sql-server", "--port", "0"])
+        .current_dir(home.path());
+    let output =
+        loom_driver::process::output(&mut command, &SystemClock::new(), Duration::from_secs(10))
+            .await
+            .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("port is not in the range"),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[tokio::test]
+async fn native_tracker_sql_readiness_rejects_a_non_sql_socket() {
+    let home = tempfile::tempdir().unwrap();
+    let server = Server::start(home.path()).await;
+    let socket = server.directory.path().join("not-sql.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let peer = async {
+        let (stream, _) = listener.accept().await.unwrap();
+        drop(stream);
+    };
+    let (result, ()) = SystemClock::new()
+        .timeout(Duration::from_secs(10), async {
+            tokio::join!(server.sql_ready_at(&socket), peer)
+        })
+        .await
+        .unwrap();
+    assert!(result.is_err());
     server.ready().await.unwrap();
 }
 

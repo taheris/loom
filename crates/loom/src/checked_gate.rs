@@ -9,7 +9,7 @@ use loom_gate::inventory::{Inventory, Name};
 use loom_gate::provider::plan::{Plan, property};
 use loom_gate::provider::{Definition, Registry, Unit};
 use loom_gate::scope::Resolved;
-use loom_gate::{Annotation, InputResolver, Tier};
+use loom_gate::{Annotation, Tier};
 
 /// Eligible owners retained by selection, not recovered from all annotations.
 pub struct Selected<'a> {
@@ -139,10 +139,7 @@ impl Admission {
     /// Recheck every admitted sibling, including unselected later lanes, before any effect.
     pub fn require_current(&self) -> anyhow::Result<()> {
         match self {
-            Self::Whole(plan, _) => {
-                // from_plan validates all siblings without executing any callback.
-                InputResolver::from_plan(plan)?;
-            }
+            Self::Whole(plan, _) => plan.require_current()?,
             Self::Diagnostic { snapshot, .. } => snapshot.require_current()?,
         }
         Ok(())
@@ -178,17 +175,21 @@ impl Admission {
         Ok(failures)
     }
 
-    pub fn explain(&self, scope: &Resolved, tiers: &[Tier]) -> anyhow::Result<Option<String>> {
+    pub fn explain(
+        &self,
+        selection: Option<&loom_gate::provider::plan::selection::Selection<'_>>,
+    ) -> anyhow::Result<Option<String>> {
         match self {
-            Self::Whole(plan, properties) => {
+            Self::Whole(_, properties) => {
                 #[derive(serde::Serialize)]
                 struct Explained<'a, T> {
                     #[serde(flatten)]
                     plan: T,
                     native_properties: &'a [property::Report],
                 }
-                let selection = plan.select_tiers(scope, tiers)?;
-                let explanation = selection.explain()?;
+                let explanation = selection
+                    .context("missing whole-plan selection")?
+                    .explain()?;
                 tracing::debug!(
                     target: "loom::gate::plan",
                     detail = %serde_json::to_string(&Explained {
@@ -219,38 +220,49 @@ impl Admission {
         &'a self,
         scope: &Resolved,
         tiers: &[Tier],
-    ) -> anyhow::Result<Vec<Selected<'a>>> {
-        self.require_current()?;
+    ) -> anyhow::Result<(
+        Vec<Selected<'a>>,
+        Option<loom_gate::provider::plan::selection::Selection<'a>>,
+    )> {
         match self {
-            Self::Diagnostic { units, .. } => Ok(units
-                .iter()
-                .filter(|unit| {
-                    unit.annotations()
+            Self::Diagnostic { units, .. } => {
+                self.require_current()?;
+                Ok((
+                    units
                         .iter()
-                        .any(|owner| tiers.contains(&owner.tier))
-                })
-                .map(|unit| Selected {
-                    unit,
-                    baseline: false,
-                    owners: unit
-                        .annotations()
-                        .iter()
-                        .filter(|owner| tiers.contains(&owner.tier))
-                        .cloned()
+                        .filter(|unit| {
+                            unit.annotations()
+                                .iter()
+                                .any(|owner| tiers.contains(&owner.tier))
+                        })
+                        .map(|unit| Selected {
+                            unit,
+                            baseline: false,
+                            owners: unit
+                                .annotations()
+                                .iter()
+                                .filter(|owner| tiers.contains(&owner.tier))
+                                .cloned()
+                                .collect(),
+                        })
                         .collect(),
-                })
-                .collect()),
-            Self::Whole(plan, _) => Ok(plan
-                .select_tiers(scope, tiers)?
-                .decisions()
-                .iter()
-                .filter(|decision| decision.reason().selected())
-                .map(|decision| Selected {
-                    unit: decision.unit(),
-                    owners: decision.owners().to_vec(),
-                    baseline: decision.baseline_tier().is_some(),
-                })
-                .collect()),
+                    None,
+                ))
+            }
+            Self::Whole(plan, _) => {
+                let selection = plan.select_tiers(scope, tiers)?;
+                let selected = selection
+                    .decisions()
+                    .iter()
+                    .filter(|decision| decision.reason().selected())
+                    .map(|decision| Selected {
+                        unit: decision.unit(),
+                        owners: decision.owners().to_vec(),
+                        baseline: decision.baseline_tier().is_some(),
+                    })
+                    .collect();
+                Ok((selected, Some(selection)))
+            }
         }
     }
 }
@@ -475,14 +487,8 @@ fn definitions(
         native_targets.extend(native.keys().cloned());
     }
     let mut reported = BTreeSet::new();
+    let mut requests = Vec::new();
     for (target, subject) in &native {
-        if !requested_native.contains(target)
-            && definitions
-                .iter()
-                .any(|definition| definition.native_applicability_covers(subject))
-        {
-            continue;
-        }
         let mut references = if let Some(reference) = target.strip_prefix("nix build ") {
             BTreeSet::from([reference])
         } else {
@@ -506,12 +512,22 @@ fn definitions(
         if !native_targets.contains(target) && !requested_report {
             continue;
         }
-        let definition = Definition::hermetic_baseline(
-            snapshot,
-            inventory,
-            Name::try_from(target.clone())?,
-            subject,
-        )?;
+        requests.push((target, subject, references));
+    }
+    let mut bindings = Vec::new();
+    for (target, subject, _) in &requests {
+        bindings.push((Name::try_from((*target).clone())?, (*subject).clone()));
+    }
+    let native_definitions = Definition::hermetic_baselines(snapshot, inventory, &bindings)?;
+    for ((target, subject, references), definition) in requests.into_iter().zip(native_definitions)
+    {
+        if !requested_native.contains(target)
+            && definitions
+                .iter()
+                .any(|definition| definition.native_applicability_covers(subject))
+        {
+            continue;
+        }
         for case in definition.reported_cases()? {
             for reference in &references {
                 let address = Name::try_from(format!(

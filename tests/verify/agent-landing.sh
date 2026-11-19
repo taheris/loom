@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 [[ $# == 1 ]] || exit 64
-fixture="$1"
+pre_push_checks="$1"
 work=$(mktemp -d)
 retain_failure() {
     local status=$?
@@ -20,10 +20,12 @@ mkdir -m 700 "$HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME"
 ssh-keygen -q -t ed25519 -N '' -f "$HOME/key"
 printf 'landing@example.invalid %s\n' "$(< "$HOME/key.pub")" > "$HOME/allowed-signers"
 git init --quiet --bare --initial-branch=main "$work/origin.git"
-mkdir "$work/source"
-cp -r "$fixture/." "$work/source/"
-chmod -R u+w "$work/source"
+# This test owns signed Git/hook composition. Native Nix execution has its
+# own smoke coverage; use Gate's real tracked document verifier here.
+mkdir -p "$work/source/docs"
 cd "$work/source"
+printf '/.loom/\n' > .gitignore
+printf '# Landing fixture\n' > docs/README.md
 git init --quiet --initial-branch=main
 git config user.name 'Agent landing fixture'
 git config user.email landing@example.invalid
@@ -35,7 +37,7 @@ git add --all
 git commit --quiet -m 'Seed isolated landing fixture'
 git remote add origin "$work/origin.git"
 git push --quiet -u origin main
-cat > .pre-commit-config.yaml <<'YAML'
+cat > .pre-commit-config.yaml <<YAML
 fail_fast: true
 repos:
   - repo: local
@@ -48,22 +50,26 @@ repos:
         require_serial: true
       - id: publication-environment
         name: required publication environment
-        entry: bash -c '[[ ! -e "$HOME/deny-publication" ]]'
+        entry: bash -c '[[ ! -e "\$HOME/deny-publication" ]]'
         language: system
         stages: [pre-push]
         always_run: true
         pass_filenames: false
       - id: loom-gate-verify-diff
         name: actual agent publication verification
-        entry: bin/pre-push-checks --hook-id loom-gate-verify-diff --hook-entry 'loom gate verify --diff' --append-push-range -- loom gate verify --diff
+        entry: bash '$pre_push_checks' --hook-id loom-gate-verify-diff --hook-entry 'loom gate verify --diff' --append-push-range -- loom gate verify --diff
         language: system
         stages: [pre-push]
         always_run: true
         pass_filenames: false
 YAML
 prek install --hook-type pre-commit --hook-type pre-push
-printf 'implemented\n' > loom-smoke-result.txt
-git add .pre-commit-config.yaml loom-smoke-result.txt
+for hook in pre-commit pre-push; do
+    IFS= read -r interpreter < ".git/hooks/$hook"
+    [[ "$interpreter" == '#!/nix/store/'*'/bin/bash' && -x "${interpreter:2}" ]]
+done
+printf '# Valid implementation\n' > docs/README.md
+git add .pre-commit-config.yaml docs/README.md
 git commit -m 'Implement the actual declared predicate' > "$work/commit.log" 2>&1
 git verify-commit HEAD
 git push origin main > "$work/push.log" 2>&1
@@ -71,15 +77,16 @@ head=$(git rev-parse HEAD)
 [[ $(git --git-dir="$work/origin.git" rev-parse main) == "$head" ]]
 grep -F 'actual agent files verification' "$work/commit.log"
 grep -F 'actual agent publication verification' "$work/push.log"
-printf 'invalid\n' > loom-smoke-result.txt
-git add loom-smoke-result.txt
+printf '\0invalid project text\n' > docs/README.md
+git add docs/README.md
 if git commit -m 'Reject invalid predicate' > "$work/rejected-commit.log" 2>&1; then
     printf 'invalid predicate passed the configured commit hook\n' >&2
     exit 1
 fi
 [[ $(git rev-parse HEAD) == "$head" ]]
-git restore --staged loom-smoke-result.txt
-printf 'implemented\n' > loom-smoke-result.txt
+grep -F 'project text contains NUL' "$work/rejected-commit.log"
+git restore --staged docs/README.md
+printf '# Valid implementation\n' > docs/README.md
 printf '\nSecond valid publication.\n' >> docs/README.md
 git add docs/README.md
 git commit -m 'Prepare another valid publication' > "$work/second-commit.log" 2>&1

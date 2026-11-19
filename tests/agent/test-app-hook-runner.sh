@@ -9,6 +9,7 @@ resource_preflight=${5:?actual Rust native source preflight is required}
 [[ -x "$resource_preflight" ]]
 cache=${6:?immutable compiler cache is required}
 nix_bin=${7:?immutable Nix executable is required}
+dolt=${8:?immutable Unix-capable Dolt executable is required}
 timeout_bin=$(command -v timeout)
 work=$(mktemp -d)
 cleanup() {
@@ -44,13 +45,15 @@ for app in "$required_app" "$full_app"; do
     printf '%s' "$runner" > "$fixture/expected-runner"
     printf '%s' "$beads" > "$fixture/expected-beads"
     printf '%s' "$nix_bin" > "$fixture/expected-nix"
-    printf 'fn main() {}\n#[test] fn immutable_capabilities_are_embedded() { assert!(std::hint::black_box(cfg!(debug_assertions))); assert_eq!(option_env!("LOOM_PREK_BIN"), Some(include_str!("../expected-runner"))); assert_eq!(option_env!("LOOM_ISSUES_BD_BIN"), Some(include_str!("../expected-beads"))); assert_eq!(option_env!("LOOM_NATIVE_NIX_BIN"), Some(include_str!("../expected-nix"))); }\n' > "$fixture/src/main.rs"
+    printf '%s' "$dolt" > "$fixture/expected-dolt"
+    printf 'fn main() {}\n#[test] fn immutable_capabilities_are_embedded() { assert!(std::hint::black_box(cfg!(debug_assertions))); assert_eq!(option_env!("LOOM_PREK_BIN"), Some(include_str!("../expected-runner"))); assert_eq!(option_env!("LOOM_ISSUES_BD_BIN"), Some(include_str!("../expected-beads"))); assert_eq!(option_env!("LOOM_NATIVE_NIX_BIN"), Some(include_str!("../expected-nix"))); assert_eq!(option_env!("LOOM_TEST_DOLT_BIN"), Some(include_str!("../expected-dolt"))); }\n' > "$fixture/src/main.rs"
     printf 'int native_c(void) { return 42; }\n' > "$fixture/native.c"
     printf 'extern "C" int native_cpp() { return 42; }\n' > "$fixture/native.cpp"
     printf '.text\n' > "$fixture/native.S"
     cat > "$fixture/build.rs" <<'RS'
 use std::{env, fs, path::PathBuf, process::Command};
 fn main() {
+    assert_eq!(env::var("LOOM_TEST_COMPILATION").unwrap(), "");
     assert_eq!(env::var("CARGO_INCREMENTAL").unwrap(), "0");
     assert_eq!(env::var("CARGO_PROFILE_DEV_DEBUG").unwrap(), "line-tables-only");
     assert_eq!(env::var("CARGO_PROFILE_TEST_DEBUG").unwrap(), "line-tables-only");
@@ -66,10 +69,16 @@ fn main() {
         assert_eq!(workspace.len(), 64);
         assert!(workspace.bytes().all(|byte| byte.is_ascii_hexdigit()));
     } else {
+        let libraries = env::var_os("DYLD_FALLBACK_LIBRARY_PATH").unwrap();
+        let compiler_libraries = PathBuf::from(&toolchain).join("lib");
+        assert!(env::split_paths(&libraries).any(|path| path == compiler_libraries));
+        assert!(!env::split_paths(&libraries).any(|path| path.ends_with("foreign-libraries")));
         assert_eq!(fs::canonicalize(target.parent().unwrap().parent().unwrap()).unwrap(), fs::canonicalize(env::var_os("CARGO_MANIFEST_DIR").unwrap()).unwrap());
     }
     assert_eq!(env::var("CC").unwrap(), "sccache cc");
     assert_eq!(env::var("CXX").unwrap(), "sccache c++");
+    let bash = Command::new("bash").args(["-c", "set -euo pipefail; declare -A values=([value]=owned); read_owned() { local -n reference=values; [[ ${reference[value]} == owned ]]; }; read_owned"]).output().unwrap();
+    assert!(bash.status.success(), "constructor must supply Bash with associative arrays and namerefs even under an empty caller PATH: {}", String::from_utf8_lossy(&bash.stderr));
     for (compiler, source, name) in [
         ("cc", "native.c", "c"),
         ("cc", "native.S", "assembly"),
@@ -90,14 +99,17 @@ fn main() {
 RS
     git -C "$fixture" add --all
     if [[ "$ambient" == absent ]]; then
-      unset LOOM_PREK_BIN LOOM_ISSUES_BD_BIN LOOM_NATIVE_NIX_BIN RUSTC RUSTDOC CARGO_BUILD_RUSTC CARGO_BUILD_RUSTDOC RUSTUP_TOOLCHAIN CARGO_TARGET_DIR
+      unset LOOM_TEST_COMPILATION LOOM_PREK_BIN LOOM_ISSUES_BD_BIN LOOM_NATIVE_NIX_BIN LOOM_TEST_DOLT_BIN RUSTC RUSTDOC CARGO_BUILD_RUSTC CARGO_BUILD_RUSTDOC RUSTUP_TOOLCHAIN CARGO_TARGET_DIR DYLD_FALLBACK_LIBRARY_PATH
     else
+      export LOOM_TEST_COMPILATION="$fixture/untrusted-ambient-compiler"
       export LOOM_PREK_BIN="$fixture/untrusted-ambient-runner"
       export LOOM_ISSUES_BD_BIN="$fixture/untrusted-ambient-beads"
       export LOOM_NATIVE_NIX_BIN="$fixture/untrusted-ambient-nix"
+      export LOOM_TEST_DOLT_BIN="$fixture/untrusted-ambient-dolt"
       export RUSTC="$fixture/foreign-rustc" RUSTDOC="$fixture/foreign-rustdoc"
       export CARGO_BUILD_RUSTC="$RUSTC" CARGO_BUILD_RUSTDOC="$RUSTDOC"
       export RUSTUP_TOOLCHAIN=foreign-toolchain CARGO_TARGET_DIR="$fixture/foreign-target"
+      export DYLD_FALLBACK_LIBRARY_PATH="$fixture/foreign-libraries"
     fi
     if ! (cd "$fixture"; PATH="$work/empty-bin" "$timeout_bin" --kill-after=5s 180s "$app") > "$fixture/suite.log" 2>&1; then
       cat "$fixture/suite.log"

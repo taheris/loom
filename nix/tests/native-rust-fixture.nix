@@ -3,6 +3,7 @@
   pkgs,
   crane,
   toolchain,
+  compilerHooks,
   nextest,
 }:
 let
@@ -26,6 +27,7 @@ let
     src = seedSource;
     cargoArtifacts = null;
     cargoVendorDir = pkgs.emptyDirectory;
+    nativeBuildInputs = compilerHooks;
     buildPhaseCargoCommand = "cargo build --offline --locked";
   };
   compiler = pkgs.symlinkJoin {
@@ -53,6 +55,12 @@ let
           jqPath = builtins.appendContext "${pkgs.lib.getBin pkgs.jq}" {
             "${pkgs.lib.getBin pkgs.jq}" = { path = true; };
           };
+          gitPath = builtins.appendContext "${pkgs.git}" { "${pkgs.git}" = { path = true; }; };
+          compilerHooks = [
+            ${pkgs.lib.concatMapStringsSep "\n" (
+              hook: ''(builtins.appendContext "${hook}" { "${hook}" = { path = true; }; })''
+            ) compilerHooks}
+          ];
           craneLib = (crane.mkLib pkgs).overrideToolchain compilerPath;
           checked = import ./verification.nix;
           source = checked.resource {
@@ -72,7 +80,9 @@ let
               cargoVendorDir = craneLib.vendorCargoDeps {
                 cargoLock = builtins.path { path = ./Cargo.lock; name = "Cargo.lock"; };
               };
-              nativeBuildInputs = [ nextestPath jqPath ];
+              LOOM_NATIVE_NIX_BIN = "${pkgs.nix}/bin/nix";
+              LOOM_NATIVE_SHELL_BIN = "${pkgs.runtimeShell}";
+              nativeBuildInputs = [ nextestPath jqPath gitPath ] ++ compilerHooks;
             };
           };
         in {
@@ -131,6 +141,30 @@ let
       [[profile.default.overrides]]
       filter = 'test(native_case)'
       test-group = 'probe'
+    '';
+    "payload/native-store.rs" = ''
+      #[test]
+      fn canonical_store_build_is_visible_through_normal_filesystem_io() {
+          let expression = concat!(
+              "derivation { name = \"loom-canonical-store-probe\"; system = \"${pkgs.stdenv.hostPlatform.system}\"; builder = builtins.appendContext \"",
+              env!("LOOM_NATIVE_SHELL_BIN"),
+              "\" { \"${builtins.dirOf (builtins.dirOf pkgs.runtimeShell)}\" = { path = true; }; }; args = [ \"-c\" \"printf probe > $out\" ]; }",
+          );
+          for rebuild in [false, true] {
+              let mut command = std::process::Command::new(env!("LOOM_NATIVE_NIX_BIN"));
+              command.arg("--extra-experimental-features").arg("nix-command flakes");
+              command.args(["build", "--print-out-paths", "--offline", "--no-substitute",
+                  "--option", "sandbox", "true", "--option", "sandbox-fallback", "false",
+                  "--option", "builders", "", "--max-jobs", "1", "--cores", "4", "--expr", expression]);
+              command.arg("--out-link").arg(std::env::temp_dir().join("canonical-store-output"));
+              if rebuild { command.arg("--rebuild"); }
+              let output = command.output().unwrap();
+              assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+              let path = String::from_utf8(output.stdout).unwrap();
+              assert!(path.trim().starts_with("/nix/store/"));
+              assert_eq!(std::fs::read(path.trim()).unwrap(), b"probe");
+          }
+      }
     '';
     "payload/input.txt" = "valid\n";
     "loom.toml" = "";

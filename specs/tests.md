@@ -37,6 +37,24 @@ packaged-agent health. Loom tests its own configuration, launch payloads, result
 handling and failure/isolation decisions without launching Wrix to recheck its
 implementation.
 
+On Darwin, the complete mixed workspace reporter requires the canonical Nix
+store and runs through the explicit `native-store` boundary. This retains every
+native test and compiler-discovered identity without a failure-name exclusion
+list. It is not confinement evidence. The separate confined component/UDS suite
+and OpenAI-compatible HTTP suite remain strict Nix checks; genuine TCP protocol
+and canonical-store integration remain required native executions. Linux keeps
+the existing agent-native workspace producer. Sharing the mixed compiler/suite
+owner does not turn preparation or successful reporter creation into a verdict.
+
+`native-store` admits complete checked Cargo test reporters, not arbitrary
+recipes or an automatic retry after sandbox failure. It prepares compiler inputs
+under strict sandboxing, then executes the captured reporter locally with
+private fixture state, a finite deadline and storage floor. Nested Nix commands
+retain strict sandbox defaults; no remote unsandboxed builder or sandbox-daemon
+bridge is introduced. Store/configuration identity, complete catalogue
+admission, actual recipe-byte verification and before/after freshness guards
+remain required. Native-store results cannot be relabelled as hermetic.
+
 Internal per-crate file and module organization remains an implementation choice
 rather than part of this spec's contract.
 
@@ -593,9 +611,10 @@ is exposed separately by `nix run .#smoke-container` on Linux; ordinary
   recreating the container backend or claiming kernel isolation
   [system](nix build .#verification-system-smoke)
 
-- Every ordinary exported package and app uses native-process verification;
-  container substrate assembly is available only through an explicit diagnostic
-  output, not an ordinary landing root
+- Ordinary exported packages and apps use native-process verification, with
+  canonical-store execution restricted to complete Cargo test reporters;
+  container substrate assembly remains an explicit diagnostic, not an ordinary
+  landing root
   [check](nix build .#verification-kernel-free-surface)
 
 - Ordinary full and required suite entrypoints do not invoke kernel
@@ -606,6 +625,19 @@ is exposed separately by `nix run .#smoke-container` on Linux; ordinary
   without kernel privileges, while invalid verifier input or an unsatisfied
   publication hook preserves the previous HEAD or remote
   [check](nix build .#verification-agent-landing)
+
+- An ordinary recipe cannot acquire canonical-store execution by changing its
+  runtime label; only complete checked Cargo test reporters are eligible.
+  [test](native_store_rejects_non_cargo_test_execution)
+
+- Darwin's canonical-store reporter retains genuine builds and normal filesystem
+  reads, rejection of hermetic relabelling and stale sources, and actual fresh
+  passing/failing reports; Linux retains its agent-native producer.
+  [test](workspace_store_execution_preserves_platform_and_report_contracts)
+
+- Confined component and native UDS fixtures run under strict Nix sandboxing,
+  independently of the complete host-native workspace reporter.
+  [check](nix build .#verification-confined-runtime)
 
 ### Test-source portability
 

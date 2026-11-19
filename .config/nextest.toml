@@ -1,7 +1,7 @@
 experimental = ["wrapper-scripts"]
 
 [scripts.wrapper.private-fixtures]
-command = ['bash', '-c', 'set -euo pipefail; exec bash "$NEXTEST_WORKSPACE_ROOT/scripts/run-private-fixture-tests" --test-process "$@"', 'bash']
+command = ['bash', '-c', 'set -euo pipefail; exec bash "$NEXTEST_WORKSPACE_ROOT/nix/private-fixture-tests.sh" --test-process "$@"', 'bash']
 target-runner = "within-wrapper"
 
 [[profile.default.scripts]]
@@ -15,6 +15,12 @@ default-filter = 'all()'
 # Begin whole-workspace Nix construction before short cases can create a long tail.
 [[profile.default.overrides]]
 filter = 'test(=inventory::nix::tests::shipped_workspace_packages_construct_complete_native_graphs_from_captured_definitions)'
+priority = 100
+
+# Embedded SQL and assembled-system campaigns must not compete with other compilers.
+[[profile.default.overrides]]
+filter = '(package(=loom-issues) & binary(=native)) | test(=native_system::native_system_scenarios_execute_actual_programs_in_canonical_store)'
+threads-required = 'num-cpus'
 priority = 100
 
 # Long-running backend-driven policy cases should overlap the rest of the suite,

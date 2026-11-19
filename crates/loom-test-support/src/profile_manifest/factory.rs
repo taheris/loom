@@ -321,14 +321,17 @@ pub fn publish_with_key(
         crate::manifest_dir(env!("CARGO_MANIFEST_DIR")).join("../../nix/verification.nix"),
         &checked,
     )?;
+    // Discovery consumes data; the equivalent legacy producer also supplies
+    // the fixture's checked evaluation coverage for whole-tree audit cases.
     let flake = format!(
-        "{{ outputs = {{ self }}: let checked = import ./.profile-fixture/verification.nix; in {{ packages.{}.profile-catalogue = checked.check {{ runtime = \"native-process\"; purpose = \"artifact\"; resources = []; evaluation = [ (checked.resource {{ root = ./.; origin = \"flake.nix\"; }}) (checked.resource {{ root = ./.; origin = \".profile-fixture/verification.nix\"; }}) ]; build = _: builtins.derivation {{ name = \"fixture-catalogue.json\"; allowSubstitutes = false; preferLocalBuild = true; system = {}; builder = builtins.appendContext {} {{ {} = {{ path = true; }}; }}; args = [ \"-c\" \"printf '%s' \\\"$1\\\" > \\\"$out\\\"\" \"fixture\" (builtins.appendContext {} {{ {} }}) ]; }}; }}; }}; }}\n",
+        "{{ outputs = {{ self }}: let checked = import ./.profile-fixture/verification.nix; text = builtins.appendContext {} {{ {} }}; in {{ legacyPackages.{}.profile-catalogue = builtins.toFile \"fixture-catalogue.json\" text; packages.{}.catalogue-derivation = checked.check {{ runtime = \"native-process\"; purpose = \"artifact\"; resources = []; evaluation = [ (checked.resource {{ root = ./.; origin = \"flake.nix\"; }}) (checked.resource {{ root = ./.; origin = \".profile-fixture/verification.nix\"; }}) ]; build = _: builtins.derivation {{ name = \"fixture-catalogue.json\"; allowSubstitutes = false; preferLocalBuild = true; system = {}; builder = builtins.appendContext {} {{ {} = {{ path = true; }}; }}; args = [ \"-c\" \"printf '%s' \\\"$1\\\" > \\\"$out\\\"\" \"fixture\" text ]; }}; }}; }}; }}\n",
+        literal(&catalogue.to_string()),
+        context,
+        literal(system),
         literal(system),
         literal(system),
         literal(&shell.to_string_lossy()),
         literal(&shell_root.to_string_lossy()),
-        literal(&catalogue.to_string()),
-        context
     );
     std::fs::write(workspace.join("flake.nix"), flake)?;
     // A private exclude keeps transport fixtures and runtime state out of source authority.

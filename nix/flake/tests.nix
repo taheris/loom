@@ -1,7 +1,8 @@
 # nix/flake/tests.nix
 #
-# Lifts the native source-analysis/workspace-test derivation into `packages.<system>` so
-# it can be built directly via `nix build .#loom-tests`. It is *not*
+# Exposes the complete workspace-test producer in `packages.<system>`.
+# Gate dispatches its declared runtime; Darwin's canonical-store reporter is not
+# an inner Nix-sandbox execution. It is *not*
 # attached to `checks.<system>` — per specs/pre-commit.md the fast
 # tier (`nix flake check`) must not expose full workspace clippy/nextest;
 # that work runs through the explicit `nix run .#test` full-suite app.

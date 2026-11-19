@@ -50,6 +50,7 @@ pub enum Capability {
     NixSandbox,
     ContainerEngine,
     HostKernel,
+    CanonicalNixStore,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -242,6 +243,12 @@ impl Candidate {
             } => BTreeSet::from([Capability::NixMetadata]),
             Self::TrackedRust { .. } => BTreeSet::new(),
             Self::NativeProcess { execution, .. } => {
+                if execution.runtime == super::nix::Runtime::NativeStore {
+                    return BTreeSet::from([
+                        Capability::NixMetadata,
+                        Capability::CanonicalNixStore,
+                    ]);
+                }
                 if matches!(
                     execution.process,
                     Some(super::nix::process::Context::LocalAgent { .. })
@@ -253,6 +260,7 @@ impl Candidate {
             }
             Self::HermeticNix { execution, .. } => match execution.runtime {
                 super::nix::Runtime::NativeProcess => BTreeSet::from([Capability::NixMetadata]),
+                super::nix::Runtime::NativeStore => BTreeSet::from([Capability::CanonicalNixStore]),
                 super::nix::Runtime::Nix => BTreeSet::from([Capability::NixSandbox]),
                 super::nix::Runtime::NativeCgroup => {
                     BTreeSet::from([Capability::NixSandbox, Capability::HostKernel])

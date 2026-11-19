@@ -52,7 +52,7 @@ elif [[ "${1:-}" == --test-process ]]; then
 fi
 
 if [[ "$#" == 0 ]]; then
-  printf 'Usage: run-private-fixture-tests [--build-campaign|--test-process] <command> [args...]\n' >&2
+  printf 'Usage: private-fixture-tests.sh [--build-campaign|--test-process] <command> [args...]\n' >&2
   exit 2
 fi
 
@@ -73,10 +73,15 @@ done
 export RUSTC_WRAPPER="" RUSTC_WORKSPACE_WRAPPER=""
 export CARGO_BUILD_RUSTC_WRAPPER="" CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER=""
 
-if [[ "$fixture_process" == false && -z "${NEXTEST_TEST_THREADS:-}" ]]; then
-  : "${LOOM_TEST_SCHEDULING:?missing declared native scheduling helper}"
+# Packaged campaigns provide a resource-aware scheduler. Direct Cargo runs
+# retain Nextest's native scheduling unless the caller explicitly supplies one.
+if [[ "$fixture_process" == false && -z "${NEXTEST_TEST_THREADS:-}" && -n "${LOOM_TEST_SCHEDULING:-}" ]]; then
   NEXTEST_TEST_THREADS=$(bash "$LOOM_TEST_SCHEDULING")
   export NEXTEST_TEST_THREADS
+fi
+
+if [[ -n "${LOOM_TEST_SOURCE_ROOT:-}" ]]; then
+  export INSTA_WORKSPACE_ROOT="$LOOM_TEST_SOURCE_ROOT"
 fi
 
 umask 077
@@ -119,39 +124,41 @@ mkdir -p -- "$XDG_STATE_HOME/loom/trusted-cargo"
 printf '{"reservation_bytes":1048576}\n' > "$XDG_STATE_HOME/loom/trusted-cargo/policy.json"
 # Seed only declared readonly inputs into the packaged suite's disposable local store.
 if [[ "$fixture_process" == false && -n "${LOOM_TEST_NIX_REGISTRATION:-}" ]]; then
-  export NIX_REMOTE=local NIX_STORE_DIR=/nix/store
+  export NIX_REMOTE="local://?real=$TMPDIR/store" NIX_STORE_DIR=/nix/store
   export NIX_STATE_DIR="$TMPDIR/nix-state" NIX_LOG_DIR="$TMPDIR/nix-log"
   export NIX_CONF_DIR="$TMPDIR/nix-conf"
   mkdir -p "$NIX_STATE_DIR" "$NIX_LOG_DIR" "$NIX_CONF_DIR"
   printf '%s\n' \
     'experimental-features = nix-command flakes' \
     'build-users-group =' \
+    "store = $NIX_REMOTE" \
     'require-sigs = true' \
     "sandbox = $nix_sandbox" \
     'sandbox-fallback = false' \
     'allow-import-from-derivation = false' \
     'substituters =' \
     'builders =' > "$NIX_CONF_DIR/nix.conf"
+  # Ambient settings must not override this owned store or its admitted policy.
+  NIX_CONFIG="${NIX_CONFIG:-}"$'\n'"$(< "$NIX_CONF_DIR/nix.conf")"
+  export NIX_CONFIG
   # Runtime tools stay off the compiler PATH, including during fixture seeding.
   "${LOOM_NATIVE_NIX_BIN:?missing declared Nix tool}"-store --load-db < "$LOOM_TEST_NIX_REGISTRATION"
-  # Initialize only this Nix-owned disposable build source, never an operator checkout.
-  git init -q
-  git add --all
-  git -c user.name='Loom native suite' -c user.email='native@example.invalid' \
-    -c commit.gpgsign=false commit -q -m 'Capture native suite source'
+  # Keep canonical logical identities, but own all physical bytes and store writes.
+  # A strict Darwin builder cannot initialize the host store's .links directory.
+  "$LOOM_NATIVE_NIX_BIN" path-info --all > "$TMPDIR/sdk-paths"
+  while IFS= read -r path; do
+    cp -a --no-preserve=ownership --reflink=auto -- "$path" "$TMPDIR/store/${path##*/}"
+  done < "$TMPDIR/sdk-paths"
+  "$LOOM_NATIVE_NIX_BIN"-store --verify --check-contents
 fi
 
 writable_directories() {
-  local root="$1" child
+  local root="$1"
   if [[ -L "$root" || ! -d "$root" || ! -O "$root" ]]; then
     return 0
   fi
-  if [[ ! -w "$root" ]]; then chmod u+w -- "$root"; fi
-  for child in "$root"/* "$root"/.[!.]* "$root"/..?*; do
-    if [[ -d "$child" && ! -L "$child" ]]; then
-      writable_directories "$child"
-    fi
-  done
+  # Prune foreign ownership and never follow links, including at chmod time.
+  find -P "$root" ! -user "$EUID" -prune -o -type d -exec chmod -h u+w -- {} +
 }
 
 cleanup() {

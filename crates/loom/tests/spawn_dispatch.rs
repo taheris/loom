@@ -758,9 +758,10 @@ fn install_loom_noop_stub(dir: &Path) -> PathBuf {
 /// per-bead profile image. A future profile-resolution change that drops the
 /// `image_ref`/`image_source` fields, uses the direct `ProfileConfig`, or
 /// renames the subcommand will trip this assertion before the wrapper ever
-/// sees the malformed argv.
+/// sees the malformed argv. The same session checks the child pipe and live
+/// event/log contract; those observations do not require separate agent launches.
 #[test]
-fn wrix_spawn_invocation_records_correct_argv() {
+fn todo_pi_session_preserves_spawn_stdio_and_event_contracts() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
 
@@ -787,6 +788,9 @@ fn wrix_spawn_invocation_records_correct_argv() {
         output.status.success(),
         "loom todo --agent pi must exit 0 against the mock pi shim. stdout={stdout} stderr={stderr}",
     );
+
+    assert_todo_agent_events_render_live_progress(workspace, &output);
+    assert_child_stdin_is_a_pipe_not_a_tty(&stdin_info, &output);
 
     let argv = std::fs::read_to_string(&argv_file).expect("shim should record argv");
     let tokens: Vec<&str> = argv.lines().collect();
@@ -1045,37 +1049,11 @@ __BD_READY_JSON__\n\
     bin_dir
 }
 
-/// Drive the real `loom todo` command through its Pi handshake and assert the
-/// shared renderer prints agent output before the production summary writer.
-/// The same run also verifies the phase-root JSONL path and canonical events.
-#[test]
-fn todo_agent_events_render_live_progress() {
-    let dir = tempfile::tempdir().unwrap();
-    let workspace = dir.path();
-
-    let shim_dir = dir.path().join("shim");
-    std::fs::create_dir_all(&shim_dir).unwrap();
-    let argv_file = shim_dir.join("argv.txt");
-    let stdin_info = shim_dir.join("stdin-info.txt");
-    let spawn_copy = shim_dir.join("spawn-config.json");
-    let shim = install_wrix_shim(
-        &shim_dir,
-        &argv_file,
-        &stdin_info,
-        &spawn_copy,
-        &mock_pi_path(),
-        "happy-path",
-    );
-
-    let loom_bin = loom_cli();
-    let output = drive_loom_todo_pi(workspace, &shim, loom_bin);
-
+/// Check live rendering, the phase-root JSONL path and canonical event ordering
+/// from the shared Todo/Pi session.
+fn assert_todo_agent_events_render_live_progress(workspace: &Path, output: &std::process::Output) {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "loom todo --agent pi must exit 0 against the mock pi shim. stdout={stdout} stderr={stderr}",
-    );
 
     // The todo phase log path is `<workspace>/.loom/logs/todo/todo-<utc>.jsonl`.
     let logs_dir = workspace.join(".loom/logs/todo");
@@ -2233,7 +2211,7 @@ fn todo_spawn_fixture_ignores_inherited_native_profile_provisioning() {
     let output = Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            "wrix_spawn_invocation_records_correct_argv",
+            "todo_pi_session_preserves_spawn_stdio_and_event_contracts",
             "--nocapture",
         ])
         .env("LOOM_PROVISIONED_PROFILES_MANIFEST", manifest)
@@ -2377,36 +2355,10 @@ fn bd_dispatch_stubs_distinguish_sources_roots_and_decision_inventory_queries() 
 /// coming"; if the underlying handle were a TTY (or a regular file), the
 /// agent's `read` would either block or return non-EOF, breaking the
 /// shutdown contract.
-#[test]
-fn child_stdin_is_a_pipe_not_a_tty() {
-    let dir = tempfile::tempdir().unwrap();
-    let workspace = dir.path();
-
-    let shim_dir = dir.path().join("shim");
-    std::fs::create_dir_all(&shim_dir).unwrap();
-    let argv_file = shim_dir.join("argv.txt");
-    let stdin_info = shim_dir.join("stdin-info.txt");
-    let spawn_copy = shim_dir.join("spawn-config.json");
-    let shim = install_wrix_shim(
-        &shim_dir,
-        &argv_file,
-        &stdin_info,
-        &spawn_copy,
-        &mock_pi_path(),
-        "happy-path",
-    );
-
-    let loom_bin = loom_cli();
-    let output = drive_loom_todo_pi(workspace, &shim, loom_bin);
-
+fn assert_child_stdin_is_a_pipe_not_a_tty(stdin_info: &Path, output: &std::process::Output) {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "loom todo --agent pi must exit 0 against the mock pi shim. stdout={stdout} stderr={stderr}",
-    );
-
-    let info = std::fs::read_to_string(&stdin_info).expect("shim should record stdin info");
+    let info = std::fs::read_to_string(stdin_info).expect("shim should record stdin info");
     assert!(
         info.contains("stdin_is_tty=0"),
         "child stdin must NOT be a TTY (got {info:?})",

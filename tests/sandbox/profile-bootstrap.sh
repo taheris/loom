@@ -6,8 +6,7 @@ wrix_bin="${2:?fixed Wrix launcher is required}"
 bash_package="${3:?fixed builder package is required}"
 coreutils_package="${4:?fixed symlink tool package is required}"
 system="${5:?fixed host system is required}"
-catalogue="${6:?fixed recipe-only catalogue is required}"
-profile_probe="${7:?production selected provisioning probe is required}"
+profile_probe="${6:?production selected provisioning probe is required}"
 if [[ "${LOOM_INSIDE:-0}" == 1 ]]; then
   printf 'profile bootstrap requires the trusted driver lane; worker coverage remains unverified\n' >&2
   exit 77
@@ -28,6 +27,47 @@ cleanup() {
   exit "$status"
 }
 trap cleanup EXIT
+# Instantiate fixture recipes only after the private store has its runtime SDK.
+# Exporting recipe metadata through closureInfo would also demand the shell's
+# entire build history, including unrealized bootstrap sources.
+cat > "$fixture/catalogue.nix" <<'NIX'
+{ shell, system, nonce }:
+let
+  retain = path: builtins.appendContext path { "${path}" = { path = true; }; };
+  profile = builtins.toFile "bootstrap-fixture-profile.json" ''{"profile":{"mounts":[]}}'';
+  image = builtins.toFile "bootstrap-fixture-image.json" "{}";
+  manifest = builtins.derivation {
+    name = "bootstrap-selected-manifest-${nonce}.json";
+    inherit system;
+    builder = "${retain shell}/bin/bash";
+    args = [ "-euc" ''printf '%s' "$text" > "$out"'' ];
+    text = builtins.toJSON {
+      rust.direct = {
+        ref = "bootstrap-fixture";
+        source = "${image}";
+        source_kind = "nix-descriptor";
+        profile_config = "${profile}";
+        native_preflight = "rust";
+      };
+    };
+  };
+in builtins.toFile "bootstrap-catalogue.json" (builtins.toJSON {
+  schema = 1;
+  profiles.rust.direct = {
+    ref = "bootstrap-fixture";
+    source_kind = "nix-descriptor";
+    realization = {
+      path = builtins.unsafeDiscardStringContext "${manifest}";
+      derivation = builtins.unsafeDiscardOutputDependency manifest.drvPath;
+    };
+  };
+})
+NIX
+catalogue=$(nix-instantiate --eval --strict --json --read-write-mode "$fixture/catalogue.nix" \
+  --argstr shell "$bash_package" --argstr system "$system" --argstr nonce "${fixture##*/}" | jq -r .)
+nix-store --realise "$catalogue" --add-root "$fixture/catalogue-root" --indirect >/dev/null
+selected_manifest=$(jq -r '.profiles.rust.direct.realization.path' "$catalogue")
+[[ ! -e "$selected_manifest" ]]
 export HOME="$fixture/home"
 export XDG_STATE_HOME="$HOME/.local/state"
 export XDG_CONFIG_HOME="$HOME/.config"
@@ -250,6 +290,12 @@ before_selection=$(wc -l < .loom/diagnostics/profile-provisioning.jsonl)
 jq -e '.ref == "bootstrap-fixture" and .native_preflight == "rust"' "$fixture/selected.json" >/dev/null
 selected_manifest=$(jq -r '.profiles.rust.direct.realization.path' "$catalogue")
 [[ -f "$selected_manifest" ]]
+selected_recipe=$(jq -r '.profiles.rust.direct.realization.derivation' "$catalogue")
+nix derivation show --recursive "$selected_recipe" | jq -e '(.derivations // .) | length == 1' >/dev/null
+for resource in source profile_config; do
+  resource_path=$(jq -r ".rust.direct.$resource" "$selected_manifest")
+  nix-store --query --references "$selected_manifest" | grep -Fx "$resource_path"
+done
 nix-store --query --roots "$selected_manifest" | grep -F "$XDG_STATE_HOME/loom/profile-provisions/"
 jq -se --argjson before "$before_selection" \
   '.[ $before: ] | map(.operation) == ["catalogue", "catalogue-root", "recipe-binding", "selected-entry"] and all(.[]; .exit_code == 0 and .coverage_admitted == false)' \

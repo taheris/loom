@@ -368,7 +368,7 @@ is required.
   ProfileConfig through the external `wrix spawn` boundary. Wrix owns image
   installation, digest reuse and container isolation; Loom verifies its payload
   without launching that backend
-  [test](wrix_spawn_invocation_records_correct_argv)
+  [test](todo_pi_session_preserves_spawn_stdio_and_event_contracts)
 
 - Per-bead profile/runtime selection: two beads with different profile labels or
   backend runtimes result in `wrix spawn` invocations with the matching

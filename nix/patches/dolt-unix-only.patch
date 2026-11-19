@@ -1,0 +1,46 @@
+diff --git a/go/libraries/doltcore/servercfg/serverconfig.go b/go/libraries/doltcore/servercfg/serverconfig.go
+--- a/go/libraries/doltcore/servercfg/serverconfig.go
++++ b/go/libraries/doltcore/servercfg/serverconfig.go
+@@ -322 +322 @@
+-	if config.Port() < 1024 || config.Port() > 65535 {
++	if (config.Port() < 1024 || config.Port() > 65535) && !(config.Port() == 0 && config.Socket() != "") {
+diff --git a/go/cmd/dolt/commands/sqlserver/server.go b/go/cmd/dolt/commands/sqlserver/server.go
+--- a/go/cmd/dolt/commands/sqlserver/server.go
++++ b/go/cmd/dolt/commands/sqlserver/server.go
+@@ -1277,0 +1278,7 @@
++	if serverConfig.Port() == 0 && serverConfig.Socket() != "" {
++		listener, err := net.Listen("unix", serverConfig.Socket())
++		if err != nil {
++			return server.Config{}, err
++		}
++		return server.Config{Protocol: "unix", Address: serverConfig.Socket(), Listener: listener}, nil
++	}
+diff --git a/go/cmd/dolt/commands/sqlserver/queryist_utils.go b/go/cmd/dolt/commands/sqlserver/queryist_utils.go
+--- a/go/cmd/dolt/commands/sqlserver/queryist_utils.go
++++ b/go/cmd/dolt/commands/sqlserver/queryist_utils.go
+@@ -84,0 +85,7 @@
++	socket, unix := strings.CutPrefix(host, "unix:")
++	if unix {
++		if socket == "" {
++			return nil, errors.New("Unix SQL endpoint requires a socket path")
++		}
++		clientConfig = unixClientConfig{ServerConfig: clientConfig, socket: socket}
++	}
+@@ -94 +101,5 @@
+-	parsedMySQLConfig.Addr = fmt.Sprintf("%s:%d", host, port)
++	if unix {
++		parsedMySQLConfig.Addr = socket
++	} else {
++		parsedMySQLConfig.Addr = fmt.Sprintf("%s:%d", host, port)
++	}
+@@ -125 +136 @@
+-		if host == "localhost" || (ip != nil && ip.IsLoopback()) {
++		if unix || host == "localhost" || (ip != nil && ip.IsLoopback()) {
+@@ -142,0 +154,7 @@
++type unixClientConfig struct {
++	servercfg.ServerConfig
++	socket string
++}
++
++func (c unixClientConfig) Socket() string { return c.socket }
++

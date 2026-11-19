@@ -177,23 +177,43 @@ rec {
         )
       );
     in
-    pkgs.runCommand "profile-images.json"
-      {
-        outputs = [
-          "out"
-          "nativePreflight"
-        ];
-        passthru = {
-          inherit manifest sandboxes nativeCapabilities;
-          profiles = attrNames profiles;
-          runtimes = attrNames runtimes;
-        };
-      }
-      ''
-        set -euo pipefail
-        cp ${pkgs.writeText "images.json" (builtins.toJSON manifest)} "$out"
-        cp ${pkgs.writeText "native-preflight.json" (builtins.toJSON nativeCapabilities)} "$nativePreflight"
-      '';
+    (import ./verification.nix).artifact {
+      runtime = "native-process";
+      resources = pkgs.lib.optionals (profiles ? rust) (
+        map
+          (
+            origin:
+            (import ./verification.nix).resource {
+              root = ../.;
+              inherit origin;
+              name = builtins.baseNameOf origin;
+            }
+          )
+          [
+            "scripts/worker-native-preflight.sh"
+            "scripts/configure-cargo-patches.sh"
+          ]
+      );
+      build =
+        _:
+        pkgs.runCommand "profile-images.json"
+          {
+            outputs = [
+              "out"
+              "nativePreflight"
+            ];
+            passthru = {
+              inherit manifest sandboxes nativeCapabilities;
+              profiles = attrNames profiles;
+              runtimes = attrNames runtimes;
+            };
+          }
+          ''
+            set -euo pipefail
+            cp ${pkgs.writeText "images.json" (builtins.toJSON manifest)} "$out"
+            cp ${pkgs.writeText "native-preflight.json" (builtins.toJSON nativeCapabilities)} "$nativePreflight"
+          '';
+    };
 
   mkProfileCatalogue = import ./profile-catalogue.nix { inherit mkProfileManifest; };
 

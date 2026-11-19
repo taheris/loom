@@ -28,6 +28,8 @@ mod inbox_chat;
 mod inbox_persist;
 mod marker_cli;
 mod marker_gate;
+#[cfg(target_os = "macos")]
+mod native_system;
 mod nested_loom_guard;
 mod pending_readiness;
 mod plan_cli;

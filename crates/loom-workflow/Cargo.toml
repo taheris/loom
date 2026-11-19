@@ -7,6 +7,10 @@ version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# Mandatory operator-hook control; strict builder fixtures use Unix sockets.
+native-tcp-tests = []
+
 [[test]]
 name = "integration"
 path = "tests/integration.rs"

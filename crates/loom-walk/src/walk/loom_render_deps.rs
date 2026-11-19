@@ -4,7 +4,7 @@
 //! external log tools reuse it without pulling in rusqlite, gix,
 //! tokio, etc.
 
-use super::util::{read_to_string, verdict_from, workspace_root};
+use super::util::verdict_from;
 use super::{Verdict, WalkInput};
 
 super::manifest::registration!("loom_render_deps", "loom-render");
@@ -14,19 +14,6 @@ const RULE: &str =
 
 const REQUIRED: &str = "loom-events";
 const FORBIDDEN: &[&str] = &["loom-driver", "loom-workflow"];
-
-fn rule(input: &WalkInput) -> Verdict {
-    let root = workspace_root(input);
-    let manifest = root.join(MANIFEST);
-    let mut violations = Vec::new();
-
-    let Some(body) = read_to_string(input, &manifest) else {
-        violations.push("crates/loom-render/Cargo.toml:1 manifest not readable".to_string());
-        return verdict_from(RULE, violations);
-    };
-
-    analyze(&body)
-}
 
 fn analyze(body: &str) -> Verdict {
     let mut violations = Vec::new();
@@ -65,5 +52,5 @@ fn analyze(body: &str) -> Verdict {
 
 /// Standalone and checked dispatch execute the identical rule body.
 pub fn run(input: &WalkInput) -> Verdict {
-    input.finish(rule(input))
+    super::manifest::run(input, MANIFEST, RULE, analyze)
 }

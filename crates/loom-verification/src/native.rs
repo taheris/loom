@@ -79,6 +79,7 @@ enum Operation {
 enum Runtime {
     Nix,
     NativeProcess,
+    NativeStore,
     NativeCgroup,
     NativeContainer,
 }
@@ -145,8 +146,10 @@ fn nix(args: &[String]) -> Result<Value> {
 fn strings(args: &[&str]) -> Vec<String> {
     args.iter().map(|s| (*s).to_owned()).collect()
 }
-fn metadata(root: &Path, tracked: bool) -> Result<Value> {
-    let root = root.canonicalize()?;
+fn flake_source(root: &Path, tracked: bool) -> Result<Value> {
+    let root = root
+        .canonicalize()
+        .with_context(|| format!("locating native source {}", root.display()))?;
     let reference = format!(
         "{}{}",
         if tracked { "git+file://" } else { "path:" },
@@ -154,7 +157,7 @@ fn metadata(root: &Path, tracked: bool) -> Result<Value> {
     );
     nix(&strings(&[
         "flake",
-        "metadata",
+        if tracked { "archive" } else { "metadata" },
         &reference,
         "--json",
         "--offline",
@@ -322,7 +325,10 @@ fn source_files(source: &Source) -> Result<Vec<(PathBuf, PathBuf)>> {
 fn match_file(captured: &Path, origin: &Path, native: &Path) -> Result<()> {
     let actual = captured.join(origin);
     ensure!(
-        fs::read(&actual)? == fs::read(native)?
+        fs::read(&actual)
+            .with_context(|| format!("reading captured source {}", actual.display()))?
+            == fs::read(native)
+                .with_context(|| format!("reading declared source {}", native.display()))?
             && (fs::metadata(actual)?.mode() & 0o111 != 0)
                 == (fs::metadata(native)?.mode() & 0o111 != 0),
         "runtime Cargo source differs from declared source: {}",
@@ -373,7 +379,7 @@ fn reevaluate(group: &Group, system: &str) -> Result<()> {
                 fs::Permissions::from_mode(fs::metadata(native)?.mode()),
             )?;
         }
-        let isolated = evaluate(&metadata(staged.path(), false)?, system, &group.targets)?;
+        let isolated = evaluate(&flake_source(staged.path(), false)?, system, &group.targets)?;
         ensure!(
             isolated == group.definitions,
             "native source partition changes derivation: {:?}",
@@ -393,7 +399,7 @@ fn reevaluate(group: &Group, system: &str) -> Result<()> {
 }
 
 pub fn run(root: &Path) -> Result<()> {
-    let project = metadata(root, true)?;
+    let project = flake_source(root, true)?;
     let captured = PathBuf::from(
         project["path"]
             .as_str()
@@ -402,10 +408,15 @@ pub fn run(root: &Path) -> Result<()> {
     if let Some(file) = env::var_os("LOOM_TEST_DECLARED_SOURCES_FILE") {
         runtime_sources(
             &captured,
-            &serde_json::from_slice::<Vec<Source>>(&fs::read(file)?)?,
+            &serde_json::from_slice::<Vec<Source>>(&fs::read(&file).with_context(|| {
+                format!(
+                    "reading native source manifest {}",
+                    Path::new(&file).display()
+                )
+            })?)?,
         )?;
     }
-    let project = metadata(&captured, false)?;
+    let project = flake_source(&captured, false)?;
     let configuration = nix(&strings(&["config", "show", "--json"]))?;
     let system = configuration["system"]["value"]
         .as_str()
@@ -570,6 +581,20 @@ mod tests {
         }
     }
     #[test]
+    fn native_store_metadata_retains_the_closed_runtime_protocol() {
+        let mut source = definition();
+        source.runtime = Runtime::NativeStore;
+        source.cargo = Some(Operation::Test);
+        let encoded = serde_json::to_value(&source).unwrap();
+        assert_eq!(encoded["runtime"], "native-store");
+        assert_eq!(
+            serde_json::from_value::<Definition>(encoded).unwrap(),
+            source
+        );
+        assert!(serde_json::from_str::<Runtime>("\"native-host\"").is_err());
+    }
+
+    #[test]
     fn store_identity_rejects_foreign_absolute_and_nested_paths() {
         assert_eq!(
             store("asset").0,
@@ -659,7 +684,8 @@ mod tests {
         fs::set_permissions(&original, fs::Permissions::from_mode(0o644)).unwrap();
         assert!(match_file(&captured, Path::new("lib.rs"), &original).is_err());
         fs::remove_file(&actual).unwrap();
-        assert!(match_file(&captured, Path::new("lib.rs"), &original).is_err());
+        let error = match_file(&captured, Path::new("lib.rs"), &original).unwrap_err();
+        assert!(error.to_string().contains(&actual.display().to_string()));
     }
     #[test]
     fn requires_all_control_plane_files() {

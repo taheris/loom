@@ -1,5 +1,4 @@
-# Reuse the configured strict Nix tool, including its restricted-proc support.
-# Closed upstream fixtures declare their interpreters without changing coverage.
+# Closed upstream Nix fixtures declare their interpreters without changing coverage.
 { pkgs }:
 if pkgs.stdenv.hostPlatform.isLinux then
   pkgs.nix.overrideScope (

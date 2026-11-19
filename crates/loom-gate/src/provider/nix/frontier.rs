@@ -2,6 +2,39 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::{Error, Name, Nodes, StorePath};
 
+/// Availability observations shared only within one construction or readiness pass.
+#[derive(Default)]
+pub(super) struct Presence(BTreeMap<StorePath, bool>);
+
+impl Presence {
+    pub(super) fn query(
+        &mut self,
+        paths: &BTreeSet<StorePath>,
+        mut query: impl FnMut(&BTreeSet<StorePath>) -> Result<BTreeSet<StorePath>, Error>,
+    ) -> Result<BTreeSet<StorePath>, Error> {
+        let missing = paths
+            .iter()
+            .filter(|path| !self.0.contains_key(*path))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if !missing.is_empty() {
+            let present = query(&missing)?;
+            if !present.is_subset(&missing) {
+                return Err(Error::Result);
+            }
+            self.0.extend(missing.into_iter().map(|path| {
+                let exists = present.contains(&path);
+                (path, exists)
+            }));
+        }
+        Ok(paths
+            .iter()
+            .filter(|path| self.0.get(*path) == Some(&true))
+            .cloned()
+            .collect())
+    }
+}
+
 /// Immutable dependency artifacts and the recipes that may actually execute.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub(super) struct Execution {
@@ -159,6 +192,51 @@ mod tests {
     ) -> impl FnMut(&BTreeSet<StorePath>) -> Result<BTreeSet<StorePath>, Error> {
         let paths: BTreeSet<_> = paths.iter().map(|value| path(value)).collect();
         move |outputs| Ok(outputs.intersection(&paths).cloned().collect())
+    }
+
+    #[test]
+    fn availability_is_shared_within_a_pass_and_reread_on_the_next_pass() {
+        let requests = std::cell::RefCell::new(Vec::new());
+        let observed = std::cell::RefCell::new(BTreeSet::from([path("a"), path("c")]));
+        let query = |paths: &BTreeSet<StorePath>| {
+            requests.borrow_mut().push(paths.clone());
+            Ok(observed.borrow().intersection(paths).cloned().collect())
+        };
+        let mut pass = Presence::default();
+        assert_eq!(
+            pass.query(&[path("a"), path("b")].into(), query).unwrap(),
+            [path("a")].into()
+        );
+        assert_eq!(
+            pass.query(&[path("b"), path("c")].into(), query).unwrap(),
+            [path("c")].into()
+        );
+        assert_eq!(
+            *requests.borrow(),
+            vec![BTreeSet::from([path("a"), path("b")]), [path("c")].into()]
+        );
+        *observed.borrow_mut() = [path("b")].into();
+        let mut next = Presence::default();
+        assert_eq!(
+            next.query(&[path("a"), path("b"), path("c")].into(), query)
+                .unwrap(),
+            [path("b")].into()
+        );
+        assert_eq!(requests.borrow().len(), 3);
+    }
+
+    #[test]
+    fn unexpected_availability_is_rejected_without_poisoning_the_pass() {
+        let mut pass = Presence::default();
+        let requested = [path("a")].into();
+        assert!(matches!(
+            pass.query(&requested, |_| Ok([path("other")].into())),
+            Err(Error::Result)
+        ));
+        assert_eq!(
+            pass.query(&requested, |paths| Ok(paths.clone())).unwrap(),
+            requested
+        );
     }
 
     #[test]

@@ -5,7 +5,7 @@
 //! `agent`, `loom-workflow`, `loom-skill`, or `loom-tune` would invert
 //! the consumer-facing dependency direction the spec preserves.
 
-use super::util::{read_to_string, verdict_from, workspace_root};
+use super::util::verdict_from;
 use super::{Verdict, WalkInput};
 
 super::manifest::registration!("loom_llm_deps", "loom-llm");
@@ -23,19 +23,6 @@ const FORBIDDEN: &[&str] = &[
     "loom-tune",
     "loom-gate",
 ];
-
-fn rule(input: &WalkInput) -> Verdict {
-    let root = workspace_root(input);
-    let manifest = root.join(MANIFEST);
-    let mut violations = Vec::new();
-
-    let Some(body) = read_to_string(input, &manifest) else {
-        violations.push("crates/loom-llm/Cargo.toml:1 manifest not readable".to_string());
-        return verdict_from(RULE, violations);
-    };
-
-    analyze(&body)
-}
 
 fn analyze(body: &str) -> Verdict {
     let mut violations = Vec::new();
@@ -63,5 +50,5 @@ fn analyze(body: &str) -> Verdict {
 
 /// Standalone and checked dispatch execute the identical rule body.
 pub fn run(input: &WalkInput) -> Verdict {
-    input.finish(rule(input))
+    super::manifest::run(input, MANIFEST, RULE, analyze)
 }

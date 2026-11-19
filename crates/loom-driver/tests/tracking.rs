@@ -13,7 +13,7 @@ mod native {
     struct Native(PathBuf);
     impl CommandRunner for Native {
         async fn run(&self, args: Vec<OsString>, timeout: Duration) -> Result<RunOutput, BdError> {
-            let mut command = tokio::process::Command::new("bd");
+            let mut command = tokio::process::Command::new(env!("LOOM_ISSUES_BD_BIN"));
             command
                 .args(["--sandbox", "--dolt-auto-commit", "off"])
                 .args(args)

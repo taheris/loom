@@ -476,7 +476,7 @@ publication.
 
 - `loom todo` renders live agent progress through the shared event renderer
   before final validation/summary output
-  [test](todo_agent_events_render_live_progress)
+  [test](todo_pi_session_preserves_spawn_stdio_and_event_contracts)
 
 - `loom gate mint --tree` streams verifier, rubric, and minting progress through
   event logs and the shared live renderer while it walks

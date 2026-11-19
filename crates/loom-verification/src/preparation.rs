@@ -52,8 +52,7 @@ fn invalid_paths(paths: &[String]) -> Result<Vec<String>> {
         let result = process::capture(
             Command::new("nix-store")
                 .args(["--check-validity", "--print-invalid"])
-                .args(batch)
-                .env("NIX_REMOTE", "local"),
+                .args(batch),
             30,
         )?;
         Ok((
@@ -164,8 +163,7 @@ fn provision(
                 "--option",
                 "stalled-download-timeout",
                 "30",
-            ])
-            .env("NIX_REMOTE", "local"),
+            ]),
         1200,
     )?;
     let log = directory.join("provision.log");
@@ -205,31 +203,29 @@ mod tests {
     use std::os::unix::fs::{PermissionsExt, symlink};
 
     #[test]
-    fn preparation_retains_only_selected_sdk_with_bounded_local_acquisition() {
+    fn preparation_retains_only_selected_sdk_without_overriding_store_connection() {
         use std::os::unix::process::ExitStatusExt;
         let root = tempfile::tempdir().unwrap();
         let root = root.path().canonicalize().unwrap();
         let sdk = root.join("selected-sdk");
         fs::create_dir(&sdk).unwrap();
         symlink(&sdk, root.join("sdk")).unwrap();
-        let execute =
-            |command: &Command, seconds| {
-                assert_eq!(seconds, 1200);
-                assert_eq!(command.get_program(), "nix");
-                let arguments: Vec<_> = command
-                    .get_args()
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .collect();
-                assert_eq!(&arguments[..3], ["build", "selected.drv^out", "--out-link"]);
-                assert_eq!(arguments[3], root.join("sdk").to_str().unwrap());
-                assert!(command.get_envs().any(|(key, value)| key == "NIX_REMOTE"
-                    && value == Some(std::ffi::OsStr::new("local"))));
-                Ok(std::process::Output {
-                    status: std::process::ExitStatus::from_raw(0),
-                    stdout: vec![],
-                    stderr: vec![],
-                })
-            };
+        let execute = |command: &Command, seconds| {
+            assert_eq!(seconds, 1200);
+            assert_eq!(command.get_program(), "nix");
+            let arguments: Vec<_> = command
+                .get_args()
+                .map(|s| s.to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(&arguments[..3], ["build", "selected.drv^out", "--out-link"]);
+            assert_eq!(arguments[3], root.join("sdk").to_str().unwrap());
+            assert!(!command.get_envs().any(|(key, _)| key == "NIX_REMOTE"));
+            Ok(std::process::Output {
+                status: std::process::ExitStatus::from_raw(0),
+                stdout: vec![],
+                stderr: vec![],
+            })
+        };
         provision("selected.drv", &sdk, &root, execute).unwrap();
         let wrong = root.join("wrong-sdk");
         fs::create_dir(&wrong).unwrap();

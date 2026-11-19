@@ -57,6 +57,8 @@ let
   text = toJSON original.catalogue;
 in
 assert builtins.all (context: context == { path = true; }) (attrValues (getContext text));
+assert builtins.readFile original.outPath == text;
+assert builtins.attrNames (getContext original.outPath) == [ original.outPath ];
 assert original.provisions.rust.direct.drvPath != changed.provisions.rust.direct.drvPath;
 assert original.provisions.base.pi.drvPath == changed.provisions.base.pi.drvPath;
 assert original.provisions.python.claude.drvPath == changed.provisions.python.claude.drvPath;

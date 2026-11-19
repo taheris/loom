@@ -31,7 +31,13 @@ fn recipe_output_binding_requires_exactly_the_selected_output() {
 
 #[test]
 fn factory_output_rejects_partial_results_and_mutable_manifests() {
-    for document in [b"{".as_slice(), b"[]", b"[{\"outputs\":{}}]"] {
+    for document in [
+        b"{".as_slice(),
+        b"[]",
+        b"[{\"outputs\":{}}]",
+        b"[false]",
+        b"[\"/not-store\",\"/another\"]",
+    ] {
         assert!(matches!(
             store_catalogue(document),
             Err(ProvisionError::Output { .. })
@@ -40,11 +46,15 @@ fn factory_output_rejects_partial_results_and_mutable_manifests() {
     let directory = tempfile::tempdir().unwrap();
     let manifest = directory.path().join("mutable.json");
     std::fs::write(&manifest, "{}").unwrap();
-    let result = serde_json::to_vec(&serde_json::json!([{"outputs":{"out":manifest}}])).unwrap();
-    assert!(matches!(
-        store_catalogue(&result),
-        Err(ProvisionError::Output { .. })
-    ));
+    for result in [
+        serde_json::json!([{"outputs":{"out":manifest}}]),
+        serde_json::json!([manifest]),
+    ] {
+        assert!(matches!(
+            store_catalogue(&serde_json::to_vec(&result).unwrap()),
+            Err(ProvisionError::Output { .. })
+        ));
+    }
 }
 
 #[tokio::test]

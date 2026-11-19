@@ -38,13 +38,17 @@ fn rule(input: &WalkInput) -> Verdict {
         return verdict_from(RULE, violations);
     };
 
-    let Some(section) = section_body(&body, "[workspace.dependencies]") else {
-        violations.push("Cargo.toml:1 [workspace.dependencies] section missing".to_string());
-        return verdict_from(RULE, violations);
+    let keys = match super::manifest::dependency_keys(
+        &body,
+        "Cargo.toml",
+        RULE,
+        &["workspace", "dependencies"],
+    ) {
+        Ok(keys) => keys,
+        Err(verdict) => return verdict,
     };
-    let keys = section_keys(section);
     for dep in REQUIRED_DEPS {
-        if !keys.iter().any(|k| k == dep) {
+        if !keys.contains(*dep) {
             violations.push(format!(
                 "Cargo.toml:1 `{dep}` not pinned in [workspace.dependencies]",
             ));
@@ -52,33 +56,6 @@ fn rule(input: &WalkInput) -> Verdict {
     }
 
     verdict_from(RULE, violations)
-}
-
-fn section_body<'a>(body: &'a str, header: &str) -> Option<&'a str> {
-    let start = body.find(header)?;
-    let after_header_offset = body[start..].find('\n').map(|n| start + n + 1)?;
-    let tail = &body[after_header_offset..];
-    let end_rel = tail.find("\n[").unwrap_or(tail.len());
-    Some(&tail[..end_rel])
-}
-
-fn section_keys(section: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    for raw in section.lines() {
-        let line = raw.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let key = match line.split_once('=') {
-            Some((k, _)) => k.trim().trim_matches('"'),
-            None => continue,
-        };
-        if key.is_empty() {
-            continue;
-        }
-        out.push(key.to_string());
-    }
-    out
 }
 
 /// Standalone and checked dispatch execute the identical rule body.

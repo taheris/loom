@@ -60,6 +60,16 @@ for workers in "" 3; do
     '[[ "$GOMAXPROCS" == "$1" ]]' _ "${workers:-1}"
 done
 
+# Direct Cargo campaigns use Nextest defaults or the caller's explicit budget.
+for workers in "" 3; do
+  (
+    unset LOOM_TEST_SCHEDULING LOOM_TEST_NIX_REGISTRATION NEXTEST_TEST_THREADS
+    if [[ -n "$workers" ]]; then export NEXTEST_TEST_THREADS="$workers"; fi
+    NIX_BUILD_TOP="$fixture/safe" TMPDIR="$fixture/safe" bash "$runner" --build-campaign bash -euc \
+      '[[ "${NEXTEST_TEST_THREADS:-}" == "$1" ]]' _ "$workers"
+  )
+done
+
 # Runtime tools must not participate in compilation or shadow compiler tools.
 mkdir "$fixture/compiler-bin" "$fixture/runtime-bin"
 printf '#!%s\nprintf "compiler\\n"\n' "$BASH" > "$fixture/compiler-bin/loom-private-compiler-control"
@@ -68,14 +78,16 @@ printf '#!%s\nprintf "runtime\\n"\n' "$BASH" > "$fixture/runtime-bin/loom-privat
 chmod u+x "$fixture/compiler-bin/loom-private-compiler-control" "$fixture/runtime-bin/loom-private-compiler-control" "$fixture/runtime-bin/loom-private-runtime-control"
 for mode in --test-process --build-campaign; do
   PATH="$fixture/compiler-bin:$PATH" LOOM_TEST_RUNTIME_PATH="$fixture/runtime-bin" \
+    LOOM_TEST_SOURCE_ROOT="$fixture/source" INSTA_WORKSPACE_ROOT="$fixture/poison" \
     NIX_BUILD_TOP="$fixture/safe" TMPDIR="$fixture/safe" bash "$runner" "$mode" bash -euc '
       [[ "$(loom-private-compiler-control)" == compiler ]]
+      [[ "$INSTA_WORKSPACE_ROOT" == "$2" ]]
       if [[ "$1" == --test-process ]]; then
         [[ "$(loom-private-runtime-control)" == runtime ]]
       else
         ! command -v loom-private-runtime-control
       fi
-    ' _ "$mode"
+    ' _ "$mode" "$fixture/source"
 done
 
 # Store registration uses the declared tool without adding runtime tools to compilation.
@@ -83,18 +95,29 @@ mkdir -p "$fixture/registration-tools" "$fixture/registration-git" "$fixture/reg
 printf '#!%s\n' "$BASH" > "$fixture/registration-tools/nix"
 cat >> "$fixture/registration-tools/nix" <<'SH'
 set -euo pipefail
-[[ "$*" == '--extra-experimental-features nix-command config show sandbox' ]]
-printf 'true\n'
+case "$*" in
+  '--extra-experimental-features nix-command config show sandbox') printf 'true\n' ;;
+  'path-info --all') [[ "$(< "$REGISTRATION_MARKER")" == registered ]] ;;
+  *) exit 1 ;;
+esac
 SH
 printf '#!%s\n' "$BASH" > "$fixture/registration-tools/nix-store"
 cat >> "$fixture/registration-tools/nix-store" <<'SH'
 set -euo pipefail
-[[ "$1" == --load-db ]]
-read -r value
-[[ "$value" == declared-registration ]]
-printf registered > "$REGISTRATION_MARKER"
+case "$*" in
+  --load-db)
+    read -r value
+    [[ "$value" == declared-registration ]]
+    printf registered > "$REGISTRATION_MARKER"
+    ;;
+  '--verify --check-contents')
+    [[ "$(< "$REGISTRATION_MARKER")" == registered ]]
+    printf verified > "$REGISTRATION_MARKER"
+    ;;
+  *) exit 1 ;;
+esac
 SH
-printf '#!%s\nexit 0\n' "$BASH" > "$fixture/registration-git/git"
+printf '#!%s\nprintf "fixture runner must not mutate caller Git state\\n" >&2\nexit 97\n' "$BASH" > "$fixture/registration-git/git"
 chmod u+x "$fixture/registration-tools/nix" "$fixture/registration-tools/nix-store" "$fixture/registration-git/git"
 printf 'declared-registration\n' > "$fixture/registration"
 (
@@ -105,7 +128,7 @@ printf 'declared-registration\n' > "$fixture/registration"
     REGISTRATION_MARKER="$fixture/registered" \
     NIX_BUILD_TOP="$fixture/safe" TMPDIR="$fixture/safe" bash "$runner" --build-campaign true
 )
-[[ "$(<"$fixture/registered")" == registered ]]
+[[ "$(<"$fixture/registered")" == verified ]]
 
 # Cleanup handles readonly copies without following links to outside directories.
 mkdir -m 500 "$fixture/outside"
@@ -116,6 +139,36 @@ NIX_BUILD_TOP="$fixture/safe" TMPDIR="$fixture/safe" bash "$runner" --test-proce
   ln -s "$1" "$TMPDIR/outside"
 ' _ "$fixture/outside"
 [[ "$(stat --format=%a -- "$fixture/outside")" == 500 ]]
+
+# Batched cleanup also refuses a link substituted after directory discovery.
+mkdir "$fixture/cleanup-bin"
+printf '#!%s\n' "$BASH" > "$fixture/cleanup-bin/chmod"
+cat >> "$fixture/cleanup-bin/chmod" <<'SH'
+set -euo pipefail
+for path in "$@"; do
+  if [[ "$path" == */cleanup-race && -d "$path" && ! -L "$path" ]]; then
+    rmdir -- "$path"
+    ln -s "$CLEANUP_OUTSIDE" "$path"
+    touch "$CLEANUP_SWAPPED"
+  fi
+done
+exec "$CLEANUP_CHMOD" "$@"
+SH
+chmod u+x "$fixture/cleanup-bin/chmod"
+cleanup_chmod=$(command -v chmod)
+cleanup_status=0
+PATH="$fixture/cleanup-bin:$PATH" CLEANUP_CHMOD="$cleanup_chmod" \
+  CLEANUP_OUTSIDE="$fixture/outside" CLEANUP_SWAPPED="$fixture/cleanup-swapped" \
+  NIX_BUILD_TOP="$fixture/safe" TMPDIR="$fixture/safe" bash "$runner" --test-process \
+  bash -euc 'printf "%s\n" "$TMPDIR" > "$1"; mkdir "$TMPDIR/cleanup-race"' \
+  _ "$fixture/cleanup-root" || cleanup_status=$?
+# Some filesystems reject chmod of the link itself; either outcome is safe.
+[[ "$cleanup_status" == 0 || "$cleanup_status" == 1 ]]
+[[ -f "$fixture/cleanup-swapped" ]]
+[[ "$(stat --format=%a -- "$fixture/outside")" == 500 ]]
+cleanup_root=$(< "$fixture/cleanup-root")
+[[ "$(dirname -- "$cleanup_root")" == "$fixture/safe" ]]
+rm -rf -- "$cleanup_root"
 chmod u+w "$fixture/outside"
 
 # Successful runs remove only their own private root.

@@ -362,8 +362,10 @@ fn root_for(
 }
 
 #[derive(Deserialize)]
-struct Build {
-    outputs: BTreeMap<String, PathBuf>,
+#[serde(untagged)]
+enum Build {
+    Data(PathBuf),
+    Derivation { outputs: BTreeMap<String, PathBuf> },
 }
 
 fn store_catalogue(bytes: &[u8]) -> Result<Catalogue, ProvisionError> {
@@ -375,9 +377,12 @@ fn store_catalogue(bytes: &[u8]) -> Result<Catalogue, ProvisionError> {
             reason: "the fixed catalogue factory must produce exactly one result",
         });
     };
-    let path = build.outputs.get("out").ok_or(ProvisionError::Output {
-        reason: "the factory has no out result",
-    })?;
+    let path = match build {
+        Build::Data(path) => path,
+        Build::Derivation { outputs } => outputs.get("out").ok_or(ProvisionError::Output {
+            reason: "the factory has no out result",
+        })?,
+    };
     if !store_file(path) {
         return Err(ProvisionError::Output {
             reason: "the catalogue is not an immutable store file",

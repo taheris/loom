@@ -3,6 +3,7 @@ use std::{collections::BTreeSet, path::Path};
 use super::{Error, StorePath, diagnostic, invoke, query};
 
 /// GC roots keep captured immutable artifacts from becoming executable dependencies.
+#[derive(Debug)]
 pub(super) struct Inputs {
     directory: tempfile::TempDir,
 }
@@ -93,7 +94,8 @@ mod tests {
 
     #[test]
     fn active_artifact_leases_prevent_collection_of_the_captured_input() {
-        let tool = super::super::locate_tool().unwrap();
+        let private = super::super::private_store::Store::new();
+        let tool = private.tool();
         let nonce = tempfile::tempdir().unwrap();
         let expression = format!(
             "builtins.toFile \"native-lease-probe\" {}",
@@ -101,17 +103,18 @@ mod tests {
         );
         let artifact: StorePath = serde_json::from_slice(
             &query(
-                &tool,
+                tool,
                 &["eval", "--json", "--offline", "--expr", &expression],
             )
             .unwrap(),
         )
         .unwrap();
-        let lease = Inputs::acquire(&tool, &[artifact.clone()].into()).unwrap();
+        let lease = Inputs::acquire(tool, &[artifact.clone()].into()).unwrap();
         let store = tool.with_file_name("nix-store");
         let deletion = invoke(&store, &["--delete", artifact.as_str()]).unwrap();
         assert!(!deletion.status.success());
-        assert!(Path::new(artifact.as_str()).exists());
+        assert!(private.physical(&artifact).exists());
+        assert!(!Path::new(artifact.as_str()).exists());
         let root = lease.root();
         let roots = query(&store, &["--query", "--roots", artifact.as_str()]).unwrap();
         assert!(
@@ -119,8 +122,22 @@ mod tests {
                 .unwrap()
                 .contains(root.to_str().unwrap())
         );
+        let metadata = std::fs::read_link(&root).unwrap();
         drop(lease);
-        assert!(!root.exists());
+        assert!(!root.is_symlink());
+        // Remove the unrooted reference document along with its input: explicit
+        // deletion does not automatically collect otherwise-dead referrers.
+        let deletion = invoke(
+            &store,
+            &["--delete", metadata.to_str().unwrap(), artifact.as_str()],
+        )
+        .unwrap();
+        assert!(
+            deletion.status.success(),
+            "{}",
+            String::from_utf8_lossy(&deletion.stderr)
+        );
+        assert!(!private.physical(&artifact).exists());
     }
 
     #[test]

@@ -183,6 +183,7 @@ fn validate_pre_push(path: &str, hooks: &[Hook], violations: &mut Vec<String>) {
         "cargo-clippy",
         "loom-gate-verify-diff",
         "full-test-suite",
+        "native-tcp-readiness",
     ] {
         let Some(hook) = required_hook(path, hooks, id, violations) else {
             continue;
@@ -248,6 +249,21 @@ fn validate_pre_push_policy_fields(path: &str, hooks: &[Hook], violations: &mut 
                 "{path}:{} loom-gate-verify-diff must use scope-derived tiers",
                 hook.line
             ));
+        }
+    }
+    if let Some(hook) = unique_hook(hooks, "native-tcp-readiness") {
+        validate_wrapped_command(
+            path,
+            hook,
+            "cargo nextest run --package loom-workflow --features native-tcp-tests --lib -E test(native_tracker_readiness_requires_the_beads_socket_even_with_healthy_tcp_sql)",
+            violations,
+        );
+        if hook.files.as_deref()
+            != Some(
+                r"(^crates/|^nix/|^scripts/|^tests/|^\.cargo/|^\.pre-commit-config\.yaml$|^flake\.(nix|lock)$|^rust-toolchain\.toml$|(^|/)Cargo\.(toml|lock)$)",
+            )
+        {
+            violations.push(format!("{path}:{} native-tcp-readiness must select its workflow, tracker, transport, toolchain and hook inputs", hook.line));
         }
     }
     if let Some(hook) = unique_hook(hooks, "full-test-suite") {
@@ -591,6 +607,7 @@ mod tests {
             "loom-gate-verify-files",
             "loom-gate-verify-diff",
             "full-test-suite",
+            "native-tcp-readiness",
         ] {
             let start = original.find(&format!("      - id: {id}\n")).unwrap();
             let end = original[start + 1..]

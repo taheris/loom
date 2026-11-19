@@ -75,10 +75,12 @@ _:
       };
     in
     {
+      # Keep `nix build .#profile-catalogue` as the rooted data interface. This
+      # value has no executable recipe, so it is not a packages derivation.
+      legacyPackages.profile-catalogue = profileCatalogue.outPath;
       packages = {
         profileManifest = nativePackage profileManifest;
         profile-images = nativePackage profileManifest;
-        profile-catalogue = nativePackage profileCatalogue;
 
         verification-sdk = checkedPreparation (_: verificationSdk);
         prepare-verification = verificationPreparation;
@@ -89,6 +91,7 @@ _:
         verification-build = loom.verificationBuild;
         verification-agent-landing = config.checks.agent-landing;
         verification-kernel-free-surface = config.checks.kernel-free-surface;
+        verification-confined-runtime = config.checks.confined-runtime;
         verification-walks = config.checks.loom-gate-check;
         verification-source-integrity = config.checks.native-stage-integrity;
         verification-test-app-hook-runner = config.checks.test-app-hook-runner;

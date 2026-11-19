@@ -5,6 +5,44 @@ use std::path::Path;
 use super::reported;
 
 #[test]
+fn failed_gate_exits_release_captured_native_input_leases() {
+    for tier in ["verify", "check"] {
+        let fixture = reported::Fixture::new("check", "json-lines", &["a"]);
+        fixture.record(
+            "a",
+            "{\"target\":\"a\",\"pass\":false,\"evidence\":\"intentional refusal\"}\n",
+            1,
+        );
+        let temporary = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_loom"))
+            .args([
+                "--workspace",
+                fixture.path().to_str().unwrap(),
+                "gate",
+                tier,
+                "--tree",
+            ])
+            .env("TMPDIR", temporary.path())
+            .env_remove("LOOM_INSIDE")
+            .output()
+            .unwrap();
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{diagnostic}");
+        assert!(diagnostic.contains("intentional refusal"), "{diagnostic}");
+        let retained: Vec<_> = walkdir::WalkDir::new(temporary.path())
+            .into_iter()
+            .map(Result::unwrap)
+            .filter(|entry| entry.file_name() == "inputs" && entry.file_type().is_symlink())
+            .map(walkdir::DirEntry::into_path)
+            .collect();
+        assert!(
+            retained.is_empty(),
+            "{tier} leaked native GC roots: {retained:?}"
+        );
+    }
+}
+
+#[test]
 fn check_scope_does_not_execute_constructor_owned_system_reports() {
     let fixture = reported::Fixture::new("system", "json-lines", &["a", "b"]);
     fixture.policy("system", true);

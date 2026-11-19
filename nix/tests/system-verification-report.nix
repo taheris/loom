@@ -1,6 +1,7 @@
 # Exercise the production emitter, not a duplicate implementation of its protocol.
 { pkgs, system }:
 let
+  nix = import ./private-nix.nix { inherit pkgs; };
   source = pkgs.writeTextDir "tests/fixtures/git/test-gitconfig" ''
     [user]
       name = Native report fixture
@@ -8,7 +9,10 @@ let
   '';
   outsideSdk = pkgs.writeText "undeclared-native-sdk-object" "outside the admitted store\n";
   verify = import ../system-verification.nix {
-    inherit pkgs system;
+    inherit system;
+    pkgs = pkgs // {
+      inherit nix;
+    };
     loom = {
       stagedSrc = source;
       testResources = [ ];
@@ -34,7 +38,7 @@ let
       work=$(mktemp -d)
       mkdir "$work/report"
       status=0
-      out="$work/report" ${producer} > "$work/record" || status=$?
+      out="$work/report" PATH='${report.loom.reporter.drvAttrs.PATH}' ${producer} > "$work/record" || status=$?
       test "$status" = '${toString protocolStatus}'
       test "$(cat "$work/report/scenario-status")" = '${toString status}'
       test "$(cat "$work/report/scenario-stdout")" = 'scenario stdout'
@@ -48,11 +52,17 @@ let
       ' "$work/record" > /dev/null
     '';
   registration = pkgs.closureInfo { rootPaths = [ source ]; };
+  parentRegistration = pkgs.closureInfo {
+    rootPaths = [
+      source
+      outsideSdk
+    ];
+  };
   sdkScenario = pkgs.writeShellScript "isolated-native-sdk" ''
     set -euo pipefail
     [[ "$NIX_REMOTE" == local ]]
-    ${pkgs.nix}/bin/nix path-info --offline ${source}
-    if ${pkgs.nix}/bin/nix-store --check-validity ${builtins.unsafeDiscardStringContext (toString outsideSdk)}; then
+    ${nix}/bin/nix path-info --offline ${source}
+    if ${nix}/bin/nix-store --check-validity ${builtins.unsafeDiscardStringContext (toString outsideSdk)}; then
       printf 'private SDK admitted an undeclared store object\n' >&2
       exit 1
     fi
@@ -73,7 +83,14 @@ pkgs.runCommand "system-verification-report"
   }
   ''
     set -euo pipefail
-    ${pkgs.nix}/bin/nix-store --check-validity "$outsideSdk"
+    export HOME="$TMPDIR/parent-home" NIX_REMOTE=local
+    export NIX_STATE_DIR="$TMPDIR/parent-state" NIX_LOG_DIR="$TMPDIR/parent-log" NIX_CONF_DIR="$TMPDIR/parent-conf"
+    mkdir -p "$HOME" "$NIX_STATE_DIR" "$NIX_LOG_DIR" "$NIX_CONF_DIR"
+    export NIX_CONFIG=$'experimental-features = nix-command flakes\nbuild-users-group =\nrequire-sigs = true\nsandbox = true\nsandbox-fallback = false\nsubstituters =\nbuilders ='
+    ${nix}/bin/nix-store --load-db < ${parentRegistration}/registration
+    ${nix}/bin/nix-store --check-validity "$outsideSdk"
+    # The producer must replace the ambient selector and parent SDK state.
+    export NIX_REMOTE=daemon
     ${pkgs.lib.concatMapStrings exercise [
       0
       1
@@ -82,7 +99,7 @@ pkgs.runCommand "system-verification-report"
     ]}
     work=$(mktemp -d)
     mkdir "$work/report"
-    out="$work/report" ${sdkProducer} > "$work/record"
+    out="$work/report" PATH='${sdkReport.loom.reporter.drvAttrs.PATH}' ${sdkProducer} > "$work/record"
     jq -se 'length == 1 and .[0].target == "wire-sdk" and .[0].outcome == "passed"' "$work/record" >/dev/null
     touch "$out"
   ''

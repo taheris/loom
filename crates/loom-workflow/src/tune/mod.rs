@@ -2076,7 +2076,11 @@ async fn validate_templates(
     let mut rows = Vec::new();
     for (name, args) in commands {
         let mut command = Command::new("cargo");
-        command.args(args).current_dir(repo);
+        command
+            .args(args)
+            .current_dir(repo)
+            .env("LOOM_TEST_SOURCE_ROOT", repo)
+            .env("INSTA_WORKSPACE_ROOT", repo);
         let _execution =
             match loom_driver::workspace::cargo::verifier_command(command.as_std_mut(), repo) {
                 Ok(execution) => execution,

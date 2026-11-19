@@ -42,6 +42,46 @@ where
     )
 }
 
+/// Standalone dispatch uses the same analyzer as the checked manifest adapter.
+pub(super) fn run(
+    input: &super::WalkInput,
+    manifest: &str,
+    rule: &str,
+    analyze: fn(&str) -> Verdict,
+) -> Verdict {
+    let path = super::util::workspace_root(input).join(manifest);
+    let verdict = match super::util::read_to_string(input, &path) {
+        Some(body) => analyze(&body),
+        None => {
+            super::util::verdict_from(rule, vec![format!("{manifest}:1 manifest not readable")])
+        }
+    };
+    input.finish(verdict)
+}
+
+/// Parse Cargo dependency tables once instead of maintaining line-based TOML readers.
+pub(super) fn dependency_keys(
+    body: &str,
+    manifest: &str,
+    rule: &str,
+    section: &[&str],
+) -> Result<BTreeSet<String>, Verdict> {
+    let fail =
+        |detail: String| super::util::verdict_from(rule, vec![format!("{manifest}:1 {detail}")]);
+    let parsed: toml::Value =
+        toml::from_str(body).map_err(|error| fail(format!("invalid manifest: {error}")))?;
+    let mut value = &parsed;
+    for key in section {
+        value = value
+            .get(key)
+            .ok_or_else(|| fail(format!("[{}] section missing", section.join("."))))?;
+    }
+    let table = value
+        .as_table()
+        .ok_or_else(|| fail(format!("[{}] must be a table", section.join("."))))?;
+    Ok(table.keys().cloned().collect())
+}
+
 pub(super) fn outcome(verdict: Verdict) -> Outcome {
     if verdict.pass {
         Outcome::Pass
@@ -85,3 +125,48 @@ macro_rules! registration {
 }
 
 pub(super) use registration;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dependency_tables_accept_cargo_table_syntax() {
+        for body in [
+            "[dependencies]\n'loom-events' = { workspace = true }\n",
+            "[dependencies.loom-events]\nworkspace = true\n",
+            "dependencies.loom-events.workspace = true\n",
+        ] {
+            assert_eq!(
+                dependency_keys(body, "Cargo.toml", "test", &["dependencies"]).unwrap(),
+                BTreeSet::from(["loom-events".to_owned()])
+            );
+        }
+        assert_eq!(
+            dependency_keys(
+                "[workspace.dependencies]\ntoml = '1'",
+                "Cargo.toml",
+                "test",
+                &["workspace", "dependencies"]
+            )
+            .unwrap(),
+            BTreeSet::from(["toml".to_owned()])
+        );
+    }
+
+    #[test]
+    fn comments_and_dev_dependencies_cannot_supply_runtime_dependencies() {
+        let body = "# [dependencies]\n[dev-dependencies]\nloom-events = '1'";
+        assert!(dependency_keys(body, "Cargo.toml", "test", &["dependencies"]).is_err());
+    }
+
+    #[test]
+    fn malformed_manifests_do_not_pass_dependency_checks() {
+        for body in ["[dependencies]\nloom-events =", "dependencies = 1"] {
+            let verdict =
+                dependency_keys(body, "Cargo.toml", "test", &["dependencies"]).unwrap_err();
+            assert!(!verdict.pass);
+            assert!(verdict.evidence.contains("Cargo.toml:1"));
+        }
+    }
+}

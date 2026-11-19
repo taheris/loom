@@ -72,12 +72,13 @@ tracked/constructed dependency boundary. [Verify](#selective-property-campaigns)
 owns property grouping and shared native artifacts.
 
 Definitions pin tools, sources and environments. Hermetic Nix also confines
-filesystem/network access. `native-process` uses existing agent isolation, never
-failed-sandbox retry or an unsandboxed host/remote daemon; outside the agent it
-stays strict. Kind/environment bind identity; `nix run` alone proves no
-hermeticity. Checked `artifact` packages may reuse immutable outputs without
-rebuilding or acquiring archived build inputs: neither tests nor reproducibility
-proof. Check/app-presence roots, reporters and Cargo verification remain fresh.
+filesystem/network access. `native-process` uses agent isolation, staying strict
+elsewhere; never a failed-sandbox retry or an unsandboxed host/remote daemon.
+[Canonical-store test execution](tests.md#test-homes-and-boundaries) is
+separate. Kind/environment bind identity; `nix run` alone proves no hermeticity.
+Checked `artifact` packages may reuse immutable outputs without rebuilding or
+acquiring archived build inputs: neither tests nor reproducibility proof.
+Check/app-presence roots, reporters and Cargo verification remain fresh.
 Separately admitted aliases may share execution facts, never claim approval.
 Host/kernel effects and LLM review retain explicit capability/applicability
 lanes.
@@ -183,12 +184,11 @@ reference does not resolve it: current-snapshot resolution must identify one
 subject before applying the exception. Unknown or ambiguous references block
 admission with actionable source-context diagnostics.
 
-The resulting role determines applicable obligations; an exception is not an
-instruction to ignore the subject. For example, intentionally invalid Rust
-classified as a test fixture remains subject to its consuming tests rather than
-production-source build obligations. Missing consumer coverage still blocks
-trusted success. Referencing a provider resource does not let its description
-replace independent repository inventory or declare its own coverage complete.
+Role exceptions determine obligations, never permission to ignore subjects.
+Invalid Rust classified as a test fixture remains subject to its consuming
+tests, not production-source build obligations. Missing consumer coverage blocks
+trusted success. Resource descriptions cannot replace independent repository
+inventory or declare their own coverage complete.
 
 #### Provider authoring and description boundary
 

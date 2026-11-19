@@ -65,8 +65,9 @@
       ];
       testRuntimeInputs = [
         pkgs.coreutils
+        pkgs.findutils
         pkgs.cargo-nextest
-        pkgs.dolt
+        loom.dolt
         pkgs.git
         pkgs.flock
         pkgs.nix
@@ -88,6 +89,7 @@
           runtimeInputs ? testRuntimeInputs,
           evaluation ? [ ],
           resources ? [ ],
+          compilation ? null,
         }:
         checked.check {
           runtime = "native-process";
@@ -101,14 +103,16 @@
               inherit name;
               extraShellCheckFlags = [ "--external-sources" ];
               text =
-                optionalString pkgs.stdenv.hostPlatform.isLinux ''
-                  source ${builtins.head loom.testCompilerHooks}/nix-support/setup-hook
-                ''
+                pkgs.lib.concatMapStringsSep "\n" (
+                  hook: "source ${hook}/nix-support/setup-hook"
+                ) loom.testCompilerHooks
+                + "\n"
                 + builtins.readFile ../test-cargo-context.sh
                 + "\n"
                 + text;
-              runtimeInputs = runtimeInputs ++ testCompilerInputs;
+              runtimeInputs = [ pkgs.bash ] ++ runtimeInputs ++ testCompilerInputs;
               runtimeEnv = {
+                LOOM_TEST_COMPILATION = if compilation == null then "" else compilation;
                 LOOM_TEST_TOOLCHAIN = loom.toolchain;
                 LOOM_TEST_SCHEDULING = ../test-scheduling.sh;
                 # Bind the mutable Cargo run to its declared source data without
@@ -119,6 +123,7 @@
                 LOOM_CARGO_PATCHES = loom.cargoConfig;
                 LOOM_PREK_BIN = "${loom.hookRunner}/bin/prek";
                 LOOM_ISSUES_BD_BIN = "${pkgs.beads}/bin/bd";
+                LOOM_TEST_DOLT_BIN = "${loom.dolt}/bin/dolt";
                 LOOM_NATIVE_NIX_BIN = "${pkgs.nix}/bin/nix";
                 LOOM_NATIVE_RUST_FIXTURE = nativeRustFixture;
                 LOOM_NATIVE_SMOKE_FIXTURE = nativeSmokeFixture;
@@ -135,6 +140,7 @@
       };
       requiredTestAppConfig = {
         name = "test-required";
+        compilation = loom.testCompilation;
         text = builtins.readFile ../../scripts/required-test.sh;
         resources = loom.testResources;
         evaluation = [ requiredScript ];
@@ -245,19 +251,17 @@
         version = "0.1.0";
         doInstallCargoArtifacts = false;
         LOOM_PREK_BIN = "${loom.hookRunner}/bin/prek";
-        src = loom.stagedSrc;
+        src = loom.compilerSource.path;
         inherit (loom) cargoArtifacts cargoVendorDir;
         nativeBuildInputs = [ pkgs.git ];
         preBuild = "export HOME=$(mktemp -d)";
         buildPhaseCargoCommand = ''
           cargo build --release -p loom-gate --example native-isolation --example native-rust --example native-reported
-          cargo build --release -p loom --bin loom
         '';
         installPhaseCommand = ''
           install -Dm755 target/release/examples/native-isolation "$out/bin/native-isolation"
           install -Dm755 target/release/examples/native-rust "$out/bin/native-rust"
           install -Dm755 target/release/examples/native-reported "$out/bin/native-reported"
-          install -Dm755 target/release/loom "$out/bin/loom"
         '';
         doCheck = false;
       };
@@ -265,6 +269,7 @@
         inherit pkgs;
         inherit (inputs) crane;
         inherit (loom) toolchain;
+        compilerHooks = loom.testCompilerHooks;
         nextest = pkgs.cargo-nextest;
       };
       nativeSmokeFixture = import ../tests/native-smoke-fixture.nix { inherit pkgs; };
@@ -293,13 +298,14 @@
           git -C "$fixture" init -q
           git -C "$fixture" add --all
           loom-verification native-resources "$fixture"
+          export XDG_STATE_HOME="$fixture/state"
           ${optionalString pkgs.stdenv.hostPlatform.isLinux ''
             cargo test -p loom-gate --features native-container-tests --lib -- --test-threads=1
           ''}
           if ${nativeUnitDriver}/bin/native-isolation > "$fixture/native-observed.jsonl"; then
             cat "$fixture/native-observed.jsonl"
-            ${nativeUnitDriver}/bin/native-reported ${nativeUnitDriver}/bin/loom
-            ${nativeUnitDriver}/bin/native-rust ${nativeRustFixture} ${nativeUnitDriver}/bin/loom
+            ${nativeUnitDriver}/bin/native-reported ${loom.bin}/bin/loom
+            ${nativeUnitDriver}/bin/native-rust ${nativeRustFixture} ${loom.bin}/bin/loom
           else
             status=$?
             cat "$fixture/native-observed.jsonl" >&2
@@ -314,7 +320,7 @@
             printf '%s\n' ${pkgs.lib.escapeShellArg (toString nativeRustFixture)} ;;
           "build .#native-smoke-fixture --offline --no-substitute --no-link --print-out-paths")
             printf '%s\n' ${pkgs.lib.escapeShellArg (toString nativeSmokeFixture)} ;;
-          "flake metadata "*)
+          "flake archive "* | "flake metadata "*)
             if [[ "''${LOOM_FIXTURE_INVALID_METADATA:-0}" == 1 ]]; then
               printf '{}\n'
             else
@@ -351,6 +357,7 @@
         // {
           runtimeInputs = fixtureRuntimeInputs;
           resources = [ ];
+          compilation = null;
         }
       );
       bootstrapWrix = wrixLib.rustPackage.package;
@@ -359,41 +366,17 @@
         chmod -R u+w "$out"
         patchShebangs "$out"
       '';
-      fixtureProfile = pkgs.writeText "bootstrap-fixture-profile.json" ''{"profile":{"mounts":[]}}'';
-      fixtureImage = pkgs.writeText "bootstrap-fixture-image.json" "{}";
-      fixtureSelectedManifest = pkgs.writeText "bootstrap-selected-manifest.json" (
-        builtins.toJSON {
-          rust.direct = {
-            ref = "bootstrap-fixture";
-            source = "${fixtureImage}";
-            source_kind = "nix-descriptor";
-            profile_config = "${fixtureProfile}";
-            native_preflight = "rust";
-          };
-        }
-      );
-      fixtureCatalogue = pkgs.writeText "bootstrap-catalogue.json" (
-        builtins.toJSON {
-          schema = 1;
-          profiles.rust.direct = {
-            ref = "bootstrap-fixture";
-            source_kind = "nix-descriptor";
-            realization = {
-              path = builtins.unsafeDiscardStringContext "${fixtureSelectedManifest}";
-              derivation = builtins.unsafeDiscardOutputDependency fixtureSelectedManifest.drvPath;
-            };
-          };
-        }
-      );
       profileProbe = checked.check {
         inherit evaluation;
-        resources = loom.testResources;
+        resources = [ loom.compilerSource ];
         build =
           _:
           loom.craneLib.buildPackage (
             loom.checkArgs
             // {
               pname = "loom-profile-catalogue-probe";
+              src = loom.compilerSource.path;
+              GIT_CONFIG_GLOBAL = "/dev/null";
               cargoExtraArgs = "--package loom-driver --example profile-catalogue-probe";
               doCheck = false;
               installPhaseCommand = ''
@@ -435,7 +418,7 @@
               exec ${pkgs.bash}/bin/bash ${builtins.head paths} \
                 ${loom.bin}/bin/loom ${wrixLauncher}/bin/wrix \
                 ${pkgs.bash} ${pkgs.coreutils} ${pkgs.stdenv.hostPlatform.system} \
-                ${fixtureCatalogue} ${profileProbe}/bin/profile-catalogue-probe
+                ${profileProbe}/bin/profile-catalogue-probe
             '';
           };
       };
@@ -464,10 +447,9 @@
     in
     {
       _module.args.profileBootstrapRegistration = pkgs.closureInfo {
+        # Only the inputs to the fixture's runtime-created Nix recipes need
+        # private database entries. The producer already retains its executables.
         rootPaths = [
-          fixtureCatalogue
-          fixtureSelectedManifest
-          profileProbe
           pkgs.bash
           pkgs.coreutils
         ];
@@ -506,7 +488,7 @@
               set -euo pipefail
               bash ${builtins.elemAt paths 1} --test-process bash ${builtins.elemAt paths 0} \
                 ${fixtureRequiredTestApp}/bin/test-required ${fixtureTestApp}/bin/test \
-                ${loom.hookRunner}/bin/prek ${pkgs.beads}/bin/bd ${verificationTool}/bin/loom-verification ${pkgs.sccache}/bin/sccache ${pkgs.nix}/bin/nix
+                ${loom.hookRunner}/bin/prek ${pkgs.beads}/bin/bd ${verificationTool}/bin/loom-verification ${pkgs.sccache}/bin/sccache ${pkgs.nix}/bin/nix ${loom.dolt}/bin/dolt
               touch "$out"
             '';
       };

@@ -54,6 +54,7 @@ let
     in
     assert builtins.elem executionRuntime [
       "nix"
+      "native-store"
       "native-process"
       "native-cgroup"
       "native-container"
@@ -190,6 +191,9 @@ let
           chmod -R u+w "$runtime"
           export LOOM_TEST_SOURCE_ROOT="$runtime"
           cd "$runtime"
+          git init -q
+          git add --all
+          git -c user.name='Loom native suite' -c user.email='native@example.invalid' -c commit.gpgsign=false commit -q -m 'Capture native suite source'
           bash "$LOOM_PRIVATE_FIXTURE_RUNNER" --build-campaign bash "$LOOM_REPORT_SUPERVISOR" cargo nextest run --cargo-metadata "$cargoArtifacts/cargo.json" --binaries-metadata "$cargoArtifacts/binaries.json" --workspace-remap "$runtime" --target-dir-remap "$cargoArtifacts/target" --ignore-default-filter --no-fail-fast --message-format libtest-json-plus
         '';
         catalogue = ''
@@ -225,6 +229,7 @@ let
         "meta"
         "LOOM_PREK_BIN"
         "LOOM_ISSUES_BD_BIN"
+        "LOOM_TEST_DOLT_BIN"
         "LOOM_NATIVE_NIX_BIN"
         "LOOM_NATIVE_FLOCK_BIN"
         "LOOM_NATIVE_SHELL_BIN"
@@ -305,6 +310,7 @@ let
       result = if operation == "test" then asserted execution else execution;
     in
     assert builtins.hasAttr operation commands;
+    assert runtime != "native-store" || operation == "test";
     assert builtins.all (name: builtins.elem name allowed) (builtins.attrNames args);
     result
     // {
