@@ -60,7 +60,7 @@ mod cases {
             };
         let mut command = Command::new("sh");
         command
-            .args(["-c", "cargo build --offline; code=$?; printf '%s\\n' \"$code\" > \"$LOOM_RETENTION_TEST_SIGNALS/cargo-done\"; exit \"$code\""])
+            .args(["-c", "cargo build --offline; code=$?; printf '%s\\n' \"$code\" > \"$LOOM_RETENTION_TEST_SIGNALS/cargo-done.pending\" && mv \"$LOOM_RETENTION_TEST_SIGNALS/cargo-done.pending\" \"$LOOM_RETENTION_TEST_SIGNALS/cargo-done\" || exit 125; exit \"$code\""])
             .current_dir(&worker)
             .env("CARGO_TARGET_DIR", &initial_target)
             .env("CARGO_BUILD_TARGET_DIR", &initial_target)
@@ -170,7 +170,8 @@ fn main() {
     let signals = PathBuf::from(env::var_os("LOOM_RETENTION_TEST_SIGNALS").unwrap());
     let output = PathBuf::from(env::var_os("CARGO_TARGET_DIR").unwrap()).join("live-build-output");
     let _open = fs::File::create(output).unwrap();
-    fs::write(signals.join("ready"), std::process::id().to_string()).unwrap();
+    fs::write(signals.join("ready.pending"), std::process::id().to_string()).unwrap();
+    fs::rename(signals.join("ready.pending"), signals.join("ready")).unwrap();
     while !signals.join("release").exists() { thread::sleep(Duration::from_millis(10)); }
 }
 "#,
