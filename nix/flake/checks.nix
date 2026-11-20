@@ -295,6 +295,8 @@
             [
               (resource "nix/private-fixture-tests.sh")
               (resource "tests/agent/private-fixture-nix-policy.sh")
+              (resource "nix/retain-fixture-inputs.sh")
+              (resource "tests/agent/private-fixture-inputs.sh")
             ]
             [
               pkgs.bash
@@ -309,8 +311,10 @@
                 registration = pkgs.closureInfo { rootPaths = [ seed ]; };
               in
               ''
+                export LOOM_FIXTURE_INPUT_LOADER=${builtins.elemAt paths 2}
                 LOOM_POLICY_REGISTRATION=${registration}/registration LOOM_POLICY_SEED=${seed} \
                   bash ${builtins.elemAt paths 1} ${builtins.elemAt paths 0}
+                bash ${builtins.elemAt paths 3} "$LOOM_FIXTURE_INPUT_LOADER"
               ''
             );
         wrix-lean-layer-plan = toolCheck "wrix-lean-layer-plan" [ ] [ ] (_: ''
@@ -467,7 +471,10 @@
             '');
         verification-preparation =
           toolCheck "verification-preparation"
-            [ (resource "nix/private-fixture-tests.sh") ]
+            [
+              (resource "nix/private-fixture-tests.sh")
+              (resource "nix/retain-fixture-inputs.sh")
+            ]
             [
               (import ../tests/private-nix.nix { inherit pkgs; })
               pkgs.gnugrep
@@ -489,6 +496,7 @@
                 };
               in
               ''
+                export LOOM_FIXTURE_INPUT_LOADER=${builtins.elemAt paths 1}
                 bash ${builtins.head paths} --test-process ${verificationTool}/libexec/loom-verification-tests preparation::tests
                 LOOM_VERIFICATION_BIN=${verificationTool}/bin/loom-verification \
                   bash ${builtins.head paths} --test-process \
@@ -497,7 +505,7 @@
                 export NIX_STATE_DIR="$TMPDIR/sdk-nix-state" NIX_LOG_DIR="$TMPDIR/sdk-nix-log" NIX_CONF_DIR="$TMPDIR/sdk-nix-conf"
                 mkdir -p "$HOME" "$NIX_STATE_DIR" "$NIX_LOG_DIR" "$NIX_CONF_DIR"
                 export NIX_CONFIG=$'experimental-features = nix-command flakes\nbuild-users-group =\nrequire-sigs = true\nsandbox = true\nsandbox-fallback = false\nsubstituters =\nbuilders ='
-                nix-store --load-db < ${fixtureRegistration}/registration
+                bash "$LOOM_FIXTURE_INPUT_LOADER" "$(command -v nix)" "$NIX_STATE_DIR/store" ${fixtureRegistration}/registration
                 timeout --kill-after=5s 65s loom-verification prepare ${builtins.unsafeDiscardStringContext ready.drvPath} ${ready} check
                 status=0
                 timeout --kill-after=5s 65s loom-verification prepare ${builtins.unsafeDiscardStringContext cold.drvPath} ${cold} check > missing.log 2>&1 || status=$?

@@ -301,6 +301,7 @@ let
             NIX_NO_SELF_RPATH = 1;
             LOOM_REPORT_SUPERVISOR = ./report-supervisor.sh;
             LOOM_PRIVATE_FIXTURE_RUNNER = ./private-fixture-tests.sh;
+            LOOM_FIXTURE_INPUT_LOADER = ./retain-fixture-inputs.sh;
             LOOM_TEST_SCHEDULING = ./test-scheduling.sh;
             NEXTEST_EXPERIMENTAL_LIBTEST_JSON = "1";
           }

@@ -142,14 +142,8 @@ if [[ "$fixture_process" == false && -n "${LOOM_TEST_NIX_REGISTRATION:-}" ]]; th
   NIX_CONFIG="${NIX_CONFIG:-}"$'\n'"$(< "$NIX_CONF_DIR/nix.conf")"
   export NIX_CONFIG
   # Runtime tools stay off the compiler PATH, including during fixture seeding.
-  "${LOOM_NATIVE_NIX_BIN:?missing declared Nix tool}"-store --load-db < "$LOOM_TEST_NIX_REGISTRATION"
-  # Keep canonical logical identities, but own all physical bytes and store writes.
-  # A strict Darwin builder cannot initialize the host store's .links directory.
-  "$LOOM_NATIVE_NIX_BIN" path-info --all > "$TMPDIR/sdk-paths"
-  while IFS= read -r path; do
-    cp -a --no-preserve=ownership --reflink=auto -- "$path" "$TMPDIR/store/${path##*/}"
-  done < "$TMPDIR/sdk-paths"
-  "$LOOM_NATIVE_NIX_BIN"-store --verify --check-contents
+  bash "${LOOM_FIXTURE_INPUT_LOADER:-${BASH_SOURCE[0]%/*}/retain-fixture-inputs.sh}" \
+    "${LOOM_NATIVE_NIX_BIN:?missing declared Nix tool}" "$TMPDIR/store" "$LOOM_TEST_NIX_REGISTRATION"
 fi
 
 writable_directories() {

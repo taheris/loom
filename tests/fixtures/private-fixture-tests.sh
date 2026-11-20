@@ -97,7 +97,9 @@ cat >> "$fixture/registration-tools/nix" <<'SH'
 set -euo pipefail
 case "$*" in
   '--extra-experimental-features nix-command config show sandbox') printf 'true\n' ;;
-  'path-info --all') [[ "$(< "$REGISTRATION_MARKER")" == registered ]] ;;
+  '--extra-experimental-features nix-command path-info --all --offline')
+    [[ "$(< "$REGISTRATION_MARKER")" == registered ]]
+    printf '%s\n' "$REGISTRATION_INPUT" ;;
   *) exit 1 ;;
 esac
 SH
@@ -120,15 +122,20 @@ SH
 printf '#!%s\nprintf "fixture runner must not mutate caller Git state\\n" >&2\nexit 97\n' "$BASH" > "$fixture/registration-git/git"
 chmod u+x "$fixture/registration-tools/nix" "$fixture/registration-tools/nix-store" "$fixture/registration-git/git"
 printf 'declared-registration\n' > "$fixture/registration"
+printf 'shared input\n' > "$fixture/input"
 (
   cd "$fixture/registration-workspace"
   PATH="$fixture/registration-git:$PATH" \
     LOOM_NATIVE_NIX_BIN="$fixture/registration-tools/nix" \
     LOOM_TEST_NIX_REGISTRATION="$fixture/registration" \
-    REGISTRATION_MARKER="$fixture/registered" \
-    NIX_BUILD_TOP="$fixture/safe" TMPDIR="$fixture/safe" bash "$runner" --build-campaign true
+    REGISTRATION_MARKER="$fixture/registered" REGISTRATION_INPUT="$fixture/input" \
+    NIX_BUILD_TOP="$fixture/safe" TMPDIR="$fixture/safe" bash "$runner" --build-campaign bash -euc '
+      [[ "$(readlink "$NIX_STATE_DIR/gcroots/${REGISTRATION_INPUT##*/}")" == "$REGISTRATION_INPUT" ]]
+      cmp "$REGISTRATION_INPUT" "$TMPDIR/store/${REGISTRATION_INPUT##*/}"
+    '
 )
 [[ "$(<"$fixture/registered")" == verified ]]
+[[ "$(<"$fixture/input")" == 'shared input' ]]
 
 # Cleanup handles readonly copies without following links to outside directories.
 mkdir -m 500 "$fixture/outside"

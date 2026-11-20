@@ -263,6 +263,29 @@ printf '%s\n' "$3"
         );
     }
     #[test]
+    fn preparation_registered_but_absent_sdk_blocks_dispatch_without_acquisition() {
+        let fixture = Fixture::new("exit 0");
+        let sdk = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-absent-sdk";
+        assert!(!std::path::Path::new(sdk).exists());
+        let output = fixture
+            .command()
+            .args([
+                "prepare",
+                "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-sdk.drv",
+                sdk,
+                "check",
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(78));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("before dispatch"));
+        assert_eq!(
+            fixture.calls(),
+            vec![format!("nix-store --check-validity --print-invalid {sdk}")]
+        );
+    }
+
+    #[test]
     fn preparation_denial_blocks_dispatch_and_retains_bounded_store_diagnostic() {
         let fixture = Fixture::new(
             r#"[[ "$NIX_REMOTE" == daemon ]]

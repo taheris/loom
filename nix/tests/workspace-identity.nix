@@ -36,6 +36,7 @@ let
   nixTemplate = construct { src = without "nix/workspace.nix"; };
   embeddedScript = construct { src = without "scripts/worker-native-preflight.sh"; };
   fixtureRunner = construct { src = without "nix/private-fixture-tests.sh"; };
+  inputLoader = construct { src = without "nix/retain-fixture-inputs.sh"; };
   rust = construct { src = without "crates/loom-gate/src/provider/tracked.rs"; };
   manifest = construct { src = without "crates/loom-events/Cargo.toml"; };
   toolchain = construct {
@@ -80,6 +81,8 @@ assert baseline.bin.drvPath == shellTest.bin.drvPath;
 assert baseline.nextest.drvPath != shellTest.nextest.drvPath;
 assert baseline.bin.drvPath != embeddedScript.bin.drvPath;
 assert baseline.bin.drvPath != fixtureRunner.bin.drvPath;
+assert baseline.bin.drvPath != inputLoader.bin.drvPath;
+assert baseline.testCompilation.drvPath != inputLoader.testCompilation.drvPath;
 assert baseline.testCompilation.drvPath == docs.testCompilation.drvPath;
 assert baseline.testCompilation.drvPath == nixTemplate.testCompilation.drvPath;
 assert baseline.nextest.drvPath != nixTemplate.nextest.drvPath;

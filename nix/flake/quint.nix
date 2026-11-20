@@ -344,6 +344,7 @@ _: {
             "nix/private-fixture-tests.sh"
             "tests/fixtures/private-fixture-tests.sh"
             "nix/test-scheduling.sh"
+            "nix/retain-fixture-inputs.sh"
           ];
         in
         checked.check {
@@ -368,6 +369,7 @@ _: {
               }
               ''
                 set -euo pipefail
+                export LOOM_FIXTURE_INPUT_LOADER=${(builtins.elemAt nativeSources 3).path}
                 bash ${(builtins.elemAt nativeSources 0).path} bash ${(builtins.elemAt nativeSources 1).path} \
                   ${(builtins.elemAt nativeSources 0).path} ${(builtins.elemAt nativeSources 2).path}
                 touch "$out"

@@ -43,6 +43,10 @@ let
     root = ../.;
     origin = "nix/private-fixture-tests.sh";
   };
+  inputLoader = checked.resource {
+    root = ../.;
+    origin = "nix/retain-fixture-inputs.sh";
+  };
   runner = pkgs.writeShellApplication {
     name = "${name}-producer";
     runtimeInputs = [
@@ -101,11 +105,11 @@ let
           'allow-import-from-derivation = false' \
           'substituters =' \
           'builders =' > "$NIX_CONF_DIR/nix.conf"
-        nix-store --load-db < ${nixRegistration}
-        ${optionalString (runtime == "native-container") ''
-          : "''${LOOM_NATIVE_NIX_REGISTRATION:?missing admitted native input registration}"
-          nix-store --load-db < "$LOOM_NATIVE_NIX_REGISTRATION"
-        ''}
+        bash ${inputLoader.path} "$(command -v nix)" "$NIX_STORE_DIR" ${nixRegistration} ${
+          optionalString (
+            runtime == "native-container"
+          ) ''"''${LOOM_NATIVE_NIX_REGISTRATION:?missing admitted native input registration}"''
+        }
       ''}
       git init --quiet -b main
       git add --all
@@ -167,7 +171,10 @@ checked.reported {
     ;
   bash = pkgs.bash;
   coreutils = pkgs.coreutils;
-  resources = fixtureResources ++ optional (runtime != "native-container") fixtureRunner;
+  resources =
+    fixtureResources
+    ++ optional (runtime != "native-container") fixtureRunner
+    ++ optional (nixRegistration != null) inputLoader;
   program = execution;
   parser = "json-lines";
   targets = [ name ];

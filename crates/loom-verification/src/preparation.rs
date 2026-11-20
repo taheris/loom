@@ -48,7 +48,7 @@ fn invalid_paths_with(
 }
 
 fn invalid_paths(paths: &[String]) -> Result<Vec<String>> {
-    invalid_paths_with(paths, |batch| {
+    let mut missing: BTreeSet<_> = invalid_paths_with(paths, |batch| {
         let result = process::capture(
             Command::new("nix-store")
                 .args(["--check-validity", "--print-invalid"])
@@ -60,7 +60,23 @@ fn invalid_paths(paths: &[String]) -> Result<Vec<String>> {
             String::from_utf8(result.stdout)?,
             String::from_utf8(result.stderr)?,
         ))
-    })
+    })?
+    .into_iter()
+    .collect();
+    missing.extend(physically_missing(paths)?);
+    Ok(missing.into_iter().collect())
+}
+
+fn physically_missing(paths: &[String]) -> Result<Vec<String>> {
+    let mut missing = Vec::new();
+    for path in paths {
+        match fs::symlink_metadata(path) {
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => missing.push(path.clone()),
+            Err(error) => return Err(error).with_context(|| format!("inspect SDK input: {path}")),
+        }
+    }
+    Ok(missing)
 }
 
 fn manifest(sdk: &Path) -> Result<Vec<String>> {
@@ -230,6 +246,21 @@ mod tests {
         let wrong = root.join("wrong-sdk");
         fs::create_dir(&wrong).unwrap();
         assert!(provision("selected.drv", &wrong, &root, execute).is_err());
+    }
+
+    #[test]
+    fn registered_inputs_must_remain_physically_present() {
+        let root = tempfile::tempdir().unwrap();
+        let input = root.path().join("registered-input");
+        fs::write(&input, "immutable input").unwrap();
+        let paths = vec![input.to_str().unwrap().to_owned()];
+        assert_eq!(
+            invalid_paths_with(&paths, |_| Ok((true, String::new(), String::new()))).unwrap(),
+            Vec::<String>::new()
+        );
+        assert_eq!(physically_missing(&paths).unwrap(), Vec::<String>::new());
+        fs::remove_file(input).unwrap();
+        assert_eq!(physically_missing(&paths).unwrap(), paths);
     }
 
     #[test]

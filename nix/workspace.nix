@@ -93,6 +93,7 @@ let
         ])
         || builtins.elem relative [
           "nix/private-fixture-tests.sh"
+          "nix/retain-fixture-inputs.sh"
           "nix/test-scheduling.sh"
           "scripts/worker-native-preflight.sh"
         ]
@@ -120,6 +121,7 @@ let
         "nix/verification.nix"
         "nix/report-supervisor.sh"
         "nix/private-fixture-tests.sh"
+        "nix/retain-fixture-inputs.sh"
         "nix/test-scheduling.sh"
         "bin/pre-push-checks"
         "scripts/worker-native-preflight.sh"
@@ -515,6 +517,7 @@ let
         nativeSmokeFixture
         ./report-supervisor.sh
         ./private-fixture-tests.sh
+        ./retain-fixture-inputs.sh
         ./test-scheduling.sh
       ];
   };

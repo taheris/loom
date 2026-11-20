@@ -179,25 +179,25 @@ impl CargoOperation {
         );
         require_cargo_builder(root)?;
         if self == Self::Test {
-            let runner = root
-                .env
-                .get("LOOM_PRIVATE_FIXTURE_RUNNER")
-                .ok_or(Error::CargoExecution)?;
-            StorePath::root(Path::new(runner))?;
-            if std::fs::read_to_string(runner)?
-                != include_str!("../../../../nix/private-fixture-tests.sh")
-            {
-                return Err(Error::CargoExecution);
-            }
-            let scheduling = root
-                .env
-                .get("LOOM_TEST_SCHEDULING")
-                .ok_or(Error::CargoExecution)?;
-            StorePath::root(Path::new(scheduling))?;
-            if std::fs::read_to_string(scheduling)?
-                != include_str!("../../../../nix/test-scheduling.sh")
-            {
-                return Err(Error::CargoExecution);
+            for (name, expected) in [
+                (
+                    "LOOM_PRIVATE_FIXTURE_RUNNER",
+                    include_str!("../../../../nix/private-fixture-tests.sh"),
+                ),
+                (
+                    "LOOM_FIXTURE_INPUT_LOADER",
+                    include_str!("../../../../nix/retain-fixture-inputs.sh"),
+                ),
+                (
+                    "LOOM_TEST_SCHEDULING",
+                    include_str!("../../../../nix/test-scheduling.sh"),
+                ),
+            ] {
+                let path = root.env.get(name).ok_or(Error::CargoExecution)?;
+                StorePath::root(Path::new(path))?;
+                if std::fs::read_to_string(path)? != expected {
+                    return Err(Error::CargoExecution);
+                }
             }
             report::require_supervisor(
                 root.env

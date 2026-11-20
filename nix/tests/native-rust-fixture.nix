@@ -73,7 +73,7 @@ let
             inherit craneLib operation;
             runtime = "native-process";
             resources = [ source ];
-            evaluation = map (origin: checked.resource { root = ./.; inherit origin; }) [ "flake.nix" "flake.lock" "verification.nix" "report-supervisor.sh" "private-fixture-tests.sh" "test-scheduling.sh" ];
+            evaluation = map (origin: checked.resource { root = ./.; inherit origin; }) [ "flake.nix" "flake.lock" "verification.nix" "report-supervisor.sh" "private-fixture-tests.sh" "retain-fixture-inputs.sh" "test-scheduling.sh" ];
             args = {
               src = source.path;
               cargoArtifacts = null;
@@ -195,6 +195,7 @@ pkgs.runCommand "loom-native-rust-fixture"
       cp ${../verification.nix} "$out/verification.nix"
       cp ${../report-supervisor.sh} "$out/report-supervisor.sh"
       cp ${../private-fixture-tests.sh} "$out/private-fixture-tests.sh"
+      cp ${../retain-fixture-inputs.sh} "$out/retain-fixture-inputs.sh"
       cp ${../test-scheduling.sh} "$out/test-scheduling.sh"
       # Hash declared immutable input bytes during fixture construction, not on
       # every emulated guest lock. Nix still resolves and verifies the lock normally.

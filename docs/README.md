@@ -61,6 +61,9 @@ Ownership boundaries do not require new crates or commands.
   target/environment and cache-substitution measurements, not a replay package
   or a production cache-key/mount-policy change.
 
+- [Registered Nix inputs](registered-nix-inputs.md) — isolated split-database
+  deletion reproduction, private fixture input roots, and physical readiness.
+
 - [Native verification](native-verification-investigation.md) — proc-mount
   diagnosis, software-isolated cold/warm evidence, compiler catalogue
   boundaries, and the limits of current coordinated acceptance.
