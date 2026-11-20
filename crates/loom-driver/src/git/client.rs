@@ -3658,45 +3658,62 @@ fn cli_error(output: &std::process::Output) -> GitError {
 async fn ensure_private_bead_storage(workspace: &Path) -> Result<(), GitError> {
     let workspace = workspace.to_path_buf();
     spawn_blocking(move || {
-        use std::os::unix::fs::MetadataExt;
-
-        let git_dir = workspace.join(".git");
-        let objects = git_dir.join("objects");
-        for directory in [&workspace, &git_dir, &objects] {
-            if !std::fs::symlink_metadata(directory)?.is_dir() {
-                return Err(GitError::IndirectGitStorage {
-                    path: directory.clone(),
-                });
-            }
-        }
-        for path in [
-            git_dir.join("commondir"),
-            objects.join("info/alternates"),
-            objects.join("info/http-alternates"),
-        ] {
-            match std::fs::symlink_metadata(&path) {
-                Ok(_) => return Err(GitError::IndirectGitStorage { path }),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
-        }
-        let mut directories = vec![objects];
-        while let Some(directory) = directories.pop() {
-            for entry in std::fs::read_dir(directory)? {
-                let path = entry?.path();
-                let metadata = std::fs::symlink_metadata(&path)?;
-                if metadata.is_dir() {
-                    directories.push(path);
-                } else if !metadata.is_file() {
-                    return Err(GitError::IndirectGitStorage { path });
-                } else if metadata.nlink() != 1 {
-                    return Err(GitError::SharedGitObject { path });
-                }
-            }
-        }
-        Ok(())
+        inspect_private_bead_storage(&workspace, |path| std::fs::symlink_metadata(path))
     })
     .await?
+}
+
+fn inspect_private_bead_storage(
+    workspace: &Path,
+    mut inspect: impl FnMut(&Path) -> std::io::Result<std::fs::Metadata>,
+) -> Result<(), GitError> {
+    use std::os::unix::fs::MetadataExt;
+
+    let git_dir = workspace.join(".git");
+    let objects = git_dir.join("objects");
+    let maintenance = objects.join("maintenance.lock");
+    for directory in [workspace, &git_dir, &objects] {
+        if !inspect(directory)?.is_dir() {
+            return Err(GitError::IndirectGitStorage {
+                path: directory.to_path_buf(),
+            });
+        }
+    }
+    for path in [
+        git_dir.join("commondir"),
+        objects.join("info/alternates"),
+        objects.join("info/http-alternates"),
+    ] {
+        match inspect(&path) {
+            Ok(_) => return Err(GitError::IndirectGitStorage { path }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let mut directories = vec![objects];
+    while let Some(directory) = directories.pop() {
+        for entry in std::fs::read_dir(directory)? {
+            let path = entry?.path();
+            let metadata = match inspect(&path) {
+                Ok(metadata) => metadata,
+                // Git removes this coordination file independently of object storage.
+                Err(error)
+                    if path == maintenance && error.kind() == std::io::ErrorKind::NotFound =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
+            if metadata.is_dir() {
+                directories.push(path);
+            } else if !metadata.is_file() {
+                return Err(GitError::IndirectGitStorage { path });
+            } else if metadata.nlink() != 1 && !(path == maintenance && metadata.nlink() == 0) {
+                return Err(GitError::SharedGitObject { path });
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Create `<clone>/.wrix/` mode 0o777 so the container's dolt-socket
@@ -3788,6 +3805,81 @@ where
 #[cfg(test)]
 #[cfg(unix)]
 mod timeout_tests {
+    #[test]
+    fn git_storage_checks_distinguish_removed_maintenance_locks_from_objects() {
+        use std::fs;
+
+        for name in ["maintenance.lock", "real-object", "ab/maintenance.lock"] {
+            for unlinked_metadata in [false, true] {
+                let root = tempfile::tempdir().unwrap();
+                let objects = root.path().join(".git/objects");
+                let object = objects.join(name);
+                fs::create_dir_all(object.parent().unwrap()).unwrap();
+                let file = fs::File::create(&object).unwrap();
+                let mut removed = false;
+                let result = super::inspect_private_bead_storage(root.path(), |path| {
+                    if path == object && !removed {
+                        removed = true;
+                        fs::remove_file(path)?;
+                        if unlinked_metadata {
+                            return file.metadata();
+                        }
+                    }
+                    fs::symlink_metadata(path)
+                });
+                assert!(removed);
+                assert!(!object.exists());
+                if name == "maintenance.lock" {
+                    result.unwrap();
+                } else if unlinked_metadata {
+                    assert!(matches!(
+                        result,
+                        Err(super::GitError::SharedGitObject { .. })
+                    ));
+                } else {
+                    assert!(
+                        matches!(result, Err(super::GitError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn git_storage_checks_reject_indirect_and_aliased_maintenance_locks() {
+        use std::fs;
+        use std::os::unix::fs::symlink;
+
+        for hardlink in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let objects = root.path().join(".git/objects");
+            fs::create_dir_all(&objects).unwrap();
+            let source = root.path().join("outside");
+            fs::write(&source, "preserve external bytes").unwrap();
+            let lock = objects.join("maintenance.lock");
+            if hardlink {
+                fs::hard_link(&source, &lock).unwrap();
+            } else {
+                symlink(&source, &lock).unwrap();
+            }
+            let result =
+                super::inspect_private_bead_storage(root.path(), |path| fs::symlink_metadata(path));
+            if hardlink {
+                assert!(
+                    matches!(result, Err(super::GitError::SharedGitObject { path }) if path == lock)
+                );
+            } else {
+                assert!(
+                    matches!(result, Err(super::GitError::IndirectGitStorage { path }) if path == lock)
+                );
+            }
+            assert_eq!(
+                fs::read_to_string(source).unwrap(),
+                "preserve external bytes"
+            );
+        }
+    }
+
     #[test]
     fn linked_worktree_legacy_state_is_local_and_requires_explicit_import() {
         use crate::state::{CacheDb, RecordKind};
