@@ -32,6 +32,7 @@ let
   runtime = construct { nativeTestInputs = [ runtimeTool ]; };
   readme = construct { src = without "README.md"; };
   docs = construct { src = without "docs/README.md"; };
+  prose = construct { src = without "docs/registered-nix-inputs.md"; };
   shellTest = construct { src = without "tests/verify/agent-landing.sh"; };
   nixTemplate = construct { src = without "nix/workspace.nix"; };
   embeddedScript = construct { src = without "scripts/worker-native-preflight.sh"; };
@@ -77,6 +78,10 @@ assert baseline.stagedSrc.drvPath != rust.stagedSrc.drvPath;
 assert baseline.cargoArtifacts.drvPath == docs.cargoArtifacts.drvPath;
 assert baseline.bin.drvPath == docs.bin.drvPath;
 assert baseline.stagedSrc.drvPath != docs.stagedSrc.drvPath;
+assert identity baseline == identity prose;
+assert baseline.testCompilation.drvPath == prose.testCompilation.drvPath;
+assert baseline.confinedTests.drvPath == prose.confinedTests.drvPath;
+assert baseline.confinedTests.drvPath != docs.confinedTests.drvPath;
 assert baseline.bin.drvPath == shellTest.bin.drvPath;
 assert baseline.nextest.drvPath != shellTest.nextest.drvPath;
 assert baseline.bin.drvPath != embeddedScript.bin.drvPath;
@@ -119,6 +124,10 @@ pkgs.runCommand "workspace-build-identity"
     );
   }
   ''
+    cmp ${baseline.stagedSrc}/docs/README.md ${src + "/docs/README.md"}
+    cmp ${baseline.stagedSrc}/docs/spec-conventions.md ${src + "/docs/spec-conventions.md"}
+    cmp ${baseline.stagedSrc}/docs/style-rules.md ${src + "/docs/style-rules.md"}
+    test ! -e ${baseline.stagedSrc}/docs/registered-nix-inputs.md
     cmp ${baseline.compilerSource.path}/clippy.toml ${src + "/clippy.toml"}
     cmp ${baseline.cargoArtifacts.cargoLock} ${src + "/Cargo.lock"}
     ${optionalString pkgs.stdenv.hostPlatform.isDarwin ''

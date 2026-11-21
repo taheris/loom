@@ -320,14 +320,33 @@ let
         "crates/loom-protocol/tests/ui"
         "crates/loom-skill/tests/ui"
         "specs"
-        "docs"
         "nix"
         "scripts"
         "bin/pre-push-checks"
         "bin/loom"
         ".gitignore"
         ".pre-commit-config.yaml"
-      ];
+      ]
+    ++ [
+      # The staged project needs its spec index and workflow guidance, not
+      # engineering prose. Declared resources also drive affected selection.
+      (checked.resource {
+        root = src;
+        origin = "docs";
+        name = "docs";
+        filter =
+          let
+            original = if src._isLibCleanSourceWith or false then src.origSrc else src;
+          in
+          path: type:
+          type == "directory"
+          || builtins.elem (removePrefix "${toString original}/" path) [
+            "docs/README.md"
+            "docs/spec-conventions.md"
+            "docs/style-rules.md"
+          ];
+      })
+    ];
   extraSrcs = builtins.listToAttrs (
     map ({ origin, path, ... }: {
       name = origin;
