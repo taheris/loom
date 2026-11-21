@@ -18,6 +18,52 @@ fn fixture() -> tempfile::TempDir {
 }
 
 #[test]
+fn paired_partition_evaluation_preserves_order_and_rejects_either_failure() {
+    let root = fixture();
+    let project = root.path().join("project");
+    loom_driver::git::init_test_repo(&project).unwrap();
+    let system = crate::runner::result::current_platform();
+    let flake = |name: &str, loom: &str| {
+        format!(
+            r#"{{ outputs = {{ self }}: {{ checks.{system}.probe =
+              (builtins.derivation {{ name = "{name}"; system = "{system}"; builder = "/bin/sh"; }})
+              // {{ {loom} }};
+            }}; }}"#
+        )
+    };
+    std::fs::write(project.join("flake.nix"), flake("probe", "")).unwrap();
+    let snapshot = Snapshot::discover(&project).unwrap();
+    let inventory = Inventory::discover(&snapshot).unwrap();
+    let subject = Name::try_from(format!("nix:check:flake.nix:{system}:probe")).unwrap();
+    let targets = std::slice::from_ref(inventory.subjects()[&subject].nix_target().unwrap());
+    let tool = locate_tool().unwrap();
+    let prepare = |name: &str, loom: &str| {
+        let path = root.path().join(name);
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("flake.nix"), flake(name, loom)).unwrap();
+        read_metadata(&tool, &format!("path:{}", path.display())).unwrap()
+    };
+    let declaration = "loom = { version = 1; sources = []; evaluation = []; };";
+    let first = prepare("paired-first", declaration);
+    let second = prepare("paired-second", declaration);
+    let invalid = prepare("paired-invalid", "");
+    let first = [(&first, targets)];
+    let second = [(&second, targets)];
+    let invalid = [(&invalid, targets)];
+    let evaluated = evaluate_partition_pair(&tool, &first, &second).unwrap();
+    assert_eq!(evaluated.len(), 2);
+    assert!(evaluated[0][0].root.as_str().ends_with("-paired-first.drv"));
+    assert!(
+        evaluated[1][0]
+            .root
+            .as_str()
+            .ends_with("-paired-second.drv")
+    );
+    assert!(evaluate_partition_pair(&tool, &first, &invalid).is_err());
+    assert!(evaluate_partition_pair(&tool, &invalid, &second).is_err());
+}
+
+#[test]
 fn cargo_preparation_must_match_the_reporters_compilation_profile() {
     let mut root = Node {
         builder: String::new(),

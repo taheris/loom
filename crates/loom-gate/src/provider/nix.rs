@@ -1038,6 +1038,7 @@ impl Construction {
     ) -> Result<(Metadata, Native), Error> {
         let key = partition_key(native, definition, sources)?;
         if self.partitions.is_empty() {
+            const BATCH: usize = 4;
             let mut staged_groups = BTreeMap::new();
             for (group, targets) in &self.groups {
                 let target = targets.first().ok_or(Error::Partition)?;
@@ -1106,14 +1107,22 @@ impl Construction {
                     .map(|(_, _, metadata, _)| metadata.path.clone())
                     .collect(),
             )?));
-            // Bound evaluator memory while sharing pinned imports within each batch.
-            for batch in pending.chunks(4) {
-                let projects: Vec<_> = batch
+            // Keep the four-project evaluator batches and their source boundaries.
+            // On qualified hosts overlap only two batches, with ordered admission
+            // after both queries finish. Small hosts keep the serial bound.
+            let window_size = if pending.len() > BATCH && parallel_partition_evaluation() {
+                2 * BATCH
+            } else {
+                BATCH
+            };
+            for window in pending.chunks(window_size) {
+                let projects: Vec<_> = window
                     .iter()
                     .map(|(_, targets, metadata, _)| (metadata, targets.as_slice()))
                     .collect();
-                let evaluated = evaluate_projects(&self.tool, &projects)?;
-                for ((groups, targets, metadata, _), definitions) in batch.iter().zip(evaluated) {
+                let (first, second) = projects.split_at(projects.len().min(BATCH));
+                let evaluated = evaluate_partition_pair(&self.tool, first, second)?;
+                for ((groups, targets, metadata, _), definitions) in window.iter().zip(evaluated) {
                     let definitions = targets
                         .iter()
                         .zip(definitions)
@@ -1952,6 +1961,48 @@ fn evaluate_many(
     evaluate_projects(tool, &[(metadata, targets)])?
         .pop()
         .ok_or(Error::Result)
+}
+
+fn parallel_partition_evaluation() -> bool {
+    if !cfg!(target_os = "macos")
+        || std::thread::available_parallelism().map_or(true, |cpus| cpus.get() < 8)
+    {
+        return false;
+    }
+    // Missing host capacity information must not increase the serial memory bound.
+    Command::new("/usr/sbin/sysctl")
+        .args(["-n", "hw.memsize"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| {
+            std::str::from_utf8(&output.stdout)
+                .ok()?
+                .trim()
+                .parse::<u64>()
+                .ok()
+        })
+        .is_some_and(|bytes| bytes >= 32 * 1024 * 1024 * 1024)
+}
+
+fn evaluate_partition_pair(
+    tool: &Path,
+    first: &[(&Metadata, &[crate::inventory::nix::Target])],
+    second: &[(&Metadata, &[crate::inventory::nix::Target])],
+) -> Result<Vec<Vec<Native>>, Error> {
+    if second.is_empty() {
+        return evaluate_projects(tool, first);
+    }
+    std::thread::scope(|scope| {
+        let worker = scope.spawn(|| evaluate_projects(tool, second));
+        let first = evaluate_projects(tool, first);
+        let second = worker
+            .join()
+            .map_err(|_| std::io::Error::other("native Nix evaluation worker panicked"))?;
+        let mut definitions = first?;
+        definitions.extend(second?);
+        Ok(definitions)
+    })
 }
 
 fn evaluate_projects(
