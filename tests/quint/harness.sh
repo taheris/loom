@@ -72,10 +72,13 @@ set -euo pipefail
 if [[ "$1" == budget ]]; then echo 1; else sleep 5; fi
 SH
   must_fail 'exit 124' env LOOM_QUINT_BIN="$tmp/failed-runner" "$BASH" "$script" provisioning-and-batching
-  mkdir -p "$tmp/source"
-  cp -r "$LOOM_QUINT_SOURCE/crates" "$LOOM_QUINT_SOURCE/tests" "$LOOM_QUINT_SOURCE/nix" "$LOOM_QUINT_SOURCE/scripts" "$tmp/source/"
-  cp "$LOOM_QUINT_SOURCE/Cargo.lock" "$LOOM_QUINT_SOURCE/flake.lock" "$LOOM_QUINT_SOURCE/flake.nix" "$tmp/source/"
-  chmod -R u+w "$tmp/source"
+  # Copy only the receipt inputs; the bridge model is the only mutable file.
+  jq -er '.[]' "$LOOM_QUINT_SOURCE/tests/fixtures/quint/campaign-inputs.json" |
+    while IFS= read -r path; do
+      mkdir -p "$tmp/source/$(dirname "$path")"
+      cp "$LOOM_QUINT_SOURCE/$path" "$tmp/source/$path"
+    done
+  chmod u+w "$tmp/source/tests/fixtures/quint/bridge.qnt"
   printf 'this is not a Quint model\n' >"$tmp/source/tests/fixtures/quint/bridge.qnt"
   must_fail 'Quint returned non-zero' "$LOOM_QUINT_BIN" bridge-replay "$tmp/source"
   cp "$LOOM_QUINT_SOURCE/tests/fixtures/quint/bridge.qnt" "$tmp/source/tests/fixtures/quint/bridge.qnt"

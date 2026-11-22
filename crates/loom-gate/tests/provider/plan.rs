@@ -749,10 +749,14 @@ async fn finite_selection_explains_exact_resources_and_preserves_cross_file_anal
     use loom_gate::provider::plan::selection::Reason;
     let dir = fixture();
     let plan = selectable_plan(&dir);
-    let scope = loom_gate::scope::Request::Files(vec!["README.md".into()])
-        .resolve(dir.path())
-        .await
-        .unwrap();
+    let scope = loom_gate::scope::Request::Files(vec![
+        "README.md".into(),
+        dir.path().canonicalize().unwrap().join("README.md"),
+        "README.md".into(),
+    ])
+    .resolve(dir.path())
+    .await
+    .unwrap();
     let selection = plan.select(&scope).unwrap();
     let heading = selection
         .decisions()

@@ -163,6 +163,13 @@ impl Plan {
         } else {
             stage
         };
+        let files = scope.files().map(|files| {
+            let root = self.snapshot().root();
+            files
+                .iter()
+                .map(|file| file.strip_prefix(root).unwrap_or(file))
+                .collect::<BTreeSet<_>>()
+        });
         let mut decisions: Vec<_> = self
             .units()
             .iter()
@@ -206,20 +213,14 @@ impl Plan {
                     } else {
                         Reason::OtherTarget
                     }
-                } else if let Some(files) = scope.files() {
+                } else if let Some(files) = &files {
                     if files.is_empty() {
                         Reason::EmptyFiniteScope
                     } else {
                         let inputs: Vec<_> = unit
                             .inputs()
                             .iter()
-                            .filter(|input| {
-                                files.iter().any(|file| {
-                                    let path =
-                                        file.strip_prefix(self.snapshot().root()).unwrap_or(file);
-                                    path == input.path().as_path()
-                                })
-                            })
+                            .filter(|input| files.contains(input.path().as_path()))
                             .cloned()
                             .collect();
                         if inputs.is_empty() {
@@ -285,10 +286,7 @@ fn execution_inputs(unit: &Unit) -> impl Iterator<Item = (&ResourcePath, &Digest
 }
 
 pub(crate) fn same_execution(left: &Unit, right: &Unit) -> bool {
-    if !execution_inputs(left).eq(execution_inputs(right)) {
-        return false;
-    }
-    match (&left.definition.execution, &right.definition.execution) {
+    let matching_execution = match (&left.definition.execution, &right.definition.execution) {
         (
             Execution::Tracked {
                 members: left_members,
@@ -318,7 +316,8 @@ pub(crate) fn same_execution(left: &Unit, right: &Unit) -> bool {
             (Candidate::SupportedEffect { execution: left, .. }, Candidate::SupportedEffect { execution: right, .. }) if left == right
         ),
         _ => false,
-    }
+    };
+    matching_execution && execution_inputs(left).eq(execution_inputs(right))
 }
 
 fn native_tier(unit: &Unit) -> Tier {

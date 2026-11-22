@@ -48,6 +48,19 @@ _: {
           ];
         };
       };
+      campaignManifest = ../../tests/fixtures/quint/campaign-inputs.json;
+      campaignFixture = checked.resource {
+        root = toSource {
+          root = ../..;
+          fileset = unions (
+            [
+              campaignManifest
+              ../../tests/fixtures/git/test-gitconfig
+            ]
+            ++ map (path: ../.. + "/${path}") (builtins.fromJSON (builtins.readFile campaignManifest))
+          );
+        };
+      };
       tools = import ../quint/tools.nix { inherit pkgs; };
       verificationTool = import ../verification-tool.nix { inherit pkgs; };
       harness = nativePackage (
@@ -154,7 +167,7 @@ _: {
             verificationTool
           ];
           text = ''
-            export LOOM_QUINT_SOURCE=${source}
+            export LOOM_QUINT_SOURCE=${if scenario == "provisioning-and-batching" then ''"$PWD"'' else source}
             export LOOM_QUINT_PACKAGE=${tools}
             ${
               if scenario == "todo-acceptance-persistence" then
@@ -164,7 +177,7 @@ _: {
               else
                 ""
             }
-            exec bash ${source}/scripts/test-quint.sh '${scenario}'
+            exec bash "$LOOM_QUINT_SOURCE/scripts/test-quint.sh" '${scenario}'
           '';
         };
     in
@@ -208,7 +221,16 @@ _: {
             else
               verify {
                 name = "quint-${scenario}";
-                fixtureResource = if pureModel scenario then modelFixture else null;
+                fixtureResource =
+                  if pureModel scenario then
+                    modelFixture
+                  else if scenario == "provisioning-and-batching" then
+                    campaignFixture
+                  else
+                    null;
+                additionalEvaluation = pkgs.lib.optionals (
+                  scenario == "provisioning-and-batching"
+                ) loom.testResources;
                 program = "${scenarioProgram scenario}/bin/quint-${scenario}";
               };
         }) scenarios
@@ -376,36 +398,32 @@ _: {
               '';
         };
 
-      checks.quint-harness =
-        let
-          nativeSources = map checkResource [ "tests/quint/harness.sh" ];
-        in
-        checked.check {
-          runtime = "native-process";
-          resources = nativeSources;
-          evaluation = (import ../native-context.nix) ++ loom.compilerResources;
-          build =
-            _:
-            pkgs.runCommand "quint-harness"
-              {
-                nativeBuildInputs = map pkgs.lib.getBin [
-                  tools
-                  pkgs.bash
-                  pkgs.coreutils
-                  pkgs.gnugrep
-                  pkgs.jq
-                  verificationTool
-                ];
-              }
-              ''
-                set -euo pipefail
-                export LOOM_QUINT_BIN=${harness}/bin/loom-quint
-                export LOOM_QUINT_SOURCE=${loom.stagedSrc}
-                export LOOM_QUINT_PACKAGE=${tools}
-                    bash ${(builtins.elemAt nativeSources 0).path}
-                touch "$out"
-              '';
-        };
+      checks.quint-harness = checked.check {
+        runtime = "native-process";
+        resources = [ campaignFixture ];
+        evaluation = (import ../native-context.nix) ++ loom.compilerResources;
+        build =
+          _:
+          pkgs.runCommand "quint-harness"
+            {
+              nativeBuildInputs = map pkgs.lib.getBin [
+                tools
+                pkgs.bash
+                pkgs.coreutils
+                pkgs.gnugrep
+                pkgs.jq
+                verificationTool
+              ];
+            }
+            ''
+              set -euo pipefail
+              export LOOM_QUINT_BIN=${harness}/bin/loom-quint
+              export LOOM_QUINT_SOURCE=${campaignFixture.path}
+              export LOOM_QUINT_PACKAGE=${tools}
+              bash "$LOOM_QUINT_SOURCE/tests/quint/harness.sh"
+              touch "$out"
+            '';
+      };
 
       checks.quint-no-jvm =
         let

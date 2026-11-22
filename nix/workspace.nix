@@ -128,6 +128,7 @@ let
         "tests/fixtures/planning_prompt_interview_modes.md"
         "tests/fixtures/verifier/sandbox-results.sh"
         "tests/fixtures/quint/campaign.json"
+        "tests/fixtures/quint/campaign-inputs.json"
         "tests/smoke/spec.md"
         "tests/mock-pi/pi.sh"
       ];

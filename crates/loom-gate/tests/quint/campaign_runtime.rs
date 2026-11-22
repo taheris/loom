@@ -135,28 +135,10 @@ impl Plan {
     pub fn identity(&self, root: &Path, mode: Mode) -> Result<blake3::Hash, Error> {
         let mut hash = blake3::Hasher::new();
         hash.update(&serde_json::to_vec(&(mode, self))?);
-        for path in [
-            "Cargo.lock",
-            "tests/fixtures/quint/campaign.json",
-            "tests/fixtures/quint/bridge.qnt",
-            "crates/loom-gate/tests/quint/campaign.rs",
-            "crates/loom-gate/tests/quint/campaign_runtime.rs",
-            "crates/loom-gate/tests/quint/campaign_runtime.rs",
-            "crates/loom-gate/tests/quint/bridge.rs",
-            "crates/loom-gate/examples/quint.rs",
-            "crates/loom-gate/src/runner.rs",
-            "crates/loom-driver/src/clock/mod.rs",
-            "crates/loom-driver/src/clock/system.rs",
-            "scripts/test-quint.sh",
-            "tests/quint/harness.sh",
-            "nix/flake/quint.nix",
-            "nix/quint/tools.nix",
-            "nix/quint/checker.rs",
-            "nix/cargo-home.nix",
-            "nix/workspace.nix",
-            "flake.nix",
-            "flake.lock",
-        ] {
+        let paths: Vec<&str> = serde_json::from_str(include_str!(
+            "../../../../tests/fixtures/quint/campaign-inputs.json"
+        ))?;
+        for path in paths {
             let input = std::fs::read(root.join(path)).map_err(|source| Error::Input {
                 path: root.join(path),
                 source,

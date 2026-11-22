@@ -74,7 +74,7 @@ impl Request {
             Self::Tree => Selection::Tree,
             Self::Target(target) => Selection::Target(target),
             Self::Files(paths) => Selection::Files {
-                paths: absolute_paths(workspace, paths),
+                paths: absolute_paths(workspace, paths)?,
                 origin: FileOrigin::Explicit,
             },
             Self::Diff(range) => {
@@ -89,7 +89,7 @@ impl Request {
                     source,
                 })?;
                 Selection::Files {
-                    paths: absolute_paths(workspace, paths),
+                    paths: absolute_paths(workspace, paths)?,
                     origin: FileOrigin::Diff(range),
                 }
             }
@@ -174,21 +174,27 @@ impl Resolved {
     }
 }
 
-fn absolute_paths(workspace: &Path, paths: Vec<PathBuf>) -> Vec<PathBuf> {
-    paths
+fn absolute_paths(workspace: &Path, paths: Vec<PathBuf>) -> Result<Vec<PathBuf>, ResolveError> {
+    let absolute = std::path::absolute(workspace).map_err(ResolveError::Workspace)?;
+    let canonical = absolute.canonicalize().map_err(ResolveError::Workspace)?;
+    Ok(paths
         .into_iter()
         .map(|path| {
             if path.is_relative() {
-                workspace.join(path)
+                canonical.join(path)
+            } else if let Ok(relative) = path.strip_prefix(&absolute) {
+                canonical.join(relative)
             } else {
                 path
             }
         })
-        .collect()
+        .collect())
 }
 
 #[derive(Debug, Display, Error)]
 pub enum ResolveError {
+    /// loom gate: cannot resolve the file scope workspace
+    Workspace(#[source] std::io::Error),
     /// loom gate: --diff {range} could not be resolved to a file set
     Diff {
         range: String,
@@ -200,6 +206,29 @@ pub enum ResolveError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn file_scope_normalizes_the_workspace_alias_without_resolving_leaf_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let checkout = dir.path().join("checkout");
+        std::fs::create_dir(&checkout).unwrap();
+        let alias = std::path::absolute(dir.path().join("alias")).unwrap();
+        std::os::unix::fs::symlink(&checkout, &alias).unwrap();
+        let outside = dir.path().join("other/deleted.rs");
+        let resolved = Request::Files(vec![
+            "deleted.rs".into(),
+            alias.join("deleted.rs"),
+            outside.clone(),
+        ])
+        .resolve(&alias)
+        .await
+        .unwrap();
+        let missing = checkout.canonicalize().unwrap().join("deleted.rs");
+        assert_eq!(
+            resolved.files(),
+            Some([missing.clone(), missing, outside].as_slice())
+        );
+    }
 
     #[tokio::test]
     async fn resolved_scope_distinguishes_empty_tree_target_and_file_provenance() {
@@ -223,7 +252,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             files.files(),
-            Some([dir.path().join("src/lib.rs")].as_slice())
+            Some([dir.path().canonicalize().unwrap().join("src/lib.rs")].as_slice())
         );
         assert!(files.is_explicit_files());
         assert!(files.diff().is_none());

@@ -29,6 +29,8 @@ in
   nixRegistration ? null,
   runtime ? "native-process",
   fixtureResource ? null,
+  # Retain construction inputs that are not needed in the writable fixture.
+  additionalEvaluation ? [ ],
 }:
 let
   fixtureSource = if fixtureResource == null then loom.stagedSrc else fixtureResource.path;
@@ -166,9 +168,9 @@ checked.reported {
   inherit
     name
     system
-    evaluation
     runtime
     ;
+  evaluation = evaluation ++ additionalEvaluation;
   bash = pkgs.bash;
   coreutils = pkgs.coreutils;
   resources =
