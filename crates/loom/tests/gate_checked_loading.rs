@@ -495,6 +495,28 @@ fn cli_finite_scope_cannot_hide_independent_native_coverage_before_project_hooks
 }
 
 fn native_target(namespace: &str) {
+    let (dir, target) = native_fixture(namespace, false);
+    let root = dir.path();
+    let output = run(root, "check", &["--target", &target]);
+    let diagnostic = stderr(&output);
+    assert!(
+        diagnostic.contains("\"kind\":\"execution-graph\""),
+        "{diagnostic}"
+    );
+    if diagnostic.contains("\"verdict\":\"unavailable\"") {
+        assert_eq!(output.status.code(), Some(78), "{diagnostic}");
+        assert!(diagnostic.contains("\"capability\":\"nix-sandbox\""));
+        assert!(!diagnostic.contains("\"verdict\":\"pass\""));
+    } else {
+        assert!(output.status.success(), "{diagnostic}");
+        assert!(diagnostic.contains("\"verdict\":\"pass\""));
+    }
+    assert!(!root.join("should-not-run").exists());
+    assert!(!root.join("should-not-query").exists());
+    assert!(!root.join(".loom/state.db").exists());
+}
+
+fn native_fixture(namespace: &str, broken_sibling: bool) -> (tempfile::TempDir, String) {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     native(root, "git", &["init"]);
@@ -512,7 +534,19 @@ fn native_target(namespace: &str) {
         serde_json::to_string(store.to_str().unwrap()).unwrap()
     );
     let system = loom_gate::runner::result::current_platform();
-    let target = format!("nix build .#{namespace}.{system}.native");
+    let target = if broken_sibling {
+        "nix build .#native".to_owned()
+    } else {
+        format!("nix build .#{namespace}.{system}.native")
+    };
+    let (broken, required) = if broken_sibling {
+        (
+            format!("packages.{system}.broken = throw \"required-sibling-is-broken\";"),
+            format!("- Required sibling [check](nix build .#packages.{system}.broken)\n"),
+        )
+    } else {
+        (String::new(), String::new())
+    };
     write(
         root,
         "verification.nix",
@@ -529,7 +563,7 @@ source = checked.resource {{
   root = ./.;
   filter = path: type: type == "directory" || path == toString (./. + "/README.md");
 }};
-in {{ {namespace}.{system}.native = checked.check {{
+in {{ {broken} {namespace}.{system}.native = checked.check {{
       runtime = "native-process";
 resources = [ source ];
 build = sources: builtins.derivation {{
@@ -550,30 +584,71 @@ build = sources: builtins.derivation {{
     write(
         root,
         "specs/fixture/tests.md",
-        &format!("# Fixture\n\n## Success Criteria\n\n- Native checked target [check]({target})\n"),
+        &format!(
+            "# Fixture\n\n## Success Criteria\n\n- Native checked target [check]({target})\n{required}"
+        ),
     );
     write(
         root,
         "loom.toml",
         "[runner.check.hostile]\nmatch='.*'\ncommand='touch should-not-run'\ninputs='touch should-not-query'\n",
     );
-    let output = run(root, "check", &["--target", &target]);
-    let diagnostic = stderr(&output);
-    assert!(
-        diagnostic.contains("\"kind\":\"execution-graph\""),
-        "{diagnostic}"
-    );
-    if diagnostic.contains("\"verdict\":\"unavailable\"") {
-        assert_eq!(output.status.code(), Some(78), "{diagnostic}");
-        assert!(diagnostic.contains("\"capability\":\"nix-sandbox\""));
-        assert!(!diagnostic.contains("\"verdict\":\"pass\""));
-    } else {
-        assert!(output.status.success(), "{diagnostic}");
-        assert!(diagnostic.contains("\"verdict\":\"pass\""));
+    (dir, target)
+}
+
+#[test]
+fn cli_exact_checked_package_replays_source_without_admitting_broken_required_sibling() {
+    let (dir, target) = native_fixture("packages", true);
+    let root = dir.path();
+    for (source, expected, verdict) in [
+        ("# Native checked source\n", 0, "pass"),
+        ("Not a Markdown heading\n", 1, "fail"),
+        ("# Native checked source\n", 0, "pass"),
+    ] {
+        write(root, "README.md", source);
+        let output = run(root, "verify", &["--target", &target]);
+        let diagnostic = stderr(&output);
+        assert_eq!(output.status.code(), Some(expected), "{diagnostic}");
+        assert!(diagnostic.contains("diagnostic only"), "{diagnostic}");
+        assert!(
+            diagnostic.contains(&format!("\"verdict\":\"{verdict}\"")),
+            "{diagnostic}"
+        );
+        assert!(
+            diagnostic.contains("\"kind\":\"execution-graph\""),
+            "{diagnostic}"
+        );
+        assert!(
+            !diagnostic.contains("required-sibling-is-broken"),
+            "{diagnostic}"
+        );
     }
+    assert!(!root.join(".loom/state.db").exists());
     assert!(!root.join("should-not-run").exists());
     assert!(!root.join("should-not-query").exists());
-    assert!(!root.join(".loom/state.db").exists());
+
+    let publication = run(root, "verify", &["--tree"]);
+    let diagnostic = stderr(&publication);
+    assert_eq!(publication.status.code(), Some(1), "{diagnostic}");
+    assert!(
+        diagnostic.contains("required-sibling-is-broken"),
+        "{diagnostic}"
+    );
+    assert!(!diagnostic.contains("\"verdict\":\"pass\""), "{diagnostic}");
+
+    // tryEval catches throw; abort makes even a discarded probe observable.
+    let flake = std::fs::read_to_string(root.join("flake.nix")).unwrap();
+    write(
+        root,
+        "flake.nix",
+        &flake.replace(
+            "throw \"required-sibling-is-broken\"",
+            "abort \"required-sibling-probed\"",
+        ),
+    );
+    let isolated = run(root, "verify", &["--target", &target]);
+    assert!(isolated.status.success(), "{}", stderr(&isolated));
+    assert!(stderr(&isolated).contains("\"verdict\":\"pass\""));
 }
 
 fn baseline_commit(root: &Path) {

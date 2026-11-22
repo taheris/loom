@@ -127,7 +127,69 @@ pub(super) fn discover(
     subjects: &mut BTreeMap<Name, Subject>,
     platform: crate::scope::Platform,
 ) -> Result<BTreeMap<Name, std::sync::Arc<crate::provider::nix::Graph>>, Error> {
-    let constructed = discover_targets(snapshot, root, subjects, platform)?;
+    let constructed = discover_targets(snapshot, root, subjects, platform, None)?;
+    discover_resources(snapshot, subjects, &constructed)
+}
+
+/// Address one existing flake output without probing the values of any peers.
+struct Exact<'a> {
+    flake: ResourcePath,
+    selector: &'a str,
+}
+
+impl<'a> Exact<'a> {
+    fn parse(target: &'a str) -> Result<Self, Error> {
+        let invalid = || Error::Name {
+            value: target.to_owned(),
+        };
+        let reference = if let Some(build) = target.strip_prefix("nix build ") {
+            build
+        } else {
+            let (reference, case) = target
+                .strip_prefix("nix report ")
+                .and_then(|report| report.split_once("::"))
+                .ok_or_else(invalid)?;
+            Name::try_from(case.to_owned())?;
+            reference
+        };
+        let (directory, selector) = reference.split_once('#').ok_or_else(invalid)?;
+        let directory = if directory == "." {
+            Path::new("")
+        } else {
+            Path::new(directory.strip_prefix("./").ok_or_else(invalid)?)
+        };
+        let flake = ResourcePath::try_from(directory.join("flake.nix"))?;
+        if selector.is_empty() || selector.chars().any(char::is_whitespace) {
+            return Err(invalid());
+        }
+        Ok(Self { flake, selector })
+    }
+}
+
+pub(super) fn discover_exact(
+    snapshot: &Snapshot,
+    root: &Path,
+    subjects: &mut BTreeMap<Name, Subject>,
+    platform: crate::scope::Platform,
+    target: &str,
+) -> Result<BTreeMap<Name, std::sync::Arc<crate::provider::nix::Graph>>, Error> {
+    let exact = Exact::parse(target)?;
+    if !snapshot.files().contains_key(&exact.flake) {
+        return Err(Error::Unknown {
+            name: Name::try_from(target.to_owned())?,
+        });
+    }
+    let constructed = discover_targets(snapshot, root, subjects, platform, Some(&exact))?;
+    let mut bindings = subjects
+        .values()
+        .filter(|subject| subject.nix_target().is_some());
+    let name = Name::try_from(target.to_owned())?;
+    if bindings.next().is_none() {
+        return Err(Error::Unknown { name });
+    }
+    if bindings.next().is_some() {
+        return Err(Error::Ambiguous { name });
+    }
     discover_resources(snapshot, subjects, &constructed)
 }
 
@@ -137,6 +199,7 @@ fn discover_targets(
     root: &Path,
     subjects: &mut BTreeMap<Name, Subject>,
     platform: crate::scope::Platform,
+    exact: Option<&Exact<'_>>,
 ) -> Result<Vec<Name>, Error> {
     let nix_files: BTreeSet<_> = snapshot
         .files()
@@ -154,6 +217,9 @@ fn discover_targets(
         .collect();
     let mut constructed = Vec::new();
     for flake in &flakes {
+        if exact.is_some_and(|exact| exact.flake != **flake) {
+            continue;
+        }
         let directory = flake.as_path().parent().unwrap_or_else(|| Path::new(""));
         let members: BTreeSet<_> = nix_files
             .iter()
@@ -239,8 +305,37 @@ fn discover_targets(
                 source,
             })?
             .replace("${", "\\${");
+        let select = if let Some(exact) = exact {
+            let selector = serde_json::to_string(exact.selector)
+                .map_err(|source| Error::Definition {
+                    definition: (*flake).clone(),
+                    source,
+                })?
+                .replace("${", "\\${");
+            format!(
+                r#"namespace:
+                  let
+                    selector = {selector};
+                    qualified = builtins.match "(checks|packages)[.]([^.]+)[.](.+)" selector;
+                    candidate = system: attribute:
+                      if builtins.hasAttr attribute ((flake.${{namespace}} or {{}}).${{system}} or {{}})
+                      then {{ ${{system}} = [ attribute ]; }} else {{}};
+                  in if qualified == null then
+                    (if namespace == "packages" then candidate {system} selector else {{}})
+                  else if namespace == builtins.elemAt qualified 0 then
+                    candidate (builtins.elemAt qualified 1) (builtins.elemAt qualified 2)
+                  else {{}}"#
+            )
+        } else {
+            "namespace: builtins.mapAttrs (_system: builtins.attrNames) (if builtins.hasAttr namespace flake then builtins.getAttr namespace flake else {})".to_owned()
+        };
+        let probe = if exact.is_some() {
+            "true"
+        } else {
+            "let value = builtins.getAttr name (builtins.getAttr system (builtins.getAttr namespace flake)); probe = builtins.tryEval (builtins.isAttrs value && (if namespace == \"apps\" then (value.meta or {}) ? loom else value ? loom)); in probe.success && probe.value"
+        };
         let expression = format!(
-            "let flake = builtins.getFlake {locked}; names = namespace: builtins.mapAttrs (_system: entries: builtins.attrNames entries) (flake.${{namespace}} or {{}}); constructed = namespace: builtins.mapAttrs (system: entries: if builtins.elem system (builtins.fromJSON {platform_names}) then builtins.filter (name: let probe = builtins.tryEval (builtins.isAttrs entries.${{name}} && (if namespace == \"apps\" then (entries.${{name}}.meta or {{}}) ? loom else entries.${{name}} ? loom)); in probe.success && probe.value) (builtins.attrNames entries) else []) (flake.${{namespace}} or {{}}); in {{ checks = names \"checks\"; packages = names \"packages\"; apps = names \"apps\"; system = {system}; constructed_checks = constructed \"checks\"; constructed_packages = constructed \"packages\"; constructed_apps = constructed \"apps\"; }}"
+            "let flake = builtins.getFlake {locked}; names = {select}; constructed = namespace: builtins.mapAttrs (system: names: if builtins.elem system (builtins.fromJSON {platform_names}) then builtins.filter (name: {probe}) names else []) (names namespace); in {{ checks = names \"checks\"; packages = names \"packages\"; apps = names \"apps\"; system = {system}; constructed_checks = constructed \"checks\"; constructed_packages = constructed \"packages\"; constructed_apps = constructed \"apps\"; }}"
         );
         let outputs: Outputs = serde_json::from_slice(&command(
             &project,
@@ -335,8 +430,10 @@ fn discover_targets(
             },
         )?;
     }
-    for path in &nix_files {
-        insert(subjects, single(path, Role::NixSource, "nix")?)?;
+    if exact.is_none() {
+        for path in &nix_files {
+            insert(subjects, single(path, Role::NixSource, "nix")?)?;
+        }
     }
     Ok(constructed)
 }
@@ -447,6 +544,7 @@ mod tests {
             staged.path(),
             &mut subjects,
             crate::scope::Platform::Native,
+            None,
         )
         .unwrap();
         let name =
@@ -511,8 +609,14 @@ mod tests {
         let rust = snapshot.stage().unwrap();
         super::super::rust::discover(&snapshot, rust.path(), &mut subjects).unwrap();
         let native = snapshot.stage().unwrap();
-        let constructed =
-            discover_targets(&snapshot, native.path(), &mut subjects, Platform::Native).unwrap();
+        let constructed = discover_targets(
+            &snapshot,
+            native.path(),
+            &mut subjects,
+            Platform::Native,
+            None,
+        )
+        .unwrap();
         let attributes = [
             ("verification-build", CargoOperation::Build),
             ("verification-clippy", CargoOperation::Lint),

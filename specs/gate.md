@@ -266,6 +266,11 @@ this acceptance document owns Gate composition and authorization.
   suggest a tier subcommand; multiple criteria sharing the same target inside
   one tier are accepted [test](gate_target_exact_match_and_ambiguity_rules)
 
+- A directly addressed checked Nix target validates and executes its own graph
+  without probing unrelated outputs. Whole-project admission still rejects a
+  broken required sibling
+  [test](cli_exact_checked_package_replays_source_without_admitting_broken_required_sibling)
+
 <!-- prettier-ignore -->
 - Explicit `--target` requests require fresh verifier execution rather than
   verification-result reuse at the gate or provider boundary. Build and image
@@ -561,7 +566,12 @@ no substring search, shell splitting, globbing, or positional selector fallback
 exists. Zero matches fail loudly. A target that matches annotations in multiple
 tiers fails on `verify --target` and suggests the tier-specific subcommand;
 multiple criteria sharing the same target inside one tier are accepted and run
-as one target selection.
+as one target selection. A checked `nix build` or `nix report` annotation
+addresses one captured flake output. The unqualified form selects a package on
+Nix's configured native system; the qualified form specifies the namespace,
+system, and attribute. Gate validates that definition's inputs, execution graph,
+policy, and result without probing other outputs or admitting project-wide
+coverage.
 
 An explicit `--target` request requires fresh verifier execution, not replay of
 an earlier result. This intent bypasses verification-result reuse at both the

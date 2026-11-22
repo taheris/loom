@@ -186,6 +186,26 @@ impl Inventory {
         inventory.with_policy(&declarations)
     }
 
+    /// Capture only the native binding addressed by an exact Nix build or report.
+    /// This inventory describes inputs for diagnosis, not project coverage.
+    ///
+    /// # Errors
+    /// Rejects missing or ambiguous outputs, unsafe graphs and stale sources.
+    pub fn for_nix_target(
+        snapshot: &Snapshot,
+        platform: crate::scope::Platform,
+        target: &str,
+    ) -> Result<Self, Error> {
+        let staged = snapshot.stage()?;
+        let mut subjects = BTreeMap::new();
+        let graphs = nix::discover_exact(snapshot, staged.path(), &mut subjects, platform, target)?;
+        snapshot.require_current()?;
+        let mut inventory = Self::finish(snapshot.identity().clone(), subjects, BTreeMap::new())?;
+        inventory.platform = platform;
+        inventory.native_graphs = graphs;
+        Ok(inventory)
+    }
+
     fn finish(
         snapshot: Identity,
         subjects: BTreeMap<Name, Subject>,

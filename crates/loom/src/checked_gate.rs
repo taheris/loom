@@ -78,8 +78,16 @@ impl Admission {
             Snapshot::discover(workspace).context("capture current verification inputs")?;
         require_explicit_inputs(&snapshot, scope)?;
         captured_skip_policies(&snapshot)?;
-        let inventory = Inventory::discover_for(&snapshot, scope.platform())
-            .context("discover independent native verification obligations")?;
+        let inventory = match scope.target() {
+            Some(target)
+                if target.starts_with("nix build ") || target.starts_with("nix report ") =>
+            {
+                Inventory::for_nix_target(&snapshot, scope.platform(), target)
+                    .with_context(|| format!("resolve exact checked definition `{target}`"))?
+            }
+            _ => Inventory::discover_for(&snapshot, scope.platform())
+                .context("discover independent native verification obligations")?,
+        };
         let annotations: Vec<_> = declarations
             .into_iter()
             .filter(|annotation| annotation.tier != Tier::Judge)
@@ -123,6 +131,11 @@ impl Admission {
                 .collect::<anyhow::Result<BTreeSet<_>>>()?;
             owned_contracts.insert(target, contracts);
         }
+        anyhow::ensure!(
+            !owned_contracts.is_empty(),
+            "no actual checked definition for exact target `{}`",
+            scope.target().unwrap_or_default()
+        );
         let units = registry.resolve_owned(&snapshot, &inventory, &owned_contracts)?;
         snapshot.require_current()?;
         Ok(Self::Diagnostic {
@@ -567,6 +580,9 @@ fn definitions(
     {
         Registry::new(snapshot, definitions.clone())?
             .require_inventory_coverage(snapshot, inventory)?;
+    }
+    if !include_baseline && rust_targets.is_empty() {
+        return Ok((definitions, Vec::new()));
     }
     let (rust, properties) = rust_definitions(snapshot, inventory, annotations, &rust_targets)?;
     definitions.extend(rust);
