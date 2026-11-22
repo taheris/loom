@@ -1781,7 +1781,11 @@ impl Graph {
             let requested = self.reporter.as_ref().unwrap_or(&self.root);
             frontier::capture(&self.nodes, [requested.clone()], &mut present)?
         };
-        Ok(execution.cold_inputs)
+        execution.require_local_platforms(
+            &self.nodes,
+            &platform.system.value,
+            &platform.extra.value,
+        )
     }
 
     pub(super) fn run(&self, target: Name) -> Result<Observed, Error> {
@@ -2560,7 +2564,7 @@ pub enum Error {
     System { expected: Name, actual: Name },
     /// pinned input `{derivation:?}` is cold; route its declared acquisition through trusted-driver input provisioning before retrying offline verification
     ColdInput { derivation: StorePath },
-    /// selected plan has cold pinned inputs {derivations:?}; provision all declared inputs through the trusted driver before retrying offline verification
+    /// selected plan needs cold inputs {derivations:?}; provision the declared fetches or realize the foreign build outputs through trusted preparation before retrying offline verification
     ColdInputs { derivations: BTreeSet<StorePath> },
     /// native Nix query was not UTF-8
     Encoding,

@@ -100,6 +100,28 @@ pub(super) fn capture(
     Ok(execution)
 }
 
+impl Execution {
+    /// Offline execution disables remote builders. A foreign recipe on the
+    /// realization frontier needs explicit preparation, just like a cold fetch.
+    pub(super) fn require_local_platforms(
+        mut self,
+        nodes: &Nodes,
+        native: &Name,
+        extra: &BTreeSet<Name>,
+    ) -> Result<BTreeSet<StorePath>, Error> {
+        for path in self.nodes {
+            let node = nodes.get(&path).ok_or(Error::Root)?;
+            if !node.builder.starts_with("builtin:")
+                && &node.system != native
+                && !extra.contains(&node.system)
+            {
+                self.cold_inputs.insert(path);
+            }
+        }
+        Ok(self.cold_inputs)
+    }
+}
+
 /// A realized build-only root stops at its own output; cold artifacts retain ordinary build duties.
 pub(super) fn artifact(
     nodes: &Nodes,
@@ -192,6 +214,24 @@ mod tests {
     ) -> impl FnMut(&BTreeSet<StorePath>) -> Result<BTreeSet<StorePath>, Error> {
         let paths: BTreeSet<_> = paths.iter().map(|value| path(value)).collect();
         move |outputs| Ok(outputs.intersection(&paths).cloned().collect())
+    }
+
+    #[test]
+    fn foreign_build_is_cold_only_when_its_output_is_on_the_realization_frontier() {
+        let mut nodes = graph();
+        let foreign = name("aarch64-linux");
+        let native = name("x86_64-linux");
+        let compiler = path("compiler.drv");
+        std::sync::Arc::make_mut(nodes.get_mut(&compiler).unwrap()).system = foreign.clone();
+        let inspect = |paths: &[&str], extra: &BTreeSet<Name>| {
+            capture(&nodes, [path("check.drv")], available(paths))
+                .unwrap()
+                .require_local_platforms(&nodes, &native, extra)
+                .unwrap()
+        };
+        assert_eq!(inspect(&["archive"], &BTreeSet::new()), [compiler].into());
+        assert!(inspect(&["compiler"], &BTreeSet::new()).is_empty());
+        assert!(inspect(&["archive"], &[foreign].into()).is_empty());
     }
 
     #[test]

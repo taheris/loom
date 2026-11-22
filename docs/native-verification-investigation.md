@@ -95,10 +95,11 @@ Rust/toolchain/patch changes to invalidate compilation. All immutable manifest
 commands use an absolute writable builder-local target, not a source-local one.
 
 Selected execution streams inspect every selected Nix prerequisite frontier
-before their first verifier effect. They report all cold pinned inputs together,
-including package/app/report dependencies, and inspect the actual fresh reporter
-rather than a possibly warm assertion wrapper. This readiness check issues no
-verdict and does not replace current-source validation or per-execution pinning.
+before their first verifier effect. They report cold pinned inputs and missing
+foreign build outputs together, including package/app/report dependencies. A
+realized dependency stops traversal; a warm assertion wrapper does not hide its
+fresh reporter's prerequisites. This readiness check issues no verdict and does
+not replace current-source validation or per-execution pinning.
 
 The native Rust catalogue companion runs actual Cargo metadata and unfiltered
 Nextest collection. It retains compiler artifacts for the subsequent complete
