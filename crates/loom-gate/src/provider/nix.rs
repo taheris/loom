@@ -2021,7 +2021,31 @@ fn evaluate_projects(
     let selectors =
         serde_json::to_string(&serde_json::to_string(&selectors)?)?.replace("${", "\\${");
     let expression = format!(
-        "let select = flake: entry: let original = flake.${{entry.namespace}}.${{entry.system}}.${{entry.attribute}}; value = if entry.namespace == \"apps\" then (assert original.type == \"app\"; original.meta.loom.definition) else original; in if !builtins.isAttrs value || (value.type or null) != \"derivation\" then throw \"native check is not a derivation\" else {{ app = if entry.namespace == \"apps\" then original.program else null; root = value.drvPath; version = value.loom.version; sources = value.loom.sources; evaluation = value.loom.evaluation; cargo = value.loom.cargo or null; catalogue = value.loom.catalogue or null; report = value.loom.report or null; reporter = value.loom.reporter.drvPath or null; runtime = value.loom.runtime or \"nix\"; purpose = value.loom.purpose or \"check\"; }}; project = partition: map (select (builtins.getFlake partition.url)) partition.targets; in map project (builtins.fromJSON {selectors})"
+        r#"let
+          select = flake: entry: let
+            original = flake.${{entry.namespace}}.${{entry.system}}.${{entry.attribute}};
+            value = if entry.namespace == "apps" then (assert original.type == "app"; original.meta.loom.definition) else original;
+          in if !builtins.isAttrs value || (value.type or null) != "derivation" then
+            throw "native check is not a derivation"
+          else {{
+            app = if entry.namespace == "apps" then original.program else null;
+            root = value.drvPath;
+            version = value.loom.version;
+            sources = value.loom.sources;
+            evaluation = value.loom.evaluation ++ (if value.loom.flakeEvaluation or false then
+              (assert value.loom.purpose == "artifact"; map (origin: {{
+                inherit origin;
+                path = builtins.path {{ path = flake.outPath + "/${{origin}}"; name = origin; }};
+              }}) ([ "flake.nix" ] ++ (if builtins.pathExists (flake.outPath + "/flake.lock") then [ "flake.lock" ] else []))) else []);
+            cargo = value.loom.cargo or null;
+            catalogue = value.loom.catalogue or null;
+            report = value.loom.report or null;
+            reporter = value.loom.reporter.drvPath or null;
+            runtime = value.loom.runtime or "nix";
+            purpose = value.loom.purpose or "check";
+          }};
+          project = partition: map (select (builtins.getFlake partition.url)) partition.targets;
+        in map project (builtins.fromJSON {selectors})"#
     );
     let definitions: Vec<Vec<Native>> = serde_json::from_slice(&query(
         tool,

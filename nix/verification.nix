@@ -46,6 +46,7 @@ let
       evaluation ? [ ],
       runtime ? null,
       purpose ? "check",
+      flakeEvaluation ? false,
       build,
     }:
     let
@@ -63,18 +64,22 @@ let
       "check"
       "artifact"
     ];
+    assert !flakeEvaluation || purpose == "artifact";
     assert result.type == "derivation";
     result
     // {
-      loom = (result.loom or { }) // {
-        version = 1;
-        runtime = executionRuntime;
-        inherit purpose;
-        sources =
-          (result.loom.sources or [ ]) ++ map ({ origin, path, ... }: { inherit origin path; }) resources;
-        evaluation =
-          (result.loom.evaluation or [ ]) ++ map ({ origin, path, ... }: { inherit origin path; }) evaluation;
-      };
+      loom =
+        (result.loom or { })
+        // (if flakeEvaluation then { inherit flakeEvaluation; } else { })
+        // {
+          version = 1;
+          runtime = executionRuntime;
+          inherit purpose;
+          sources =
+            (result.loom.sources or [ ]) ++ map ({ origin, path, ... }: { inherit origin path; }) resources;
+          evaluation =
+            (result.loom.evaluation or [ ]) ++ map ({ origin, path, ... }: { inherit origin path; }) evaluation;
+        };
     };
   artifact = args: check (args // { purpose = "artifact"; });
   asserted =

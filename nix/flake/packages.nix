@@ -18,6 +18,12 @@ _:
     }:
     let
       nativePackage = import ../native-package.nix;
+      ownedProfileManifest = nativePackage (
+        import ../profile-manifest-artifact.nix {
+          inherit pkgs;
+          manifest = profileManifest;
+        }
+      );
       checkedPreparation =
         build:
         (import ../verification.nix).artifact {
@@ -79,8 +85,8 @@ _:
       # value has no executable recipe, so it is not a packages derivation.
       legacyPackages.profile-catalogue = profileCatalogue.outPath;
       packages = {
-        profileManifest = nativePackage profileManifest;
-        profile-images = nativePackage profileManifest;
+        profileManifest = ownedProfileManifest;
+        profile-images = ownedProfileManifest;
 
         verification-sdk = checkedPreparation (_: verificationSdk);
         prepare-verification = verificationPreparation;

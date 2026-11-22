@@ -56,6 +56,12 @@ configuration keep their Nix string contexts and matching image provenance.
 Legacy `launcher` fields are ignored; they cannot select a process. Optional
 legacy digest/runtime metadata is still checked/read, not executable authority.
 
+`mkProfileManifest` returns a checked artifact with both outputs and their
+pinned Nix inputs intact. Gate checks the exporting flake's `flake.nix` and,
+when present, `flake.lock` as evaluation sources. Loom registers its preflight
+script origins on its own package exports; importing the library does not make
+those scripts files owned by the consumer's repository.
+
 The raw Wrix launcher comes from trusted caller context, in this order:
 
 1. An explicit API override (`SpawnConfig.wrix_launcher` or interactive option).

@@ -71,20 +71,36 @@ let
   manifest = api.mkProfileManifest {
     inherit pkgs;
     wrixLib = fakeWrix;
-    profiles = fakeWrix.profiles;
+    inherit (fakeWrix) profiles;
     loomBin = pkgs.writeText "consumer-loom-fixture" "";
     piAgentPkg = pkgs.writeText "consumer-agent-fixture" "";
     runtimes.pi = { };
   };
+  ownedManifest = import ../../nix/profile-manifest-artifact.nix { inherit pkgs manifest; };
 in
+# Library callers must not inherit Loom-relative source ownership. Loom's own
+# export keeps those exact sources, with no changes to either output recipe.
 assert
-  map (source: source.origin) manifest.loom.sources == [
+  manifest.loom == {
+    version = 1;
+    purpose = "artifact";
+    flakeEvaluation = true;
+    runtime = "native-process";
+    sources = [ ];
+    evaluation = [ ];
+  };
+assert ownedManifest.drvPath == manifest.drvPath;
+assert toString ownedManifest.nativePreflight == toString manifest.nativePreflight;
+assert
+  map (source: source.origin) ownedManifest.loom.sources == [
     "scripts/worker-native-preflight.sh"
     "scripts/configure-cargo-patches.sh"
   ];
 assert builtins.all (
-  source: builtins.pathExists source.path && builtins.match "/nix/store/.*" source.path != null
-) manifest.loom.sources;
+  source:
+  builtins.match "/nix/store/.*" source.path != null
+  && builtins.readFile source.path == builtins.readFile (../../. + "/${source.origin}")
+) ownedManifest.loom.sources;
 assert (nativePackage artifact).loom.runtime == "native-process";
 assert builtins.all
   (runtime: (nativePackage (artifact // { loom = { inherit runtime; }; })).loom.runtime == runtime)

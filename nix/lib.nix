@@ -179,21 +179,10 @@ rec {
     in
     (import ./verification.nix).artifact {
       runtime = "native-process";
-      resources = pkgs.lib.optionals (profiles ? rust) (
-        map
-          (
-            origin:
-            (import ./verification.nix).resource {
-              root = ../.;
-              inherit origin;
-              name = builtins.baseNameOf origin;
-            }
-          )
-          [
-            "scripts/worker-native-preflight.sh"
-            "scripts/configure-cargo-patches.sh"
-          ]
-      );
+      # The scripts are immutable Loom inputs in the image graph, not files in
+      # the caller's checkout. Bind the artifact to the exporting flake instead.
+      flakeEvaluation = true;
+      resources = [ ];
       build =
         _:
         pkgs.runCommand "profile-images.json"
