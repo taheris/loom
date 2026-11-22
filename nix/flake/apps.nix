@@ -145,87 +145,22 @@
         resources = loom.testResources;
         evaluation = [ requiredScript ];
       };
-      smokeCompileResources = [
-        loom.workspaceSource
-      ]
-      ++ map source [
-        ".config/nextest.toml"
-        ".cargo/config.toml"
-        "tests/fixtures/git"
-      ];
-      smokeNormalizer = source "nix/normalize-nextest-archive.sh";
-      smokeResources = smokeCompileResources ++ [ smokeNormalizer ];
-      smokeSource = pkgs.runCommand "loom-cli-smoke-source" { } (
-        ''
-          cp -r ${loom.workspaceSource.path} "$out"
-          chmod -R u+w "$out"
-        ''
-        + builtins.concatStringsSep "\n" (
-          map (resource: ''
-            mkdir -p "$(dirname "$out/${resource.origin}")"
-            rm -rf "$out/${resource.origin}"
-            cp -r ${resource.path} "$out/${resource.origin}"
-          '') (builtins.tail smokeCompileResources)
-        )
-      );
-      smokeArchive = checked.artifact {
-        runtime = "native-process";
-        resources = smokeResources;
-        inherit evaluation;
-        build =
-          _:
-          loom.craneLib.mkCargoDerivation (
-            loom.checkArgs
-            // {
-              pname = "loom-cli-smoke-archive";
-              version = "1";
-              src = smokeSource;
-              nativeBuildInputs =
-                loom.checkArgs.nativeBuildInputs
-                ++ map pkgs.lib.getBin [
-                  pkgs.bash
-                  pkgs.gnutar
-                  pkgs.zstd
-                  pkgs.jq
-                ];
-              GIT_CONFIG_GLOBAL = "${smokeSource}/tests/fixtures/git/test-gitconfig";
-              CARGO_PROFILE = "release";
-              CARGO_PROFILE_RELEASE_STRIP = "symbols";
-              NIX_NO_SELF_RPATH = 1;
-              doCheck = false;
-              doInstallCargoArtifacts = false;
-              preBuild = ''
-                export HOME=$(mktemp -d)
-                export CARGO_TARGET_DIR="$PWD/target"
-              '';
-              buildPhaseCargoCommand = ''
-                cargo nextest archive --offline --locked --cargo-profile release \
-                  --manifest-path ${smokeSource}/Cargo.toml -p loom --test spawn_dispatch \
-                  --archive-file "$TMPDIR/smoke.tar.zst"
-                test ! -e ${smokeSource}/target
-              '';
-              installPhaseCommand = ''
-                mkdir -p "$out"
-                bash ${smokeNormalizer.path} "$TMPDIR/smoke.tar.zst" "$out/archive.tar.zst"
-              '';
-            }
-          );
-      };
+      # Share compilation, not smoke verdicts, with the complete native suite.
       smokeApp = mkTestApp {
         name = "smoke";
-        resources = smokeResources;
-        runtimeInputs = builtins.filter (input: input != loom.bin) testRuntimeInputs;
+        compilation = loom.testCompilation;
+        resources = loom.compilerResources;
         text = ''
           export LOOM_TEST_SOURCE_ROOT="$PWD"
           export GIT_CONFIG_GLOBAL="$PWD/tests/fixtures/git/test-gitconfig"
           export GIT_CONFIG_SYSTEM=/dev/null
           unset WRIX_SIGNING_KEY
-          extract=$(mktemp -d)
-          trap 'rm -rf -- "$extract"' EXIT
-          cargo-nextest nextest run --archive-file ${smokeArchive}/archive.tar.zst \
-            --extract-to "$extract" --workspace-remap "$PWD" \
-            --ignore-default-filter --no-fail-fast \
-            -E 'test(=wrix_spawn_invocation_records_correct_argv) | test(=loom_loop_bead_writes_per_bead_jsonl_log) | test(=completed_bead_with_renamed_builtin_source_reaches_publication)'
+          cargo-nextest nextest run \
+            --cargo-metadata "$LOOM_TEST_COMPILATION/cargo.json" \
+            --binaries-metadata "$LOOM_TEST_COMPILATION/binaries.json" \
+            --workspace-remap "$PWD" --target-dir-remap "$LOOM_TEST_COMPILATION/target" \
+            --ignore-default-filter --no-fail-fast --no-tests=fail \
+            -E 'package(=loom) & binary(=spawn_dispatch) & (test(=loom_loop_bead_writes_per_bead_jsonl_log) | test(=completed_bead_with_renamed_builtin_source_reaches_publication))'
         '';
       };
       testApp = mkTestApp testAppConfig;

@@ -1,12 +1,15 @@
 //! Immutable repository membership and contents for current-context resolution.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs::File;
+use std::io::Read as _;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use displaydoc::Display;
+use rustix::io::Errno;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -84,27 +87,28 @@ impl Snapshot {
         if git.workdir().canonicalize()? != root {
             return Err(Error::Root);
         }
+        let directory = open_checkout(&root).map_err(std::io::Error::from)?;
         let mut files = BTreeMap::new();
         let mut executable = BTreeSet::new();
         for path in git.repository_files_sync()? {
             let path = ResourcePath::try_from(path)?;
-            let absolute = root.join(path.as_path());
-            let metadata = match absolute.symlink_metadata() {
-                Ok(metadata) => metadata,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(error) => return Err(error.into()),
+            let mut file = match open_captured_file(&directory, &path) {
+                Ok(file) => file,
+                Err(Errno::NOENT) => continue,
+                Err(Errno::LOOP | Errno::NOTDIR) => return Err(Error::Unsupported { path }),
+                Err(error) => return Err(std::io::Error::from(error).into()),
             };
-            if !metadata.is_file()
-                || metadata.file_type().is_symlink()
-                || !absolute.canonicalize()?.starts_with(&root)
-            {
+            let metadata = file.metadata()?;
+            if !metadata.is_file() {
                 return Err(Error::Unsupported { path });
             }
             #[cfg(unix)]
             if metadata.permissions().mode() & 0o111 != 0 {
                 executable.insert(path.clone());
             }
-            files.insert(path, std::fs::read(absolute)?);
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)?;
+            files.insert(path, bytes);
         }
         let mut hash = blake3::Hasher::new();
         for (path, bytes) in &files {
@@ -199,6 +203,49 @@ impl Snapshot {
         }
         Ok(())
     }
+}
+
+const NO_LINK_FLAGS: rustix::fs::OFlags = rustix::fs::OFlags::RDONLY
+    .union(rustix::fs::OFlags::NOFOLLOW)
+    .union(rustix::fs::OFlags::CLOEXEC);
+const DIRECTORY_FLAGS: rustix::fs::OFlags = NO_LINK_FLAGS.union(rustix::fs::OFlags::DIRECTORY);
+
+fn open_checkout(root: &Path) -> rustix::io::Result<rustix::fd::OwnedFd> {
+    use rustix::fs::{Mode, open, openat};
+
+    // `root` is an absolute canonical path. Do not follow a link substituted
+    // for a parent of that path between canonicalization and capture either.
+    let mut directory = open("/", DIRECTORY_FLAGS, Mode::empty())?;
+    for part in root
+        .strip_prefix("/")
+        .map_err(|_| rustix::io::Errno::INVAL)?
+    {
+        directory = openat(&directory, part, DIRECTORY_FLAGS, Mode::empty())?;
+    }
+    Ok(directory)
+}
+
+// ResourcePath has only normal components. Open each component without
+// following links and read from the resulting descriptor, not a second lookup.
+fn open_captured_file(root: &rustix::fd::OwnedFd, path: &ResourcePath) -> rustix::io::Result<File> {
+    use rustix::fs::{Mode, OFlags, openat};
+
+    let mut current = None;
+    let mut components = path.as_path().iter().peekable();
+    while let Some(part) = components.next() {
+        let parent = current.as_ref().unwrap_or(root);
+        if components.peek().is_none() {
+            return openat(
+                parent,
+                part,
+                NO_LINK_FLAGS | OFlags::NONBLOCK,
+                Mode::empty(),
+            )
+            .map(File::from);
+        }
+        current = Some(openat(parent, part, DIRECTORY_FLAGS, Mode::empty())?);
+    }
+    Err(rustix::io::Errno::INVAL)
 }
 
 fn staging_directory(parent: &Path) -> std::io::Result<tempfile::TempDir> {

@@ -97,6 +97,30 @@ struct Metadata {
     path: PathBuf,
 }
 
+// A nested flake is a directory in the captured input, not a separate input.
+// Keeping that input intact lets Nix resolve relative local inputs purely.
+pub(crate) fn flake_reference(root: &Path, flake: &ResourcePath) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut reference = format!("path:{}", root.display());
+    if let Some(directory) = flake
+        .as_path()
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+    {
+        reference.push_str("?dir=");
+        for byte in directory.as_os_str().as_encoded_bytes() {
+            if byte.is_ascii_alphanumeric() || b"/-._~".contains(byte) {
+                reference.push(char::from(*byte));
+            } else {
+                reference.push('%');
+                reference.push(char::from(HEX[usize::from(byte >> 4)]));
+                reference.push(char::from(HEX[usize::from(byte & 15)]));
+            }
+        }
+    }
+    reference
+}
+
 pub(super) fn discover(
     snapshot: &Snapshot,
     root: &Path,
@@ -145,7 +169,7 @@ fn discover_targets(
             .cloned()
             .collect();
         let project = root.join(directory);
-        let reference = format!("path:{}", project.display());
+        let reference = flake_reference(root, flake);
         let metadata: Metadata = serde_json::from_slice(&command(
             &project,
             super::Tool::Nix,
@@ -389,6 +413,85 @@ fn discover_resources(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nested_flake_can_read_its_captured_parent_input_purely() {
+        let repository = tempfile::tempdir().unwrap();
+        let root = repository.path();
+        loom_driver::git::init_test_repo(root).unwrap();
+        let system = crate::runner::result::current_platform();
+        std::fs::write(
+            root.join("flake.nix"),
+            "{ outputs = { self }: { value = \"captured\"; }; }",
+        )
+        .unwrap();
+        let nested = "tests/consumer & fixture";
+        std::fs::create_dir_all(root.join(nested)).unwrap();
+        std::fs::write(
+            root.join(nested).join("flake.nix"),
+            format!(
+                r#"{{
+            inputs.project.url = "path:../..";
+            outputs = {{ self, project }}: {{
+              packages.{system}.${{project.value}} = true;
+            }};
+        }}"#
+            ),
+        )
+        .unwrap();
+        let snapshot = Snapshot::discover(root).unwrap();
+        let staged = snapshot.stage().unwrap();
+        let mut subjects = BTreeMap::new();
+        discover_targets(
+            &snapshot,
+            staged.path(),
+            &mut subjects,
+            crate::scope::Platform::Native,
+        )
+        .unwrap();
+        let name =
+            Name::try_from(format!("nix:package:{nested}/flake.nix:{system}:captured")).unwrap();
+        let target = subjects[&name].nix_target().unwrap();
+        assert!(target.project().join(nested).join("flake.nix").is_file());
+        assert!(target.project().join("flake.nix").is_file());
+    }
+
+    #[test]
+    fn nested_flake_reference_cannot_import_a_flake_outside_the_capture() {
+        let parent = tempfile::tempdir().unwrap();
+        let repository = parent.path().join("checkout");
+        let nested = repository.join("tests/consumer");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(
+            parent.path().join("flake.nix"),
+            "{ outputs = { self }: { value = \"outside\"; }; }",
+        )
+        .unwrap();
+        std::fs::write(
+            nested.join("flake.nix"),
+            r#"{
+              inputs.outside.url = "path:../../..";
+              outputs = { self, outside }: { inherit (outside) value; };
+            }"#,
+        )
+        .unwrap();
+        let flake = ResourcePath::try_from(PathBuf::from("tests/consumer/flake.nix")).unwrap();
+        let reference = flake_reference(&repository, &flake);
+        let output = command(
+            &nested,
+            super::super::Tool::Nix,
+            &[
+                "eval",
+                "--offline",
+                "--no-write-lock-file",
+                &format!("{reference}#value"),
+            ],
+        );
+        assert!(
+            matches!(&output, Err(Error::Discovery { detail, .. }) if detail.contains("forbidden in pure evaluation mode")),
+            "external local input was not refused by pure evaluation: {output:?}"
+        );
+    }
 
     #[test]
     fn shipped_workspace_packages_construct_complete_native_graphs_from_captured_definitions() {

@@ -324,7 +324,8 @@ impl Definition {
         }
         let mut definitions = Vec::new();
         for (flake, project) in flakes {
-            let reference = format!("path:{}", super::StorePath::root(project)?.as_str());
+            super::StorePath::root(project)?;
+            let reference = crate::inventory::nix::flake_reference(project, flake);
             let metadata: super::Metadata = serde_json::from_slice(&super::query(
                 &tool,
                 &[

@@ -852,6 +852,14 @@ pub enum Error {
     },
     /// `{program}` project discovery failed: {detail}; repair the project and rerun `loom gate verify`
     Discovery { program: Tool, detail: String },
+    /// cannot resolve Cargo target through `{path}`: not a captured directory
+    CargoDirectory { path: PathBuf },
+    /// cannot read Cargo target declarations in `{path:?}`
+    CargoManifest {
+        path: ResourcePath,
+        #[source]
+        source: Box<toml::de::Error>,
+    },
     /// project definition references external source `{path}`; declare its origin explicitly
     Outside { path: PathBuf },
     /// invalid subject name `{value}`; use one exact current project target/resource

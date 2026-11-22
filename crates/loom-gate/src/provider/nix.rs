@@ -1091,11 +1091,12 @@ impl Construction {
                 "grouped identical native source partitions"
             );
             let mut pending = Vec::new();
-            for ((directory, selected), (groups, targets)) in staged_groups {
+            for ((_, selected), (groups, targets)) in staged_groups {
                 let staged = snapshot.stage_paths(&selected)?;
+                let flake = targets.first().ok_or(Error::Partition)?.flake();
                 let metadata = read_metadata(
                     &self.tool,
-                    &format!("path:{}", staged.path().join(directory).display()),
+                    &crate::inventory::nix::flake_reference(staged.path(), flake),
                 )?;
                 pending.push((groups, targets, metadata, staged));
             }
@@ -1178,9 +1179,10 @@ impl Graph {
         let mut graphs = BTreeMap::new();
         for ((flake, project), entries) in projects {
             let tool = locate_tool()?;
+            StorePath::root(&project)?;
             let metadata = read_metadata(
                 &tool,
-                &format!("path:{}", StorePath::root(&project)?.as_str()),
+                &crate::inventory::nix::flake_reference(&project, &flake),
             )?;
             let targets: Vec<_> = entries.iter().map(|(_, native)| native.clone()).collect();
             let available: Vec<_> = available
@@ -1232,7 +1234,8 @@ impl Graph {
         let tool = locate_tool()?;
         let artifact = Digest::of(&std::fs::read(&tool)?);
         let directory = native.flake().as_path().parent().ok_or(Error::StorePath)?;
-        let reference = format!("path:{}", StorePath::root(native.project())?.as_str());
+        StorePath::root(native.project())?;
+        let reference = crate::inventory::nix::flake_reference(native.project(), native.flake());
         let (metadata, definition) = if let Some(batch) = &batch {
             if batch.tool != tool || batch.artifact != artifact {
                 return Err(Error::GraphChanged);
@@ -1471,7 +1474,7 @@ impl Graph {
             batch.partition(snapshot, native, &definition, &inputs, &sources)?
         } else {
             let staged = snapshot.stage_paths(&inputs)?;
-            let reference = format!("path:{}", staged.path().join(directory).display());
+            let reference = crate::inventory::nix::flake_reference(staged.path(), native.flake());
             let partition = read_metadata(&tool, &reference)?;
             let isolated = evaluate(&tool, &partition, native)?;
             (partition, isolated)

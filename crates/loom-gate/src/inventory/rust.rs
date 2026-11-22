@@ -1,5 +1,8 @@
 //! Cargo target ownership and native project resource membership.
 
+#[cfg(test)]
+mod tests;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
@@ -135,12 +138,17 @@ pub(super) fn discover(
         definition: manifest,
         source,
     })?;
+    let directories = snapshot
+        .files()
+        .keys()
+        .flat_map(|path| path.as_path().ancestors().skip(1))
+        .collect();
     for package in metadata
         .packages
         .iter()
         .filter(|package| metadata.workspace_members.contains(&package.id))
     {
-        discover_package(snapshot, root, subjects, package)?;
+        discover_package(snapshot, root, &directories, subjects, package)?;
     }
     let workspace_origin = relative(root, &metadata.workspace_root.join("Cargo.toml"))?;
     let targets = subjects
@@ -162,17 +170,20 @@ pub(super) fn discover(
 fn discover_package(
     snapshot: &Snapshot,
     root: &Path,
+    directories: &BTreeSet<&Path>,
     subjects: &mut BTreeMap<Name, Subject>,
     package: &Package,
 ) -> Result<(), Error> {
     let origin = relative(root, &package.manifest_path)?;
+    let directory = origin.as_path().parent().unwrap_or_else(|| Path::new(""));
+    validate_declared_paths(snapshot, directories, &origin, directory)?;
     let mut targets = BTreeSet::new();
     let mut consumers = BTreeSet::new();
     for target in &package.targets {
         let name = target_name(package, target)?;
-        let source = relative(root, &target.src_path)?;
+        let path = metadata_source(root, directory, &target.src_path)?;
+        let source = resolve_target(snapshot, directories, &path)?;
         let mut members = BTreeSet::new();
-        let directory = origin.as_path().parent().unwrap_or_else(|| Path::new(""));
         collect(snapshot, &source, directory, true, &mut members)?;
         targets.insert(name.clone());
         if target.test {
@@ -240,6 +251,84 @@ fn discover_package(
         &origin,
         &targets,
     )
+}
+
+fn metadata_source(root: &Path, directory: &Path, path: &Path) -> Result<PathBuf, Error> {
+    if path.is_absolute() {
+        return path
+            .strip_prefix(root)
+            .map(Path::to_path_buf)
+            .map_err(|_| Error::Outside {
+                path: path.to_path_buf(),
+            });
+    }
+    Ok(directory.join(path))
+}
+
+// Cargo metadata can flatten traversal in explicit target paths, so check the
+// original spelling too. A directory omitted from the capture (including an
+// ignored symlink or an empty directory) cannot prove a safe traversal.
+fn validate_declared_paths(
+    snapshot: &Snapshot,
+    directories: &BTreeSet<&Path>,
+    origin: &ResourcePath,
+    directory: &Path,
+) -> Result<(), Error> {
+    let manifest: toml::Value =
+        toml::from_str(snapshot.text(origin)?).map_err(|source| Error::CargoManifest {
+            path: origin.clone(),
+            source: Box::new(source),
+        })?;
+    let paths = manifest.get("lib").into_iter().chain(
+        ["bin", "example", "test", "bench"]
+            .into_iter()
+            .filter_map(|kind| manifest.get(kind)?.as_array())
+            .flatten(),
+    );
+    for path in paths
+        .filter_map(|target| target.get("path"))
+        .chain(
+            manifest
+                .get("package")
+                .or_else(|| manifest.get("project"))
+                .and_then(|pkg| pkg.get("build")),
+        )
+        .filter_map(toml::Value::as_str)
+    {
+        resolve_target(snapshot, directories, &directory.join(path))?;
+    }
+    Ok(())
+}
+
+fn resolve_target(
+    snapshot: &Snapshot,
+    directories: &BTreeSet<&Path>,
+    path: &Path,
+) -> Result<ResourcePath, Error> {
+    let mut resolved = PathBuf::new();
+    let mut components = path.components().peekable();
+    while let Some(component) = components.next() {
+        match component {
+            Component::Normal(part) => {
+                resolved.push(part);
+                if components.peek().is_some() && !directories.contains(resolved.as_path()) {
+                    return Err(Error::CargoDirectory { path: resolved });
+                }
+            }
+            Component::CurDir => {}
+            Component::ParentDir if resolved.pop() => {}
+            _ => {
+                return Err(Error::Outside {
+                    path: path.to_path_buf(),
+                });
+            }
+        }
+    }
+    let resolved = ResourcePath::try_from(resolved)?;
+    if !snapshot.files().contains_key(&resolved) {
+        return Err(super::snapshot::Error::Missing { path: resolved }.into());
+    }
+    Ok(resolved)
 }
 
 fn discover_resources(

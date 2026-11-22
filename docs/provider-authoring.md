@@ -59,10 +59,17 @@ absent resources; there is no input-list fallback when discovery fails.
 
 ## Native Cargo resources
 
-Cargo target/module/include discovery supplies Rust membership. Conventional
-`tests/fixtures` and `tests/snapshots` directories belong to the package's
-native test targets. Other resource directories can be declared once in the
-owning Cargo manifest, for example a trybuild suite:
+Cargo target/module/include discovery supplies Rust membership. A target's
+manifest-relative `path` can name a sibling crate's file using `..`. Discovery
+requires each traversed directory and the final file to exist in the capture; it
+rejects symlinks and traversal above the checkout, even if Cargo metadata has
+flattened the original spelling. Inventory uses the resulting single
+repository-relative identity. This does not extend resource declarations to
+accept `..`.
+
+Conventional `tests/fixtures` and `tests/snapshots` directories belong to the
+package's native test targets. Other resource directories can be declared once
+in the owning Cargo manifest, for example a trybuild suite:
 
 ```toml
 [[package.metadata.loom.verify.resource]]
