@@ -14,7 +14,6 @@
       inherit (pkgs.lib) optionalString;
       inherit (loom)
         bin
-        cargoArtifacts
         craneLib
         stagedSrc
         ;
@@ -129,19 +128,45 @@
           };
           loomPackage = throw "unavailable smoke must not force a native build";
         }).loom-smoke.text;
+      llmSource = checked.resource {
+        root = ../..;
+        name = "loom-llm-checkout";
+        filter =
+          path: type:
+          let
+            relative = pkgs.lib.removePrefix "${toString ../..}/" (toString path);
+          in
+          builtins.elem relative [
+            "Cargo.toml"
+            "Cargo.lock"
+            "clippy.toml"
+            "crates"
+          ]
+          || builtins.any (crate: relative == crate || pkgs.lib.hasPrefix "${crate}/" relative) [
+            "crates/loom-llm"
+            "crates/loom-events"
+          ];
+      };
+      llmWorkspace = ''
+        ${pkgs.python3}/bin/python3 ${../project-llm-workspace.py} project Cargo.toml
+        cp Cargo.lock "$TMPDIR/loom-llm-canonical.lock"
+        cargo metadata --offline --format-version 1 > /dev/null
+        ${pkgs.python3}/bin/python3 ${../project-llm-workspace.py} check-lock "$TMPDIR/loom-llm-canonical.lock" Cargo.lock
+      '';
       llmCompile =
         flags:
-        check loom.testResources (
+        check [ llmSource ] (
           _:
           craneLib.mkCargoDerivation {
             pname = "loom-llm-feature-check";
             version = "0.0.0";
-            src = stagedSrc;
-            inherit cargoArtifacts;
+            src = llmSource.path;
+            cargoArtifacts = null;
             inherit (loom) cargoVendorDir;
+            nativeBuildInputs = loom.testCompilerHooks;
             doCheck = false;
             doInstallCargoArtifacts = false;
-            preBuild = "export HOME=$(mktemp -d)";
+            preBuild = "export HOME=$(mktemp -d)\n${llmWorkspace}";
             buildPhaseCargoCommand = ''cargo check --offline --locked --profile "$CARGO_PROFILE" -p loom-llm ${flags}'';
             installPhaseCommand = "touch $out";
           }
@@ -155,20 +180,20 @@
       llmCompatArchive = craneLib.mkCargoDerivation {
         pname = "loom-llm-compat-archive";
         version = "0.0.0";
-        src = loom.compilerSource.path;
-        cargoArtifacts = loom.testCargoArtifacts;
+        src = llmSource.path;
+        cargoArtifacts = null;
+        preBuild = llmWorkspace;
         CARGO_PROFILE = "dev";
         inherit (loom) cargoVendorDir;
-        nativeBuildInputs = [
-          loom.writableWorkspaceArtifacts
-        ]
-        ++ map pkgs.lib.getBin [
-          pkgs.cargo-nextest
-          pkgs.bash
-          pkgs.gnutar
-          pkgs.zstd
-          pkgs.jq
-        ];
+        nativeBuildInputs =
+          loom.testCompilerHooks
+          ++ map pkgs.lib.getBin [
+            pkgs.cargo-nextest
+            pkgs.bash
+            pkgs.gnutar
+            pkgs.zstd
+            pkgs.jq
+          ];
         doCheck = false;
         doInstallCargoArtifacts = false;
         NIX_NO_SELF_RPATH = 1;
@@ -176,9 +201,9 @@
           export HOME=$(mktemp -d)
           export CARGO_TARGET_DIR="$PWD/target"
           cargo nextest archive --offline --locked --cargo-profile "$CARGO_PROFILE" \
-            --manifest-path ${loom.compilerSource.path}/Cargo.toml \
+            --manifest-path "$PWD/Cargo.toml" \
             -p loom-llm --features openai-compat --lib --archive-file "$TMPDIR/llm-compat.tar.zst"
-          test ! -e ${loom.compilerSource.path}/target
+          test ! -e ${llmSource.path}/target
         '';
         installPhaseCommand = ''
           mkdir -p "$out"
@@ -200,9 +225,9 @@
           export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
           export NIX_SSL_CERT_FILE="$SSL_CERT_FILE"
           export NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1
-          export LOOM_TEST_SOURCE_ROOT=${stagedSrc}
+          export LOOM_TEST_SOURCE_ROOT=${llmSource.path}
           exec cargo-nextest nextest run --archive-file ${llmCompatArchive}/archive.tar.zst \
-            --extract-to "$HOME/tests" --workspace-remap ${stagedSrc} \
+            --extract-to "$HOME/tests" --workspace-remap ${llmSource.path} \
             --ignore-default-filter --test-threads 2 --no-fail-fast \
             -E '${builtins.concatStringsSep " | " (map (name: "test(=${name})") llmCompatCases)}' \
             --message-format libtest-json-plus
@@ -550,7 +575,7 @@
               assert loom.testCompilation.drvPath == loom.nextest.loom.catalogue;
               assert !loom.testCompilation.doInstallCargoArtifacts;
               assert loom.testCompilation.CARGO_PROFILE == "dev";
-              assert llmCompatArchive.cargoArtifacts.drvPath == loom.testCargoArtifacts.drvPath;
+              assert llmCompatArchive.src == llmSource.path;
               assert llmCompatArchive.CARGO_PROFILE == "dev";
               assert pkgs.lib.hasPrefix "/nix/store/" loom.bin.LOOM_BUILTIN_SOURCE_ROOT;
               assert pkgs.lib.hasSuffix "/crates/loom-skill" loom.bin.LOOM_BUILTIN_SOURCE_ROOT;
@@ -622,7 +647,7 @@
           name = "loom-llm-compat-report";
           bash = pkgs.bash;
           coreutils = pkgs.coreutils;
-          resources = loom.testResources;
+          resources = [ llmSource ];
           program = "${llmCompatProgram}/bin/llm-compat-report";
           parser = "libtest-json";
           targets = map (name: "loom-llm::loom_llm$" + name) llmCompatCases;
