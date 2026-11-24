@@ -141,15 +141,19 @@ rather than imposing an unprofiled warm threshold or dropping required work.
 Suite and container smoke composition are owned by
 [Tests — Nix Integration](tests.md#nix-integration). This spec owns hook
 placement: ordinary agent-runnable nextest/system coverage and affected host
-obligations remain required at pre-push, not merely in CI. Host-only checks are
-not an always-on component of the test app; the actual pushed-range plan selects
-them through admitted dependencies. The pre-push app avoids repeating preceding
-fast/Clippy hooks. Missing or invalid input contracts cannot suppress host work.
+obligations remain required at pre-push, not merely in CI. The actual
+pushed-range plan selects host-only checks through admitted dependencies.
+Missing or invalid input contracts cannot suppress host work.
 
 Alongside the Nix check hook, pre-push runs both Clippy configurations,
-`loom gate verify --diff <push-range>`, and the required agent-runnable
-nextest/system test app, with host coverage selected for the actual pushed
-range. Prek exports the pushed endpoints as `PRE_COMMIT_FROM_REF` /
+`nix run .#test-required -- --prepare-only`, and
+`loom gate verify --diff <push-range>`. Preparation keeps the complete source
+audit, native fixture inputs, and workspace build; it neither runs tests nor
+proves test coverage. Publication Gate runs the complete ordinary native test
+reporter once even when the range affects no named test. Affected named tests
+sharing that execution use its checked per-case observations. Do not launch the
+standalone test suite again. Independently required confined and live host
+checks remain. Prek exports the pushed endpoints as `PRE_COMMIT_FROM_REF` /
 `PRE_COMMIT_TO_REF`; `pre-push-checks` appends that exact range to the gate hook
 instead of deriving it from the branch upstream. `loom gate verify --diff` uses
 [Gate's deterministic verify contract](gate.md#deterministic-verify-lanes) for
@@ -372,14 +376,17 @@ neither bypassed nor replaced by the pending modifier.
   block if unavailable rather than silently skipping.
   [test?](pre_push_requires_affected_host_coverage_without_blanket_host_suite)
 
-- A failed fast-tier pre-push hook prevents later Clippy, Gate, and full-suite
-  verifiers from launching.
+- A failed fast-tier pre-push hook prevents later Clippy, suite preparation,
+  and Gate verification from launching.
   [test](pre_push_stage_stops_after_failed_flake_check)
 
-- The required test app retains complete ordinary agent-runnable native/system
-  coverage without lint repetition or unconditional host-only execution;
-  affected host requirements remain covered by the pushed-range plan.
-  [test?](required_agent_suite_separates_host_checks_without_losing_coverage)
+- The actual pre-push chain audits and prepares the native suite inputs
+  without a second workspace Nextest invocation or duplicate lint hooks.
+  [test](pre_push_stage_does_not_dispatch_a_second_native_suite_or_lint)
+
+- The real publication planner executes the required complete Cargo suite
+  once even on a docs-only range and blocks on failures outside that diff.
+  [test](publication_runs_the_complete_native_suite_once_even_for_a_docs_only_range)
 
 <!-- prettier-ignore -->
 - Nix workspace staging includes the repo-local marker-policy wrapper

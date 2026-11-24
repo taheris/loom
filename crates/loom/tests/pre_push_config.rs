@@ -337,7 +337,7 @@ fn run_shell_reexec_check(source: &str) -> Output {
 }
 
 #[test]
-fn automatic_push_includes_gate_verify_and_required_suite() {
+fn automatic_push_prepares_then_enters_the_gate_owning_the_suite() {
     let fixture = Fixture::new();
     install_recording_command(&fixture.tools, "nix");
     let base = fixture.head();
@@ -348,16 +348,15 @@ fn automatic_push_includes_gate_verify_and_required_suite() {
             .iter()
             .any(|line| line.starts_with("nix\tflake\tcheck"))
     );
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.starts_with("nix\trun\t.#test-required"))
-    );
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.starts_with("loom\tgate\tverify"))
-    );
+    let prepared = lines
+        .iter()
+        .position(|line| line == "nix\trun\t.#test-required\t--\t--prepare-only\ttiers=<unset>")
+        .expect("preparation-only hook");
+    let verified = lines
+        .iter()
+        .position(|line| line.starts_with("loom\tgate\tverify\t--diff"))
+        .expect("publication Gate hook");
+    assert!(prepared < verified, "{lines:?}");
 }
 
 #[test]
@@ -546,7 +545,7 @@ fn full_suite_checks_production_and_test_feature_configurations() {
 
 /// Execute the configured stage and real suite script; only external tools are recorded.
 #[test]
-fn pre_push_stage_runs_each_required_verifier_once_without_repeating_lint_hooks() {
+fn pre_push_stage_does_not_dispatch_a_second_native_suite_or_lint() {
     let fixture = Fixture::new();
     let nix_body = r#"set -euo pipefail
 printf 'nix' >> "$PRE_PUSH_TEST_LOG"
@@ -555,7 +554,11 @@ printf '\ttiers=<unset>\n' >> "$PRE_PUSH_TEST_LOG"
 if [[ "$1" == run ]]; then
     case "$2" in
         '.#test') exec bash scripts/full-test.sh ;;
-        '.#test-required') exec bash scripts/required-test.sh ;;
+        '.#test-required')
+            shift 2
+            [[ "$1" == -- ]]
+            shift
+            exec bash scripts/required-test.sh "$@" ;;
         *) exit 2 ;;
     esac
 fi
@@ -579,14 +582,21 @@ fi
                 .count(),
             expected_clippy
         );
-        assert_eq!(
-            lines
+        assert!(
+            !lines
                 .iter()
-                .filter(|line| line
-                    .starts_with("cargo\tnextest\trun\t--workspace\t--ignore-default-filter"))
-                .count(),
-            1
+                .any(|line| line.starts_with("cargo\tnextest\trun\t--workspace")),
+            "only the checked publication Gate owns the workspace test execution: {lines:?}"
         );
+        for required in ["native-resource-preflight\t", "cargo\tbuild\t--workspace\t"] {
+            assert_eq!(
+                lines
+                    .iter()
+                    .filter(|line| line.starts_with(required))
+                    .count(),
+                1
+            );
+        }
         assert_eq!(
             lines
                 .iter()
@@ -597,7 +607,11 @@ fi
         assert!(lines.contains(&format!(
             "loom\tgate\tverify\t--diff\t{base}..{head}\ttiers=<unset>"
         )));
-        assert!(lines.contains(&"nix\trun\t.#test-required\ttiers=<unset>".to_owned()));
+        assert!(
+            lines.contains(
+                &"nix\trun\t.#test-required\t--\t--prepare-only\ttiers=<unset>".to_owned()
+            )
+        );
         assert_eq!(
             lines
                 .iter()

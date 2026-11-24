@@ -251,6 +251,49 @@ fn post_integration_verify_runs_project_precommit_and_affected_check_test() {
 }
 
 #[test]
+fn publication_runs_the_complete_native_suite_once_even_for_a_docs_only_range() {
+    let fixture = cargo::fixture();
+    let root = fixture.path();
+    // Put the failing behavior outside the pushed paths. A docs-only range
+    // must not waive the independently required complete suite.
+    std::fs::write(root.join("payload/input.txt"), "invalid\n").unwrap();
+    init_git(root);
+    std::fs::write(root.join("docs/unrelated.md"), "# Unrelated\n").unwrap();
+    for args in [
+        ["add", "docs/unrelated.md", "--"],
+        ["commit", "-qm", "Edit unrelated documentation"],
+    ] {
+        assert!(
+            git_command()
+                .current_dir(root)
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let output = Command::new(loom_bin())
+        .current_dir(root)
+        .args(["gate", "test", "--diff", "HEAD^..HEAD"])
+        .env("LOOM_GATE_PUBLICATION_RANGE", "HEAD^..HEAD")
+        .output()
+        .unwrap();
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{diagnostic}");
+    assert!(
+        diagnostic.contains("required-publication-suite"),
+        "{diagnostic}"
+    );
+    assert!(diagnostic.contains("native_case"), "{diagnostic}");
+    assert_eq!(
+        diagnostic.matches("\"kind\":\"fresh-execution\"").count(),
+        1,
+        "{diagnostic}"
+    );
+    assert!(diagnostic.contains("\"verdict\":\"fail\""), "{diagnostic}");
+}
+
+#[test]
 fn nested_verify_files_under_parent_diff_gate_records_skip() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();

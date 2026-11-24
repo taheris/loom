@@ -553,13 +553,16 @@ agent-runnable suite: fast flake tier, workspace Clippy, ordinary workspace
 nextest, and agent-runnable system coverage. Host-only checks are separately
 selected, not bundled into every broad native suite. Pre-push composes ordinary
 tiers without repetition: standalone fast and both Clippy hooks are followed by
-`nix run .#test-required` for ordinary native/system coverage without repeating
-lint. The exact pushed-range Gate plan additionally requires affected host-only
-obligations, executing them only when admissible evidence cannot discharge them.
-Explicit full-tree verification remains complete, including host obligations; it
-is not the unconditional routine test-app policy. Grep-tier `[check]`
-annotations across specs use paths relative to the staged-source root (which
-mirrors the `loom/` workspace flattened to `$out/` plus host files like
+native input preparation, then the exact pushed-range Gate plan. The plan runs
+the complete ordinary native Cargo reporter as a publication baseline,
+regardless of affected Rust criterion selection. Named cases share only the
+current checked report; the standalone `nix run .#test-required` still runs the
+suite when invoked on its own. Keep independent confined checks and affected
+host-only obligations, executing them only when admissible evidence cannot
+discharge them. Explicit full-tree verification remains complete, including host
+obligations; it is not the unconditional routine test-app policy. Grep-tier
+`[check]` annotations across specs use paths relative to the staged-source root
+(which mirrors the `loom/` workspace flattened to `$out/` plus host files like
 `lib/sandbox/linux/entrypoint.sh` mirrored under their host paths), so the
 explicit tier commands run at tree scope with no `--spec` filter. `loom-smoke`
 is exposed separately by `nix run .#smoke-container` on Linux; ordinary

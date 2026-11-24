@@ -1647,6 +1647,11 @@ impl Graph {
         self.cargo_package.as_ref()
     }
 
+    /// Only the fixed, unscoped Cargo/Nextest reporter supplies complete coverage.
+    pub(crate) const fn is_workspace_test_suite(&self) -> bool {
+        matches!(self.cargo, Some(CargoOperation::Test)) && self.cargo_package.is_none()
+    }
+
     /// Exact file resources in the validated execution closure, not directory
     /// membership or evaluator-only inputs. These facts never replace Cargo ownership.
     pub(crate) const fn explicit_file_origins(&self) -> &BTreeSet<ResourcePath> {

@@ -181,8 +181,8 @@ fn validate_pre_push(path: &str, hooks: &[Hook], violations: &mut Vec<String>) {
         "nix-flake-check",
         "cargo-clippy-production",
         "cargo-clippy",
+        "native-suite-inputs",
         "loom-gate-verify-diff",
-        "full-test-suite",
         "native-tcp-readiness",
     ] {
         let Some(hook) = required_hook(path, hooks, id, violations) else {
@@ -205,6 +205,30 @@ fn validate_pre_push(path: &str, hooks: &[Hook], violations: &mut Vec<String>) {
     }
 
     validate_pre_push_policy_fields(path, hooks, violations);
+    if let (Some(inputs), Some(verify)) = (
+        unique_hook(hooks, "native-suite-inputs"),
+        unique_hook(hooks, "loom-gate-verify-diff"),
+    ) && inputs.line >= verify.line
+    {
+        violations.push(format!(
+            "{path}:{} native suite inputs must be checked before the publication suite",
+            inputs.line
+        ));
+    }
+    for hook in pre_push_hooks {
+        if hook.id == "full-test-suite"
+            || (hook.id != "native-suite-inputs"
+                && hook
+                    .entry
+                    .as_deref()
+                    .is_some_and(|entry| entry.contains(".#test-required")))
+        {
+            violations.push(format!(
+                "{path}:{} the required native suite executes in publication Gate, not a second pre-push hook",
+                hook.line
+            ));
+        }
+    }
 }
 
 fn validate_pre_push_policy_fields(path: &str, hooks: &[Hook], violations: &mut Vec<String>) {
@@ -266,9 +290,14 @@ fn validate_pre_push_policy_fields(path: &str, hooks: &[Hook], violations: &mut 
             violations.push(format!("{path}:{} native-tcp-readiness must select its workflow, tracker, transport, toolchain and hook inputs", hook.line));
         }
     }
-    if let Some(hook) = unique_hook(hooks, "full-test-suite") {
+    if let Some(hook) = unique_hook(hooks, "native-suite-inputs") {
         validate_always_run(path, hook, violations);
-        validate_wrapped_command(path, hook, "nix run .#test-required", violations);
+        validate_wrapped_command(
+            path,
+            hook,
+            "nix run .#test-required -- --prepare-only",
+            violations,
+        );
     }
 }
 
@@ -606,7 +635,7 @@ mod tests {
         for id in [
             "loom-gate-verify-files",
             "loom-gate-verify-diff",
-            "full-test-suite",
+            "native-suite-inputs",
             "native-tcp-readiness",
         ] {
             let start = original.find(&format!("      - id: {id}\n")).unwrap();
@@ -745,14 +774,28 @@ mod tests {
     #[test]
     fn rejects_successful_noop_instead_of_required_nix_command() {
         let config = valid_config().replace(
-            "--hook-entry 'nix run .#test-required' -- nix run .#test-required",
+            "--hook-entry 'nix run .#test-required -- --prepare-only' -- nix run .#test-required -- --prepare-only",
             "--hook-entry 'true' -- true",
         );
         let got = violations(".pre-commit-config.yaml", &config);
         assert!(
             got.iter()
-                .any(|line| line.contains("must wrap `nix run .#test-required`")),
+                .any(|line| line.contains("must wrap `nix run .#test-required -- --prepare-only`")),
             "got: {got:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_a_second_ordinary_test_suite_hook() {
+        let config = valid_config().replace(
+            "      - id: native-tcp-readiness",
+            "      - id: full-test-suite\n        stages: [pre-push]\n        language: system\n        entry: bin/pre-push-checks --hook-id full-test-suite --hook-entry 'nix run .#test-required' -- nix run .#test-required\n      - id: native-tcp-readiness",
+        );
+        let got = violations(".pre-commit-config.yaml", &config);
+        assert!(
+            got.iter()
+                .any(|line| line.contains("not a second pre-push hook")),
+            "{got:?}"
         );
     }
 

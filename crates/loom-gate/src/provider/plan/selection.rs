@@ -29,6 +29,7 @@ pub enum Reason {
     WholeTree,
     ExactTarget,
     OwnerLocal,
+    RequiredPublicationSuite,
     Affected {
         inputs: Vec<Input>,
     },
@@ -47,7 +48,11 @@ impl Reason {
     pub const fn selected(&self) -> bool {
         matches!(
             self,
-            Self::WholeTree | Self::ExactTarget | Self::OwnerLocal | Self::Affected { .. }
+            Self::WholeTree
+                | Self::ExactTarget
+                | Self::OwnerLocal
+                | Self::RequiredPublicationSuite
+                | Self::Affected { .. }
         )
     }
 }
@@ -222,6 +227,15 @@ impl Plan {
                     Reason::OwnerLocal
                 } else if scope.is_tree() {
                     Reason::WholeTree
+                } else if stage == Stage::Publication
+                    && baseline == Some(Tier::Test)
+                    && unit
+                        .nix_graph()
+                        .is_some_and(crate::provider::nix::Graph::is_workspace_test_suite)
+                {
+                    // Always owe this baseline on publication. A diff may affect
+                    // none of its named criteria; nothing else runs this suite.
+                    Reason::RequiredPublicationSuite
                 } else if let Some(target) = scope.target() {
                     if target == unit.target().as_str() {
                         Reason::ExactTarget

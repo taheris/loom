@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+prepare_only=false
+if [[ "$#" == 1 && "$1" == --prepare-only ]]; then
+    prepare_only=true
+elif [[ "$#" != 0 ]]; then
+    printf 'Usage: test-required [--prepare-only]\n' >&2
+    exit 64
+fi
+
 repo_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd) # best-effort: allow invocation outside a checkout.
 cd "$repo_root"
 
@@ -18,6 +26,10 @@ export LOOM_NATIVE_RUST_FIXTURE LOOM_NATIVE_SMOKE_FIXTURE
 LOOM_NATIVE_RUST_FIXTURE=$(nix build .#native-rust-fixture --offline --no-substitute --no-link --print-out-paths)
 LOOM_NATIVE_SMOKE_FIXTURE=$(nix build .#native-smoke-fixture --offline --no-substitute --no-link --print-out-paths)
 cargo build --workspace
+if [[ "$prepare_only" == true ]]; then
+    printf '%s\n' 'Native suite inputs prepared; no tests executed.'
+    exit 0
+fi
 mkdir -p "$repo_root/.loom/logs"
 nextest_run_dir=$(mktemp -d "$repo_root/.loom/logs/required-suite.XXXXXXXX")
 nextest_log="$nextest_run_dir/nextest.log"

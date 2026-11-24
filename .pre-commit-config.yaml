@@ -71,17 +71,17 @@ repos:
         files: '(\.rs$|(^|/)Cargo\.(toml|lock)$|^rust-toolchain\.toml$|^clippy\.toml$)'
         pass_filenames: false
 
-      - id: loom-gate-verify-diff
-        name: loom gate verify --diff
-        entry: bin/pre-push-checks --hook-id loom-gate-verify-diff --hook-entry 'loom gate verify --diff' --append-push-range -- loom gate verify --diff
+      - id: native-suite-inputs
+        name: Audit and prepare native suite inputs
+        entry: bin/pre-push-checks --hook-id native-suite-inputs --hook-entry 'nix run .#test-required -- --prepare-only' -- nix run .#test-required -- --prepare-only
         language: system
         stages: [pre-push]
         always_run: true
         pass_filenames: false
 
-      - id: full-test-suite
-        name: nix run .#test-required (full native coverage)
-        entry: bin/pre-push-checks --hook-id full-test-suite --hook-entry 'nix run .#test-required' -- nix run .#test-required
+      - id: loom-gate-verify-diff
+        name: loom gate verify --diff (includes the required native suite)
+        entry: bin/pre-push-checks --hook-id loom-gate-verify-diff --hook-entry 'loom gate verify --diff' --append-push-range -- loom gate verify --diff
         language: system
         stages: [pre-push]
         always_run: true
