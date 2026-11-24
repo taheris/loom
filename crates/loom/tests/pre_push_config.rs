@@ -888,6 +888,45 @@ fn pre_push_config_runs_verify_diff_for_pushed_range() {
 }
 
 #[test]
+fn pre_push_binds_publication_context_to_the_appended_range() {
+    let fixture = Fixture::new();
+    let base = fixture.head();
+    let head = fixture.commit("pushed.txt", "pushed\n", "Add pushed fixture");
+    loom_test_support::write_executable_bash_script(
+        fixture.tools.join("loom"),
+        "set -euo pipefail\n[[ \"$#\" == 4 && \"$1\" == gate && \"$2\" == verify && \"$3\" == --diff ]]\n[[ \"$LOOM_GATE_PUBLICATION_RANGE\" == \"$4\" ]]\nprintf '%s\\n' \"$4\" >> \"$PRE_PUSH_TEST_LOG\"\n",
+    )
+    .expect("write publication context recorder");
+    assert_eq!(
+        fixture.run_hooks(&["loom-gate-verify-diff"], &base, &head),
+        [format!("{base}..{head}")]
+    );
+}
+
+#[test]
+fn pre_push_verify_rejects_missing_pushed_endpoints() {
+    let fixture = Fixture::new();
+    let output = fixture
+        .recording_command("bash")
+        .env_remove("PRE_COMMIT_FROM_REF")
+        .env_remove("PRE_COMMIT_TO_REF")
+        .args([
+            "bin/pre-push-checks",
+            "--append-push-range",
+            "--",
+            "loom",
+            "gate",
+            "verify",
+            "--diff",
+        ])
+        .output()
+        .expect("invoke exact-range hook wrapper");
+    assert_eq!(output.status.code(), Some(78));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("missing pushed endpoints"));
+    assert_eq!(std::fs::read_to_string(&fixture.log).unwrap(), "");
+}
+
+#[test]
 fn shell_reexec_check_accepts_explicit_interpreter() {
     let output = run_shell_reexec_check(
         "#!/usr/bin/env bash\nset -euo pipefail\nexec stdbuf -oL bash \"$0\" \"$@\"\n",

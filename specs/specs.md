@@ -222,10 +222,11 @@ rather than silently detached.
   belongs inside its owning bullet directly after the annotation; containment,
   not a repeated target/ID or nearest-annotation heuristic, determines its
   owner. Strategy metadata is separate from criterion text and verifier
-  bindings. The optional stage exception is `defer_until = "publication"`, not a
-  stage allowlist or disable switch. Invalid TOML, unsupported values, unknown
-  fields, conflicting declarations, or detached/ambiguous criterion-stage blocks
-  fail validation. Absence retains criteria and baseline obligations; local
+  bindings. Stage exceptions are `defer_until = "publication"` and, for a
+  `[test]` criterion, `require_from = "feedback"`. They cannot be combined.
+  Neither is a disable switch. Invalid TOML, unsupported values, unknown fields,
+  conflicting declarations, or detached/ambiguous criterion-stage blocks fail
+  validation. Absence retains criteria and baseline obligations; local
   declarations do not become package-wide defaults.
   [test](quint_verify_blocks_parse_optional_strict_strategy)
 

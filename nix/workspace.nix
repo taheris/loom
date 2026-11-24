@@ -575,40 +575,42 @@ let
       build = _: craneLib.cargoNextest (checkArgs // overrides);
     };
 
-  nextest = checked.cargo {
-    inherit craneLib evaluation;
-    operation = "test";
-    runtime = if pkgs.stdenv.hostPlatform.isDarwin then "native-store" else "native-process";
-    resources = compilerResources;
-    compilationInputs =
-      commonArgs.nativeBuildInputs
-      ++ [
-        pkgs.cargo-nextest
-        pkgs.jq
-      ]
-      ++ testCompilerHooks;
-    args = checkArgs // {
-      src = compilerSource.path;
-      LOOM_TEST_SOURCE_ROOT = stagedSrc;
-      CARGO_PROFILE = "dev";
-      cargoArtifacts = testCargoArtifacts;
-      nativeBuildInputs =
+  nextestFor =
+    package:
+    checked.cargo {
+      inherit craneLib evaluation package;
+      operation = "test";
+      runtime = if pkgs.stdenv.hostPlatform.isDarwin then "native-store" else "native-process";
+      resources = compilerResources;
+      compilationInputs =
         commonArgs.nativeBuildInputs
         ++ [
           pkgs.cargo-nextest
           pkgs.jq
         ]
         ++ testCompilerHooks;
-      LOOM_TEST_RUNTIME_PATH = lib.makeBinPath testInputs;
-      LOOM_TEST_NIX_REGISTRATION =
-        if pkgs.stdenv.hostPlatform.isDarwin then "" else "${testRegistration}/registration";
-      LOOM_TEST_NIX_INPUTS = if pkgs.stdenv.hostPlatform.isDarwin then [ ] else nativeTestSources;
-      LOOM_NATIVE_RUST_FIXTURE = nativeRustFixture;
-      LOOM_NATIVE_SMOKE_FIXTURE = nativeSmokeFixture;
-      GIT_CONFIG_GLOBAL = "${stagedSrc}/tests/fixtures/git/test-gitconfig";
-      SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+      args = checkArgs // {
+        src = compilerSource.path;
+        LOOM_TEST_SOURCE_ROOT = stagedSrc;
+        CARGO_PROFILE = "dev";
+        cargoArtifacts = testCargoArtifacts;
+        nativeBuildInputs =
+          commonArgs.nativeBuildInputs
+          ++ [
+            pkgs.cargo-nextest
+            pkgs.jq
+          ]
+          ++ testCompilerHooks;
+        LOOM_TEST_RUNTIME_PATH = lib.makeBinPath testInputs;
+        LOOM_TEST_NIX_REGISTRATION =
+          if pkgs.stdenv.hostPlatform.isDarwin then "" else "${testRegistration}/registration";
+        LOOM_TEST_NIX_INPUTS = if pkgs.stdenv.hostPlatform.isDarwin then [ ] else nativeTestSources;
+        LOOM_NATIVE_RUST_FIXTURE = nativeRustFixture;
+        LOOM_NATIVE_SMOKE_FIXTURE = nativeSmokeFixture;
+        GIT_CONFIG_GLOBAL = "${stagedSrc}/tests/fixtures/git/test-gitconfig";
+        SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+      };
     };
-  };
   # The checked walk integration binary constructs canonical Nix graphs; the
   # complete native-store producer owns it, not this confined companion.
   confinedTests = checked.check {
@@ -646,6 +648,8 @@ let
         }
       );
   };
+  nextest = nextestFor null;
+  scopedNextest = nextestFor;
   testCompilation = nextest.compilation;
   nativeRustFixture = import ./tests/native-rust-fixture.nix {
     inherit pkgs crane;
@@ -662,6 +666,7 @@ in
     clippyAllTargets
     confinedTests
     nextest
+    scopedNextest
     cargoArtifacts
     testCargoArtifacts
     testCompilerHooks

@@ -324,14 +324,18 @@ fn check_workspace_derivation(
     violations: &mut Vec<String>,
 ) {
     let legacy_builder = format!("craneLib.{}", required.builder);
-    let definition = derivation_block(body, required.attr, &legacy_builder).or_else(|| {
-        derivation_block(body, required.attr, "checked.cargo").filter(|(_, block)| {
-            block.lines().any(|line| {
-                code_before_comment(line).trim()
-                    == format!("operation = \"{}\";", required.operation)
-            })
+    let checked = |attr, builder| {
+        derivation_block(body, attr, builder).filter(|(_, block)| {
+            has_code_line(block, &format!("operation = \"{}\";", required.operation))
         })
-    });
+    };
+    let definition = derivation_block(body, required.attr, &legacy_builder)
+        .or_else(|| checked(required.attr, "checked.cargo"))
+        .or_else(|| {
+            (required.operation == "test" && has_code_line(body, "nextest = nextestFor null;"))
+                .then(|| checked("nextestFor", "package: checked.cargo"))
+                .flatten()
+        });
     let Some((line, block)) = definition else {
         match first_assignment_line(body, required.attr) {
             Some(line) => violations.push(format!(

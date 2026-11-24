@@ -68,6 +68,58 @@ fn resource(value: &str) -> ResourcePath {
 }
 
 #[test]
+fn changed_test_owners_do_not_follow_reverse_dependencies() {
+    let workspace = Workspace::new("producer");
+    workspace.write(
+        "Cargo.toml",
+        "[workspace]\nresolver='3'\nmembers=['producer','consumer']\n",
+    );
+    workspace.write("Cargo.lock", "version = 4\n[[package]]\nname='consumer'\nversion='0.1.0'\ndependencies=['producer']\n[[package]]\nname='producer'\nversion='0.1.0'\n");
+    workspace.write(
+        "producer/Cargo.toml",
+        "[package]\nname='producer'\nversion='0.1.0'\nedition='2024'\n",
+    );
+    workspace.write("consumer/Cargo.toml", "[package]\nname='consumer'\nversion='0.1.0'\nedition='2024'\n[dependencies]\nproducer={path='../producer'}\n");
+    workspace.write("producer/src/lib.rs", "pub fn value() -> i32 { 1 }\n");
+    workspace.write(
+        "consumer/src/lib.rs",
+        "pub fn use_value() -> i32 { producer::value() }\n",
+    );
+    workspace.write("consumer/tests/fixtures/sample.txt", "input\n");
+    workspace.write(
+        "flake.nix",
+        "throw \"owner discovery must not evaluate Nix\"\n",
+    );
+    let snapshot = Snapshot::discover(&workspace.root).unwrap();
+    for (path, expected) in [
+        ("producer/src/lib.rs", vec![resource("producer/Cargo.toml")]),
+        ("producer/Cargo.toml", vec![resource("producer/Cargo.toml")]),
+        (
+            "consumer/tests/fixtures/sample.txt",
+            vec![resource("consumer/Cargo.toml")],
+        ),
+        (
+            "Cargo.lock",
+            vec![
+                resource("consumer/Cargo.toml"),
+                resource("producer/Cargo.toml"),
+            ],
+        ),
+        ("README.md", Vec::new()),
+    ] {
+        assert_eq!(
+            super::super::Inventory::discover_changed_test_owners(
+                &snapshot,
+                &BTreeSet::from([resource(path)]),
+            )
+            .unwrap(),
+            expected.into_iter().collect(),
+            "{path}"
+        );
+    }
+}
+
+#[test]
 fn wrix_sibling_targets_keep_their_original_cargo_names_and_kinds() {
     // The explicit parent-relative targets of Wrix's wrix-service-server package.
     let workspace = Workspace::new("crates/wrix-service-server");

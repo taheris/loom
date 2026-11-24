@@ -222,6 +222,7 @@ fn post_integration_verify_runs_project_precommit_and_affected_check_test() {
         .arg("--workspace")
         .arg(workspace)
         .args(["gate", "verify", "--diff", "HEAD^..HEAD"])
+        .env("LOOM_GATE_PUBLICATION_RANGE", "HEAD^..HEAD")
         .env("PATH", prepend_path(tools.path()))
         .output()
         .unwrap();

@@ -1,5 +1,6 @@
 //! Inventory-wide admission precedes selection and all execution.
 
+pub mod feedback;
 pub mod property;
 pub mod report;
 pub mod selection;
@@ -9,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::tracked::Observed;
 use super::{Candidate, Error, Registry, Responsibility, Unit};
 use crate::annotation::Tier;
-use crate::inventory::snapshot::Snapshot;
+use crate::inventory::snapshot::{ResourcePath, Snapshot};
 use crate::inventory::{Inventory, Name};
 
 /// All current deterministic declarations and independently required duties have checked units.
@@ -27,6 +28,7 @@ pub struct Plan {
     baselines: BTreeSet<Name>,
     pending: Vec<crate::Annotation>,
     deferred: Vec<crate::Annotation>,
+    feedback_scope: Option<crate::scope::Resolved>,
 }
 
 impl Registry {
@@ -35,12 +37,55 @@ impl Registry {
     /// # Errors
     /// Rejects malformed packages, missing registrations, stale definitions and uncovered duties.
     pub fn admit(&self, snapshot: &Snapshot, inventory: &Inventory) -> Result<Plan, Error> {
+        self.admit_for(snapshot, inventory, None)
+    }
+
+    /// Admit only due feedback definitions, never complete coverage for publication.
+    ///
+    /// # Errors
+    /// Rejects nonfinite requests, stale or inconsistent definitions, and missing changed-owner tests.
+    pub fn admit_feedback(
+        &self,
+        snapshot: &Snapshot,
+        inventory: &Inventory,
+        scope: &crate::scope::Resolved,
+    ) -> Result<Plan, Error> {
+        if scope.files().is_none() || scope.platform() != inventory.platform() {
+            return Err(Error::FeedbackScope);
+        }
+        self.admit_for(snapshot, inventory, Some(scope))
+    }
+
+    fn admit_for(
+        &self,
+        snapshot: &Snapshot,
+        inventory: &Inventory,
+        feedback: Option<&crate::scope::Resolved>,
+    ) -> Result<Plan, Error> {
         super::require_context(snapshot, inventory)?;
+        let policy = feedback
+            .map(|_| feedback::FeedbackPolicy::capture(snapshot))
+            .transpose()?;
         let mut current = super::Current::new(self.definitions.values())?;
         let mut resolution = super::Resolution::new(snapshot, inventory);
         let mut units: BTreeMap<Name, Unit> = self
             .resolve_baselines(snapshot, inventory, &mut current)?
             .into_iter()
+            .filter(|unit| {
+                feedback.is_none()
+                    || !inventory.has_cargo()
+                    || unit.target().as_str() == super::PROJECT_CONTEXT_TARGET
+                    || unit.nix_graph().is_some_and(|graph| {
+                        inventory.native_graphs().iter().any(|(name, captured)| {
+                            std::ptr::eq(graph, captured.as_ref())
+                                && inventory.subjects()[name]
+                                    .nix_target()
+                                    .is_some_and(|target| {
+                                        target.kind() == crate::inventory::nix::Kind::Feedback
+                                    })
+                        })
+                    })
+            })
             .map(|unit| (unit.target().clone(), unit))
             .collect();
         let baselines: BTreeSet<_> = units.keys().cloned().collect();
@@ -56,8 +101,11 @@ impl Registry {
                     .cloned(),
             );
             for declaration in &declarations.strategy {
-                if let crate::annotation::strategy::Declaration::Criterion { line, .. } =
-                    declaration
+                if let crate::annotation::strategy::Declaration::Criterion {
+                    line,
+                    applicability: crate::annotation::strategy::Applicability::DeferUntilPublication,
+                    ..
+                } = declaration
                 {
                     deferred.extend(
                         declarations
@@ -74,6 +122,12 @@ impl Registry {
                 .iter()
                 .filter(|annotation| annotation.tier != Tier::Judge)
             {
+                if let Some(policy) = &policy
+                    && !policy.applies(snapshot.root(), annotation)?
+                {
+                    deferred.push(annotation.clone());
+                    continue;
+                }
                 let target = Name::try_from(annotation.target.clone())?;
                 if (annotation.pending && !self.definitions.contains_key(&target))
                     || !resolved.insert(target.clone())
@@ -117,7 +171,29 @@ impl Registry {
             })
             .flat_map(|unit| unit.responsibilities().iter().cloned())
             .collect();
-        require_coverage(inventory, &offered)?;
+        if let Some(scope) = feedback {
+            let paths = scope
+                .files()
+                .ok_or(Error::FeedbackScope)?
+                .iter()
+                .map(|path| {
+                    let relative = path
+                        .strip_prefix(snapshot.root())
+                        .map_err(|_| Error::FeedbackScope)?;
+                    ResourcePath::try_from(relative.to_path_buf()).map_err(|_| Error::FeedbackScope)
+                })
+                .collect::<Result<BTreeSet<_>, _>>()?;
+            let owners = inventory.required_feedback_owners(snapshot, &paths);
+            require_obligations(inventory, &offered, |obligation| {
+                obligation.duty() == crate::inventory::Duty::Test
+                    && inventory
+                        .subjects()
+                        .get(obligation.responsible())
+                        .is_some_and(|subject| owners.contains(subject.origin()))
+            })?;
+        } else {
+            require_coverage(inventory, &offered)?;
+        }
         snapshot.require_current()?;
         Ok(Plan {
             snapshot: snapshot.clone(),
@@ -126,6 +202,7 @@ impl Registry {
             baselines,
             pending,
             deferred,
+            feedback_scope: feedback.cloned(),
         })
     }
 
@@ -238,7 +315,19 @@ fn require_coverage(
     inventory: &Inventory,
     offered: &BTreeSet<Responsibility>,
 ) -> Result<(), Error> {
-    for obligation in inventory.obligations() {
+    require_obligations(inventory, offered, |_| true)
+}
+
+fn require_obligations(
+    inventory: &Inventory,
+    offered: &BTreeSet<Responsibility>,
+    required: impl Fn(&crate::inventory::Obligation) -> bool,
+) -> Result<(), Error> {
+    for obligation in inventory
+        .obligations()
+        .iter()
+        .filter(|obligation| required(obligation))
+    {
         if !offered.contains(&Responsibility::from_obligation(obligation)) {
             return Err(Error::Coverage {
                 subject: obligation.subject().clone(),

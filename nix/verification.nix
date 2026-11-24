@@ -183,9 +183,11 @@ let
       evaluation ? [ ],
       runtime ? "nix",
       args,
+      package ? null,
       compilationInputs ? (args.nativeBuildInputs or [ ]),
     }:
     let
+      selection = if package == null then "--workspace" else "--package ${package}";
       commands = {
         build = ''cargo build --offline --locked --manifest-path "$src/Cargo.toml" --workspace --all-targets --profile "$CARGO_PROFILE"'';
         lint = ''cargo clippy --offline --locked --workspace --profile "$CARGO_PROFILE" -- --deny warnings'';
@@ -204,7 +206,7 @@ let
         catalogue = ''
           mkdir -p "$out"
           cargo metadata --offline --locked --manifest-path "$src/Cargo.toml" --format-version 1 > "$out/cargo.json"
-          cargo nextest list --offline --locked --manifest-path "$src/Cargo.toml" --workspace --all-targets --cargo-profile "$CARGO_PROFILE" --run-ignored all --ignore-default-filter --list-type binaries-only --message-format json > "$out/binaries.json"
+          cargo nextest list --offline --locked --manifest-path "$src/Cargo.toml" ${selection} --all-targets --cargo-profile "$CARGO_PROFILE" --run-ignored all --ignore-default-filter --list-type binaries-only --message-format json > "$out/binaries.json"
           listing_platform=$(jq -ce '."rust-build-meta".platforms | if (.targets | length) == 0 then .host.platform elif (.targets | length) == 1 then .targets[0].platform else error("unsupported catalogue targets") end | select((.triple | type) == "string" and (.triple | length) > 0)' "$out/binaries.json")
           listing_target=$(jq -er '.triple' <<< "$listing_platform")
           if jq -e 'has("custom-json")' <<< "$listing_platform" > /dev/null; then
@@ -316,6 +318,9 @@ let
       result = if operation == "test" then asserted execution else execution;
     in
     assert builtins.hasAttr operation commands;
+    assert
+      package == null
+      || (operation == "test" && builtins.match "[A-Za-z0-9_][A-Za-z0-9_-]*" package != null);
     assert runtime != "native-store" || operation == "test";
     assert builtins.all (name: builtins.elem name allowed) (builtins.attrNames args);
     result
@@ -326,7 +331,8 @@ let
         // {
           cargo = operation;
         }
-        // (if operation == "test" then { catalogue = catalogue.drvPath; } else { });
+        // (if operation == "test" then { catalogue = catalogue.drvPath; } else { })
+        // (if package == null then { } else { cargoPackage = package; });
     };
   app =
     {

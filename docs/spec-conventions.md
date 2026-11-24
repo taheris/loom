@@ -216,14 +216,13 @@ rather than being inferred from the nearest annotation or treated as global
 defaults. Package-wide property filters and role declarations remain separate
 strategy concerns, not implied contents of a criterion-local stage block.
 
-The stage exception is deliberately small: `defer_until = "publication"`
-postpones that obligation's routine execution requirement until publication.
-Without it, affected checks are eligible during ordinary feedback. There is no
-arbitrary stage allowlist or disable switch; unsupported values fail parsing.
-Removing the exception restores earlier eligibility, never removes publication
-coverage. Deferral needs documented rationale and is reserved for work whose
-cost justifies later failure feedback, not a substitute for correct input
-selection or reuse. Ordinary checks need neither a block nor a copied default.
+`defer_until = "publication"` postpones the criterion's routine requirement to
+publication. An affected `[test]` criterion can require early execution outside
+its ordinary changed-owner scope with `require_from = "feedback"`. These are
+mutually exclusive and apply only to the attached criterion. Without a block,
+apply the ordinary stage policy. There is no stage allowlist or disable switch.
+Deferral needs a rationale and cannot replace correct input selection or remove
+required publication coverage.
 
 Strategy blocks are verification metadata, separate from requirement text and
 verifier annotations; they neither add a criterion nor count as another verifier

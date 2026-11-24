@@ -628,13 +628,13 @@ invocation records a skipped gate event with reason `parent-diff-gate` and exits
 The canonical hook id may be used as an optimization, but correctness cannot
 depend on it.
 
-Affected deterministic annotations are eligible under finite `verify --diff` and
-`verify --files` by default. A spec must explicitly declare later-stage
-applicability to postpone a check. The annotation tier describes how the claim
-is verified, not when to omit it; an absent stage declaration does not mean
-publication-only. Selected systems use the existing verify planning and system
-dispatch path, with no conformance-only hook or parallel verification procedure.
-Strategy declarations follow
+Finite `verify --diff` and `verify --files` first resolve stage applicability.
+Ordinary native Rust feedback selects changed owners under
+[Verify](verify.md#verification-planning); other affected deterministic checks
+are eligible by default unless explicitly deferred. A criterion can require an
+affected cross-owner test in feedback. Deferred obligations are reported
+separately from unaffected or passing work. Selected systems use the existing
+verifier path, not a separate procedure. Strategy declarations follow
 [spec-owned verification strategy](../docs/spec-conventions.md#verification-strategy).
 
 Stage applicability belongs to the criterion's obligation, not to a target or

@@ -611,6 +611,12 @@ is exposed separately by `nix run .#smoke-container` on Linux; ordinary
   recreating the container backend or claiming kernel isolation
   [system](nix build .#verification-system-smoke)
 
+  ```loom-verify
+  defer_until = "publication"
+  ```
+
+  The assembled smoke campaign is independent of owner-local Cargo feedback.
+
 - Ordinary exported packages and apps use native-process verification, with
   canonical-store execution restricted to complete Cargo test reporters;
   container substrate assembly remains an explicit diagnostic, not an ordinary
@@ -626,6 +632,13 @@ is exposed separately by `nix run .#smoke-container` on Linux; ordinary
   publication hook preserves the previous HEAD or remote
   [check](nix build .#verification-agent-landing)
 
+  ```loom-verify
+  defer_until = "publication"
+  ```
+
+  This assembled campaign qualifies the signed publication chain, not the
+  changed owner's tests.
+
 - An ordinary recipe cannot acquire canonical-store execution by changing its
   runtime label; only complete checked Cargo test reporters are eligible.
   [test](native_store_rejects_non_cargo_test_execution)
@@ -638,6 +651,13 @@ is exposed separately by `nix run .#smoke-container` on Linux; ordinary
 - Confined component and native UDS fixtures run under strict Nix sandboxing,
   independently of the complete host-native workspace reporter.
   [check](nix build .#verification-confined-runtime)
+
+  ```loom-verify
+  defer_until = "publication"
+  ```
+
+  This cross-workspace confinement campaign is mandatory at publication;
+  owner-local feedback does not discharge it.
 
 ### Test-source portability
 
@@ -981,11 +1001,12 @@ unverified locally.
 
 ## Out of Scope
 
-- Fine-grained selection of ordinary unit/integration suites, precise
-  function-level Rust impact analysis, or forced crate/library splits for
-  selective properties. Shared compilation is legitimate;
-  [Verify](verify.md#verification-planning) admits the dependency boundaries
-  used for selection.
+- Inferring a changed Rust function's affected tests or selecting individual
+  ordinary native tests on that basis. Routine feedback runs complete applicable
+  suites of changed Cargo owners plus expressly required earlier checks.
+  Publication retains the full required native suite: downstream failures can
+  first surface there. Shared compilation does not expand feedback ownership;
+  [Verify](verify.md#verification-planning) admits actual dependencies.
 - Owning model-checking policy or a separate conformance execution route.
   [Simulation](simulation.md) owns modeling; [Gate](gate.md) composes the
   existing [Verify](verify.md) execution path.

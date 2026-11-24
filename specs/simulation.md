@@ -142,7 +142,12 @@ External tools and reviewers are abstracted by their inputs, capabilities,
 outcomes, and evidence. External tool/OS primitives, checker semantic honesty,
 and reviewer accuracy remain explicit trust assumptions. Inventory,
 construction, and tracking algorithms are modeled and tested through real
-providers, not exempted by assuming their metadata is complete.
+providers, not exempted by assuming their metadata is complete. Distinguish
+stage eligibility, selected roots and their actual dependencies: a publication
+root not due in feedback need not be constructed, but an edge to it from a due
+root is still required. Conformance exercises changed owners, a missed
+producer-local regression that fails downstream at publication, and invalid or
+incomplete descriptor inventories.
 
 The central safety property is that publication requires admissible evidence for
 every obligation required by the current scope and policy, bound to the current

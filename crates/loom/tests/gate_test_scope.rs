@@ -24,14 +24,17 @@ fn test_tier_filters_targets_by_files_scope_intersection() {
             .output()
             .unwrap()
     };
+    let target = format!(
+        "loom gate [nix build .#loomFeedback.{}.native-probe]: ",
+        loom_gate::runner::result::current_platform()
+    );
     let output = run("payload/input.txt");
     let diagnostic = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "{diagnostic}");
     assert!(
         diagnostic
             .lines()
-            .any(|line| line.starts_with("loom gate [native_case]: ")
-                && line.contains("\"verdict\":\"pass\"")),
+            .any(|line| line.starts_with(&target) && line.contains("\"verdict\":\"pass\"")),
         "{diagnostic}"
     );
     assert!(
@@ -42,9 +45,7 @@ fn test_tier_filters_targets_by_files_scope_intersection() {
     let diagnostic = String::from_utf8_lossy(&unrelated.stderr);
     assert!(unrelated.status.success(), "{diagnostic}");
     assert!(
-        !diagnostic
-            .lines()
-            .any(|line| line.starts_with("loom gate [native_case]: ")),
+        !diagnostic.lines().any(|line| line.starts_with(&target)),
         "{diagnostic}"
     );
     assert!(

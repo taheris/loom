@@ -28,6 +28,7 @@ pub enum Stage {
 pub enum Reason {
     WholeTree,
     ExactTarget,
+    OwnerLocal,
     Affected {
         inputs: Vec<Input>,
     },
@@ -46,7 +47,7 @@ impl Reason {
     pub const fn selected(&self) -> bool {
         matches!(
             self,
-            Self::WholeTree | Self::ExactTarget | Self::Affected { .. }
+            Self::WholeTree | Self::ExactTarget | Self::OwnerLocal | Self::Affected { .. }
         )
     }
 }
@@ -158,6 +159,13 @@ impl Plan {
         if scope.platform() != self.platform {
             return Err(Error::PlatformScope);
         }
+        if self
+            .feedback_scope
+            .as_ref()
+            .is_some_and(|prepared| prepared != scope || stage != Stage::Feedback)
+        {
+            return Err(Error::FeedbackScope);
+        }
         let stage = if scope.target().is_some() {
             Stage::Diagnostic
         } else {
@@ -205,6 +213,13 @@ impl Plan {
                     } else {
                         Reason::DeferredUntilPublication
                     }
+                } else if self.feedback_scope.is_some()
+                    && baseline.is_some()
+                    && unit
+                        .nix_graph()
+                        .is_some_and(|graph| graph.cargo_package().is_some())
+                {
+                    Reason::OwnerLocal
                 } else if scope.is_tree() {
                     Reason::WholeTree
                 } else if let Some(target) = scope.target() {

@@ -133,7 +133,7 @@ async fn todo_criterion_identity_survives_markdown_formatting() {
 
 #[tokio::test]
 async fn criterion_identity_excludes_strategy_metadata() {
-    use loom_gate::annotation::strategy::{Declaration, Deferral};
+    use loom_gate::annotation::strategy::{Applicability, Declaration};
 
     let dir = init_git_repo();
     let workspace = dir.path();
@@ -160,7 +160,7 @@ async fn criterion_identity_excludes_strategy_metadata() {
                 parsed.strategy[0],
                 Declaration::Criterion {
                     line: 3,
-                    defer_until: Deferral::Publication,
+                    applicability: Applicability::DeferUntilPublication,
                     ..
                 }
             ));

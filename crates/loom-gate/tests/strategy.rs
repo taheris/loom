@@ -4,7 +4,7 @@ use std::error::Error as _;
 use std::fs;
 use std::path::Path;
 
-use loom_gate::annotation::strategy::{Declaration, Deferral, Error};
+use loom_gate::annotation::strategy::{Applicability, Declaration, Error};
 use loom_gate::annotation::{ParseError, ParsedSpecs, parse_content, parse_workspace};
 use loom_test_support::proptest_config;
 use nextest_filtering::ParsedExpr;
@@ -39,13 +39,13 @@ fn quint_verify_blocks_parse_optional_strict_strategy() {
         let Declaration::Criterion {
             source,
             line,
-            defer_until,
+            applicability,
         } = declaration
         else {
             panic!("expected a criterion-local declaration");
         };
         assert_eq!(*line, parsed.criteria[owner].line);
-        assert_eq!(*defer_until, Deferral::Publication);
+        assert_eq!(*applicability, Applicability::DeferUntilPublication);
         assert_eq!(source.document, Path::new("specs/example/tests.md"));
         assert!(body[source.bytes.clone()].contains("defer_until"));
     }
@@ -63,6 +63,31 @@ fn quint_verify_blocks_parse_optional_strict_strategy() {
         format!("{}\n  ```loom-verify\n  defer_until = 'publication'\n  ```\n", local_block("defer_until = 'publication'")),
         "## Success Criteria\n- Detached [test](shared)\n\n```loom-verify\ndefer_until = 'publication'\n```\n".to_owned(),
         "## Success Criteria\n- Ambiguous [test](one) [test](two)\n\n  ```loom-verify\n  defer_until = 'publication'\n  ```\n".to_owned(),
+    ] {
+        assert!(matches!(parse(&invalid), Err(ParseError::Strategy { .. })));
+    }
+}
+
+#[test]
+fn explicit_early_requirement_attaches_to_one_test() {
+    let parsed = parse(&local_block("require_from = 'feedback'")).unwrap();
+    let [
+        Declaration::Criterion {
+            applicability,
+            line,
+            ..
+        },
+    ] = parsed.strategy.as_slice()
+    else {
+        panic!("expected one criterion-local declaration");
+    };
+    assert_eq!(*applicability, Applicability::RequireFromFeedback);
+    assert_eq!(*line, parsed.criteria[0].line);
+    for invalid in [
+        local_block("require_from = 'publication'"),
+        local_block("require_from = 'feedback'\n  defer_until = 'publication'"),
+        local_block("require_from = 'feedback'").replace("[test]", "[system]"),
+        package_block("require_from = 'feedback'"),
     ] {
         assert!(matches!(parse(&invalid), Err(ParseError::Strategy { .. })));
     }

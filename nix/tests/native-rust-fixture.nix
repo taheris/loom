@@ -69,8 +69,8 @@ let
             filter = path: type: type == "directory" ||
               builtins.any (suffix: pkgs.lib.hasSuffix suffix path) [ ".rs" ".toml" ".lock" ".txt" ];
           };
-          construct = operation: checked.cargo {
-            inherit craneLib operation;
+          construct = operation: package: checked.cargo {
+            inherit craneLib operation package;
             runtime = "native-process";
             resources = [ source ];
             evaluation = map (origin: checked.resource { root = ./.; inherit origin; }) [ "flake.nix" "flake.lock" "verification.nix" "report-supervisor.sh" "private-fixture-tests.sh" "retain-fixture-inputs.sh" "test-scheduling.sh" ];
@@ -87,11 +87,12 @@ let
           };
         in {
           packages.${pkgs.stdenv.hostPlatform.system} = {
-            native-build = construct "build";
-            native-lint = construct "lint";
-            native-lint-all = construct "lint-all-targets";
-            native-tests = construct "test";
+            native-build = construct "build" null;
+            native-lint = construct "lint" null;
+            native-lint-all = construct "lint-all-targets" null;
+            native-tests = construct "test" null;
           };
+          loomFeedback.${pkgs.stdenv.hostPlatform.system} = construct "test";
         };
       }
     '';

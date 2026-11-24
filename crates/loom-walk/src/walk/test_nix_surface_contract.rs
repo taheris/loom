@@ -69,7 +69,10 @@ const CONTRACTS: &[FileContract] = &[
     FileContract {
         path: "nix/workspace.nix",
         required: &[
-            "nextest = checked.cargo {",
+            "nextestFor =",
+            "checked.cargo {",
+            "nextest = nextestFor null;",
+            "scopedNextest = nextestFor;",
             "extraResources =",
             "checked.resource {",
             "\"flake.nix\"",

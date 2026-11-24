@@ -90,8 +90,13 @@ resolve_push_range() {
 }
 
 if [[ "$append_push_range" == "1" ]]; then
+    if [[ -z "$push_range" && ( -z "${PRE_COMMIT_FROM_REF:-}" || -z "${PRE_COMMIT_TO_REF:-}" ) ]]; then
+        echo 'pre-push-checks: missing pushed endpoints for publication verification' >&2
+        exit 78
+    fi
     push_range="$(resolve_push_range "$push_range")"
     set -- "$@" "$push_range"
+    export LOOM_GATE_PUBLICATION_RANGE="$push_range"
 fi
 
 if [[ -z "$hook_id" || -z "$hook_entry" ]]; then

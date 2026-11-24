@@ -15,6 +15,7 @@ pub enum Kind {
     Check,
     Package,
     App,
+    Feedback,
 }
 
 impl Kind {
@@ -23,6 +24,7 @@ impl Kind {
             Self::Check => "checks",
             Self::Package => "packages",
             Self::App => "apps",
+            Self::Feedback => "loomFeedback",
         }
     }
 
@@ -31,6 +33,7 @@ impl Kind {
             Self::Check => "check",
             Self::Package => "package",
             Self::App => "app",
+            Self::Feedback => "feedback",
         }
     }
 }
@@ -89,6 +92,8 @@ struct Outputs {
     constructed_packages: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     constructed_apps: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    feedback: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -121,13 +126,21 @@ pub(crate) fn flake_reference(root: &Path, flake: &ResourcePath) -> String {
     reference
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct FeedbackTargets<'a> {
+    pub due: &'a BTreeSet<String>,
+    pub later: &'a BTreeSet<String>,
+    pub retain_baselines: bool,
+}
+
 pub(super) fn discover(
     snapshot: &Snapshot,
     root: &Path,
     subjects: &mut BTreeMap<Name, Subject>,
     platform: crate::scope::Platform,
+    feedback: Option<FeedbackTargets<'_>>,
 ) -> Result<BTreeMap<Name, std::sync::Arc<crate::provider::nix::Graph>>, Error> {
-    let constructed = discover_targets(snapshot, root, subjects, platform, None)?;
+    let constructed = discover_targets(snapshot, root, subjects, platform, None, feedback)?;
     discover_resources(snapshot, subjects, &constructed)
 }
 
@@ -179,7 +192,7 @@ pub(super) fn discover_exact(
             name: Name::try_from(target.to_owned())?,
         });
     }
-    let constructed = discover_targets(snapshot, root, subjects, platform, Some(&exact))?;
+    let constructed = discover_targets(snapshot, root, subjects, platform, Some(&exact), None)?;
     let mut bindings = subjects
         .values()
         .filter(|subject| subject.nix_target().is_some());
@@ -200,6 +213,7 @@ fn discover_targets(
     subjects: &mut BTreeMap<Name, Subject>,
     platform: crate::scope::Platform,
     exact: Option<&Exact<'_>>,
+    feedback: Option<FeedbackTargets<'_>>,
 ) -> Result<Vec<Name>, Error> {
     let nix_files: BTreeSet<_> = snapshot
         .files()
@@ -316,9 +330,10 @@ fn discover_targets(
                 r#"namespace:
                   let
                     selector = {selector};
-                    qualified = builtins.match "(checks|packages)[.]([^.]+)[.](.+)" selector;
+                    qualified = builtins.match "(checks|packages|loomFeedback)[.]([^.]+)[.](.+)" selector;
                     candidate = system: attribute:
-                      if builtins.hasAttr attribute ((flake.${{namespace}} or {{}}).${{system}} or {{}})
+                      let outputs = (flake.${{namespace}} or {{}}).${{system}} or {{}};
+                      in if (if namespace == "loomFeedback" then builtins.isFunction outputs else builtins.hasAttr attribute outputs)
                       then {{ ${{system}} = [ attribute ]; }} else {{}};
                   in if qualified == null then
                     (if namespace == "packages" then candidate {system} selector else {{}})
@@ -329,13 +344,51 @@ fn discover_targets(
         } else {
             "namespace: builtins.mapAttrs (_system: builtins.attrNames) (if builtins.hasAttr namespace flake then builtins.getAttr namespace flake else {})".to_owned()
         };
+        let checked_probe = "let value = builtins.getAttr name (builtins.getAttr system (builtins.getAttr namespace flake)); probe = builtins.tryEval (builtins.isAttrs value && (if namespace == \"apps\" then (value.meta or {}) ? loom else value ? loom)); in probe.success && probe.value";
         let probe = if exact.is_some() {
-            "true"
+            "true".to_owned()
+        } else if let Some(feedback) = feedback {
+            let references = |targets: &BTreeSet<String>| {
+                serde_json::to_string(targets)
+                    .and_then(|json| serde_json::to_string(&json))
+                    .map(|json| json.replace("${", "\\${"))
+                    .map_err(|source| Error::Definition {
+                        definition: (*flake).clone(),
+                        source,
+                    })
+            };
+            let due = references(feedback.due)?;
+            let later = references(feedback.later)?;
+            let retain = feedback.retain_baselines;
+            let directory = if directory.as_os_str().is_empty() {
+                ".".to_owned()
+            } else {
+                format!("./{}", directory.display())
+            };
+            let prefix = serde_json::to_string(&format!("{directory}#"))
+                .map_err(|source| Error::Definition {
+                    definition: (*flake).clone(),
+                    source,
+                })?
+                .replace("${", "\\${");
+            format!(
+                r#"let base = {prefix}; qualified = base + namespace + "." + system + "." + name;
+                        alias = base + name;
+                        starts = prefix: target: builtins.substring 0 (builtins.stringLength prefix) target == prefix;
+                        match = reports: reference: target: target == ("nix build " + reference) || (reports && starts ("nix report " + reference + "::") target);
+                        matches = reports: targets: builtins.any (target: match reports qualified target || (namespace == "packages" && match reports alias target)) (builtins.fromJSON targets);
+                        in matches true {due} || ({retain} && !matches false {later} && ({checked_probe}))"#
+            )
         } else {
-            "let value = builtins.getAttr name (builtins.getAttr system (builtins.getAttr namespace flake)); probe = builtins.tryEval (builtins.isAttrs value && (if namespace == \"apps\" then (value.meta or {}) ? loom else value ? loom)); in probe.success && probe.value"
+            checked_probe.to_owned()
         };
         let expression = format!(
-            "let flake = builtins.getFlake {locked}; names = {select}; constructed = namespace: builtins.mapAttrs (system: names: if builtins.elem system (builtins.fromJSON {platform_names}) then builtins.filter (name: {probe}) names else []) (names namespace); in {{ checks = names \"checks\"; packages = names \"packages\"; apps = names \"apps\"; system = {system}; constructed_checks = constructed \"checks\"; constructed_packages = constructed \"packages\"; constructed_apps = constructed \"apps\"; }}"
+            "let flake = builtins.getFlake {locked}; names = {select}; constructed = namespace: builtins.mapAttrs (system: names: if builtins.elem system (builtins.fromJSON {platform_names}) then builtins.filter (name: {probe}) names else []) (names namespace); in {{ checks = names \"checks\"; packages = names \"packages\"; apps = names \"apps\"; system = {system}; constructed_checks = constructed \"checks\"; constructed_packages = constructed \"packages\"; constructed_apps = constructed \"apps\"; feedback = {} ; }}",
+            if exact.is_some() {
+                "names \"loomFeedback\""
+            } else {
+                "{}"
+            }
         );
         let outputs: Outputs = serde_json::from_slice(&command(
             &project,
@@ -361,6 +414,7 @@ fn discover_targets(
             (Kind::Check, outputs.checks),
             (Kind::Package, outputs.packages),
             (Kind::App, outputs.apps),
+            (Kind::Feedback, outputs.feedback.clone()),
         ] {
             for (system, entries) in systems {
                 for attribute in entries {
@@ -373,6 +427,7 @@ fn discover_targets(
                         Kind::Check => outputs.constructed_checks.get(&system),
                         Kind::Package => outputs.constructed_packages.get(&system),
                         Kind::App => outputs.constructed_apps.get(&system),
+                        Kind::Feedback => outputs.feedback.get(&system),
                     };
                     let current = outputs
                         .system
@@ -545,6 +600,7 @@ mod tests {
             &mut subjects,
             crate::scope::Platform::Native,
             None,
+            None,
         )
         .unwrap();
         let name =
@@ -552,6 +608,50 @@ mod tests {
         let target = subjects[&name].nix_target().unwrap();
         assert!(target.project().join(nested).join("flake.nix").is_file());
         assert!(target.project().join("flake.nix").is_file());
+    }
+
+    #[test]
+    fn feedback_metadata_keeps_deferred_names_without_forcing_their_values() {
+        let repository = tempfile::tempdir().unwrap();
+        let root = repository.path();
+        loom_driver::git::init_test_repo(root).unwrap();
+        let system = crate::runner::result::current_platform();
+        std::fs::write(
+            root.join("flake.nix"),
+            format!(
+                r#"{{ outputs = {{ self }}: {{
+            checks.{system}.early = {{ loom = true; }};
+            checks.{system}.later = throw "publication-only graph must not be evaluated";
+        }}; }}"#
+            ),
+        )
+        .unwrap();
+        let snapshot = Snapshot::discover(root).unwrap();
+        let staged = snapshot.stage().unwrap();
+        let mut subjects = BTreeMap::new();
+        let target = format!("nix build .#checks.{system}.early");
+        let due = discover_targets(
+            &snapshot,
+            staged.path(),
+            &mut subjects,
+            crate::scope::Platform::Native,
+            None,
+            Some(FeedbackTargets {
+                due: &BTreeSet::from([target]),
+                later: &BTreeSet::new(),
+                retain_baselines: false,
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            due,
+            [Name::try_from(format!("nix:check:flake.nix:{system}:early")).unwrap()]
+        );
+        assert!(
+            subjects.contains_key(
+                &Name::try_from(format!("nix:check:flake.nix:{system}:later")).unwrap()
+            )
+        );
     }
 
     #[test]
@@ -614,6 +714,7 @@ mod tests {
             native.path(),
             &mut subjects,
             Platform::Native,
+            None,
             None,
         )
         .unwrap();

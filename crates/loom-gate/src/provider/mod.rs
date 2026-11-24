@@ -1037,6 +1037,8 @@ pub enum Error {
     },
     /// platform policy differs from discovery; rediscover with the requested platform policy and retry `loom gate verify`
     PlatformScope,
+    /// this owner-local feedback plan cannot be used for another scope or publication
+    FeedbackScope,
     /// inventory does not describe the captured snapshot; rediscover project definitions and retry `loom gate verify`
     Inventory,
     /// provider `{target:?}` belongs to a stale snapshot; regenerate its description and retry `loom gate verify`

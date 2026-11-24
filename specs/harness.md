@@ -310,6 +310,13 @@ is required.
 <!-- prettier-ignore -->
 - Workspace builds with `cargo build` from `loom/` root [check](nix build .#verification-build)
 
+  ```loom-verify
+  defer_until = "publication"
+  ```
+
+  Feedback builds the changed owner's test targets; publication checks the
+  complete workspace build.
+
 <!-- prettier-ignore -->
 - Workspace members match the crate layout, including the dedicated extractable
   loom-issues crate and its boundary below runtime orchestration.
@@ -382,6 +389,10 @@ is required.
   configuration and missing or corrupt existing authority remain blocking;
   provisioning does not authenticate required coverage.
   [system](nix build .#verification-system-profile-bootstrap)
+
+  ```loom-verify
+  defer_until = "publication"
+  ```
 
 - A bead with `profile:X` where `X` is not in the manifest fails with a typed
   `ProfileError::UnknownProfile` naming the missing profile
@@ -544,8 +555,20 @@ is required.
 <!-- prettier-ignore -->
 - Loom binary builds via `nix build` [system](nix build .#loom)
 
+  ```loom-verify
+  defer_until = "publication"
+  ```
+
+  Release packaging is qualified at publication, independently of the feedback runner.
+
 <!-- prettier-ignore -->
 - Loom binary is available in the hook-free CI devShell [system](nix build .#verification-system-ci-shell)
+
+  ```loom-verify
+  defer_until = "publication"
+  ```
+
+  Qualify the assembled CI environment at publication.
 
 ### Unit tests
 

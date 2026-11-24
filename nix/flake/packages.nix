@@ -84,6 +84,7 @@ _:
       # Keep `nix build .#profile-catalogue` as the rooted data interface. This
       # value has no executable recipe, so it is not a packages derivation.
       legacyPackages.profile-catalogue = profileCatalogue.outPath;
+      legacyPackages.loomFeedback = loom.scopedNextest;
       packages = {
         profileManifest = ownedProfileManifest;
         profile-images = ownedProfileManifest;

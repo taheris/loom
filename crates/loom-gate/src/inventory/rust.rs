@@ -49,6 +49,7 @@ enum DependencyKind {
 /// Native production compilation ownership retained independently of role exceptions.
 #[derive(Debug, Clone)]
 pub(super) struct Compilation {
+    pub package: Name,
     pub subjects: BTreeSet<Name>,
     pub configuration: BTreeSet<ResourcePath>,
     pub outside: BTreeSet<PathBuf>,
@@ -437,6 +438,7 @@ fn compilations(
     let mut result = BTreeMap::new();
     for package in packages.values() {
         let mut compilation = Compilation {
+            package: Name::try_from(package.name.clone())?,
             subjects: BTreeSet::new(),
             configuration: BTreeSet::new(),
             outside: BTreeSet::new(),
@@ -499,7 +501,15 @@ fn compilations(
                         .iter()
                         .any(|directory| directory.starts_with(base))
                 });
-            if native || cargo_config || path.as_path() == Path::new("Cargo.toml") {
+            let nextest_config = filename == Some("nextest.toml")
+                && parent.ends_with(".config")
+                && parent.parent().is_some_and(|base| {
+                    manifest_directories
+                        .iter()
+                        .any(|directory| directory.starts_with(base))
+                });
+            if native || cargo_config || nextest_config || path.as_path() == Path::new("Cargo.toml")
+            {
                 configuration.insert(path.clone());
             }
         }

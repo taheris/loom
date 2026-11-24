@@ -121,7 +121,9 @@ fn actual_catalogue_constructor_requires_owned_feature_graph_and_exact_remaps() 
     .unwrap();
     let nodes = read_graph(&tool, &path).unwrap();
     let root = nodes[&path].as_ref();
-    CargoOperation::Catalogue.require_execution(root).unwrap();
+    CargoOperation::Catalogue
+        .require_execution(root, None)
+        .unwrap();
     for (original, replacement) in [
         ("$out/listing-cargo.json", "$out/cargo.json"),
         ("--all-features --filter-platform \"$listing_target\"", ""),
@@ -136,7 +138,7 @@ fn actual_catalogue_constructor_requires_owned_feature_graph_and_exact_remaps() 
         assert!(phase.contains(original), "{original}");
         *phase = phase.replace(original, replacement);
         assert!(matches!(
-            CargoOperation::Catalogue.require_execution(&changed),
+            CargoOperation::Catalogue.require_execution(&changed, None),
             Err(Error::CargoExecution)
         ));
     }

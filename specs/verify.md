@@ -35,15 +35,15 @@ Package `tests.md` owns coverage and strategy under
 changed wiring cannot erase required obligations. Pending declarations retain
 their separate pending policy.
 
-Baseline coverage, conservative stage defaults, and evidence admission are
-built-in behavior for supported Rust/Nix workflows, not opt-in safety settings.
-Ordinary use requires no custom strategy block or manually maintained input
-list; providers still supply admitted execution definitions. Missing optional
-policy cannot silently remove required work. Invalid declarations or missing
-required execution contracts fail admission instead of selecting a permissive
-mode. Observed slowness never automatically defers or drops an obligation:
-performance is improved through sound selection, sharing, reuse, or an explicit
-spec-owned exception. A fast-feedback success is not publication authorization.
+Default feedback owes tests of changed Rust owners plus applicable explicit
+checks. Publication owes the complete required inventory. Neither policy is an
+opt-in. Use actual project ownership and declared resource consumers, not copied
+file lists. If deletion or rename ownership is unavailable, retain all surviving
+testable owners. Resolve feedback roots before constructing executable graphs.
+Inventory definitions not due at this stage without constructing them. A real
+dependency of a selected root is still required. Invalid declarations or missing
+contracts block; a timeout or runtime budget never defers required work.
+Feedback observations alone cannot authorize publication.
 
 Repository-wide subject discovery is independent of verifier declarations and
 cached results. Built-in Rust/Nix policies derive roles and baseline obligations
@@ -140,14 +140,14 @@ remaining launches. Retain diagnostics and observations, never passing coverage
 for unexecuted work. Honest pending declarations retain their normal policy
 rather than failing merely because their implementation is prospective.
 
-A structural-stage success is not admission of undiscovered later work. Preserve
-independent inventory and complete obligation accounting; admit each later unit
-against current context before use. Earlier request seals or cached plans/units
-cannot bypass changed snapshots, inventory or authorization. Preparation and
-execution reuse the same planner and capture path across feedback, integration
-and hooks, checking eligible evidence before unnecessary builds or execution
-where the admitted facts permit it. Valid cold work still prepares and runs;
-missing contracts fail rather than broadening to the whole suite.
+Structural success does not admit undiscovered later work. Preserve independent
+inventory and complete obligation accounting, using one typed planner and
+capture path for feedback, integration and hooks. A deferred descriptor is not
+an admitted definition or observation; construct and admit it before use. Each
+selected unit keeps its actual inputs. Earlier request seals or cached units
+cannot bypass changed snapshots, inventory or authorization. Check eligible
+evidence before unnecessary work. Valid cold required work still prepares and
+runs; missing contracts fail rather than broadening to the whole suite.
 
 This is stage ordering and precise selection, not a structural-only hook policy,
 new fast-mode flag, alternate launcher, caller-selected list or publication
@@ -267,12 +267,12 @@ authority.
 
 [Acceptance](#property-based-testing).
 
-Discovered Rust tests default to the ordinary broad suite. Explicit
-nextest-style filters in the owning package's `tests.md` select property-group
-members from the current inventory; unmatched tests remain in the ordinary
-suite. Filters may select tests within shared binaries or entire binaries,
-without a separately maintained individual-target list or property-name
-heuristic. Strategy syntax and authority are owned by
+Discovered Rust tests belong to the full publication suite; ordinary finite
+feedback runs the changed owners' suites. Explicit nextest-style filters in the
+owning package's `tests.md` select property groups. Unmatched tests remain in
+the ordinary suite. Filters may select tests within shared binaries or entire
+binaries, without a separately maintained individual-target list or
+property-name heuristic. Strategy syntax and authority are owned by
 [spec conventions](../docs/spec-conventions.md#verification-strategy).
 
 An applicable property group's explicit filter must match at least one test in

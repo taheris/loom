@@ -618,6 +618,13 @@ verdict. Only the invocation nonce and its resulting output path may differ;
 execution arguments, resources, dependencies and prerequisite checks remain
 bound to the admitted graph.
 
+Cargo projects expose `loomFeedback.<system>` as a function from a Cargo package
+name to a `checked.cargo` test constructor with that `package` set. With
+`mkLoom`, `scopedNextest` supplies this function; the standard workspace-wide
+`nextest` output remains required for full coverage. Gate chooses package
+identities from Cargo ownership, checks the exact scoped compiler command, and
+does not admit coverage for other packages from that run.
+
 Compiler-authorized case aliases project their individual terminal results.
 Sharing an invocation retains its complete report: a passing case cannot replace
 a failing independent suite baseline. Missing or unexpected identities,

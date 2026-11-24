@@ -69,5 +69,9 @@
     // {
       checks = nativeOutputs flake.checks;
       packages = nativeOutputs flake.packages;
+      loomFeedback = builtins.mapAttrs (
+        _: values: package:
+        import ./nix/native-package.nix (values.loomFeedback package)
+      ) flake.legacyPackages;
     };
 }

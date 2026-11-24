@@ -1496,6 +1496,10 @@ mutation permission.
   scheduling, disposition and recovery using disposable real Beads databases.
   [system](nix build .#verification-system-decision-admission)
 
+  ```loom-verify
+  defer_until = "publication"
+  ```
+
 - Three closed contextual references from two producers retain all IDs,
   historical briefs, recorded outcomes, producer and root through
   migration/replay.

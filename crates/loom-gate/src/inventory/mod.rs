@@ -164,6 +164,33 @@ impl Inventory {
         snapshot: &Snapshot,
         platform: crate::scope::Platform,
     ) -> Result<Self, Error> {
+        Self::discover_roots(snapshot, platform, None)
+    }
+
+    /// Prepare only native definitions named by eligible feedback criteria.
+    ///
+    /// # Errors
+    /// Rejects broken selected graphs and unclassified changed resources.
+    pub fn discover_feedback(
+        snapshot: &Snapshot,
+        platform: crate::scope::Platform,
+        paths: &BTreeSet<ResourcePath>,
+        due: &BTreeSet<String>,
+        later: &BTreeSet<String>,
+    ) -> Result<Self, Error> {
+        Self::discover_roots(snapshot, platform, Some((paths, due, later)))?
+            .with_feedback_owners(snapshot, paths)
+    }
+
+    fn discover_roots(
+        snapshot: &Snapshot,
+        platform: crate::scope::Platform,
+        feedback: Option<(
+            &BTreeSet<ResourcePath>,
+            &BTreeSet<String>,
+            &BTreeSet<String>,
+        )>,
+    ) -> Result<Self, Error> {
         let rust_staged = snapshot.stage()?;
         let mut subjects = BTreeMap::new();
         let compilation = rust::discover(snapshot, rust_staged.path(), &mut subjects)?;
@@ -171,8 +198,23 @@ impl Inventory {
         // Cargo launchers may initialize generated configuration even for metadata.
         // Native definitions must consume the captured inputs, not launcher side effects.
         let native_staged = snapshot.stage()?;
-        let native_graphs = nix::discover(snapshot, native_staged.path(), &mut subjects, platform)?;
-        classify_remaining(snapshot, &mut subjects, &compilation)?;
+        let native_graphs = nix::discover(
+            snapshot,
+            native_staged.path(),
+            &mut subjects,
+            platform,
+            feedback.map(|(_, due, later)| nix::FeedbackTargets {
+                due,
+                later,
+                retain_baselines: compilation.is_empty(),
+            }),
+        )?;
+        classify_remaining(
+            snapshot,
+            &mut subjects,
+            &compilation,
+            feedback.map(|(paths, _, _)| paths),
+        )?;
         snapshot.require_current()?;
         let mut inventory = Self::finish(snapshot.identity().clone(), subjects, compilation)?;
         inventory.platform = platform;
@@ -266,6 +308,165 @@ impl Inventory {
     }
     pub const fn obligations(&self) -> &BTreeSet<Obligation> {
         &self.obligations
+    }
+
+    pub fn has_cargo(&self) -> bool {
+        !self.compilation.is_empty()
+    }
+
+    /// Resolve Cargo test ownership before loading any Nix execution graphs.
+    ///
+    /// This is a description of one snapshot's Rust owners, not full inventory
+    /// admission. The caller still owes checked construction of selected work.
+    ///
+    /// # Errors
+    /// Rejects stale source, failed Cargo discovery, or invalid Rust responsibilities.
+    pub fn discover_changed_test_owners(
+        snapshot: &Snapshot,
+        paths: &BTreeSet<ResourcePath>,
+    ) -> Result<BTreeSet<ResourcePath>, Error> {
+        let staged = snapshot.stage()?;
+        let mut subjects = BTreeMap::new();
+        let compilation = rust::discover(snapshot, staged.path(), &mut subjects)?;
+        let inventory = Self::finish(snapshot.identity().clone(), subjects, compilation)?;
+        let owners = inventory.changed_test_owners(paths);
+        snapshot.require_current()?;
+        Ok(owners)
+    }
+
+    /// Cargo manifests with locally owed tests on this side of a file change.
+    ///
+    /// This uses direct source ownership and declared resource responsibilities,
+    /// not reverse compiler dependencies. Shared Cargo configuration has real
+    /// consumers and can widen the selection. Compare both sides of a diff for
+    /// deletions and renames; ownership facts alone are not an executable plan.
+    pub fn changed_test_owners(&self, paths: &BTreeSet<ResourcePath>) -> BTreeSet<ResourcePath> {
+        let testable: BTreeSet<_> = self
+            .obligations
+            .iter()
+            .filter(|obligation| obligation.duty == Duty::Test)
+            .filter_map(|obligation| self.subjects.get(&obligation.responsible))
+            .filter(|target| target.role == Role::RustSource)
+            .map(|target| &target.origin)
+            .collect();
+        let changed: BTreeSet<_> = self
+            .subjects
+            .values()
+            .filter(|subject| !subject.members.is_disjoint(paths))
+            .map(|subject| &subject.name)
+            .collect();
+        let mut owners: BTreeSet<_> = self
+            .subjects
+            .values()
+            .filter(|subject| subject.role == Role::RustSource)
+            .filter(|subject| changed.contains(&subject.name) || paths.contains(&subject.origin))
+            .filter(|subject| testable.contains(&subject.origin))
+            .map(|subject| subject.origin.clone())
+            .collect();
+        owners.extend(
+            self.obligations
+                .iter()
+                .filter(|obligation| {
+                    obligation.duty == Duty::Test && changed.contains(&obligation.subject)
+                })
+                .filter_map(|obligation| self.subjects.get(&obligation.responsible))
+                .filter(|target| target.role == Role::RustSource)
+                .map(|target| target.origin.clone()),
+        );
+        owners.extend(
+            self.compilation
+                .iter()
+                .filter(|(manifest, _)| testable.contains(manifest))
+                .filter(|(_, compilation)| {
+                    paths.intersection(&compilation.configuration).any(|input| {
+                        input.as_path() == Path::new("Cargo.toml")
+                            || input.as_path().file_name()
+                                != Some(std::ffi::OsStr::new("Cargo.toml"))
+                    })
+                })
+                .map(|(manifest, _)| manifest.clone()),
+        );
+        owners
+    }
+
+    /// Attach checked package-local test roots without changing the owners of
+    /// the ordinary publication suite. No test executable is prepared here.
+    ///
+    /// # Errors
+    /// Missing scoped constructors, wrong package bindings, and stale inputs block feedback.
+    pub fn with_feedback_owners(
+        mut self,
+        snapshot: &Snapshot,
+        paths: &BTreeSet<ResourcePath>,
+    ) -> Result<Self, Error> {
+        if snapshot.identity() != self.snapshot() {
+            return Err(Error::FeedbackContext);
+        }
+        let owners = self.required_feedback_owners(snapshot, paths);
+        if owners.is_empty() {
+            return Ok(self);
+        }
+        let staged = snapshot.stage()?;
+        let system = crate::runner::result::current_platform();
+        for owner in owners {
+            let compilation = self.compilation.get(&owner).ok_or(Error::FeedbackContext)?;
+            let target = format!(
+                "nix build .#loomFeedback.{system}.{}",
+                compilation.package.as_str()
+            );
+            let mut subjects = BTreeMap::new();
+            let graphs = nix::discover_exact(
+                snapshot,
+                staged.path(),
+                &mut subjects,
+                self.platform,
+                &target,
+            )?;
+            if graphs.len() != 1 {
+                return Err(Error::FeedbackContext);
+            }
+            for (name, graph) in graphs {
+                if graph.cargo_package() != Some(&compilation.package) {
+                    return Err(Error::FeedbackContext);
+                }
+                let subject = subjects.remove(&name).ok_or(Error::FeedbackContext)?;
+                self.obligations
+                    .extend(obligations_for(&subject, &self.subjects)?);
+                insert(&mut self.subjects, subject)?;
+                self.native_graphs.insert(name, graph);
+            }
+        }
+        snapshot.require_current()?;
+        Ok(self)
+    }
+
+    pub(crate) fn required_feedback_owners(
+        &self,
+        snapshot: &Snapshot,
+        paths: &BTreeSet<ResourcePath>,
+    ) -> BTreeSet<ResourcePath> {
+        let mut owners = self.changed_test_owners(paths);
+        // A removed path may have lost its owner. Keep every surviving
+        // testable owner when only the current inventory is available.
+        if paths
+            .iter()
+            .any(|path| !snapshot.files().contains_key(path))
+        {
+            owners.extend(
+                self.subjects
+                    .values()
+                    .filter(|s| s.role == Role::RustSource && s.testable)
+                    .map(|s| s.origin.clone()),
+            );
+        }
+        owners
+    }
+
+    pub(crate) fn cargo_package(&self, subject: &Name) -> Option<&Name> {
+        let subject = self.subjects.get(subject)?;
+        self.compilation
+            .get(subject.origin())
+            .map(|info| &info.package)
     }
 
     pub(crate) fn is_production(&self, name: &Name) -> bool {
@@ -678,6 +879,7 @@ fn classify_remaining(
     snapshot: &Snapshot,
     subjects: &mut BTreeMap<Name, Subject>,
     compilation: &BTreeMap<ResourcePath, rust::Compilation>,
+    feedback: Option<&BTreeSet<ResourcePath>>,
 ) -> Result<(), Error> {
     let accounted: BTreeSet<_> = subjects
         .values()
@@ -708,6 +910,15 @@ fn classify_remaining(
         let extension = path.as_path().extension().and_then(|ext| ext.to_str());
         let document = is_document(path);
         let configuration = is_configuration(path);
+        if feedback.is_some_and(|paths| !paths.contains(path))
+            && !accounted.contains(path)
+            && !document
+            && !configuration
+        {
+            // Resources of deferred roots are classified at publication; a
+            // changed resource still needs a known current owner in feedback.
+            continue;
+        }
         if extension == Some("rs")
             && !resources.contains(path)
             && !subjects
@@ -836,6 +1047,8 @@ fn relative(root: &Path, path: &Path) -> Result<ResourcePath, Error> {
 
 #[derive(Debug, Display, Error)]
 pub enum Error {
+    /// scoped feedback constructor or ownership does not match the current Cargo capture
+    FeedbackContext,
     /// failed to capture current project inputs
     Snapshot(#[from] snapshot::Error),
     /// project discovery I/O failed

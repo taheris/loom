@@ -6,7 +6,7 @@ use std::path::Path;
 use anyhow::Context as _;
 use loom_gate::inventory::snapshot::{ResourcePath, Snapshot};
 use loom_gate::inventory::{Inventory, Name};
-use loom_gate::provider::plan::{Plan, property};
+use loom_gate::provider::plan::{Plan, feedback::FeedbackPolicy, property, selection::Stage};
 use loom_gate::provider::{Definition, Registry, Unit};
 use loom_gate::scope::Resolved;
 use loom_gate::{Annotation, Tier};
@@ -21,7 +21,7 @@ pub struct Selected<'a> {
 /// Exact-target inspection is intentionally not an inventory-wide admission.
 /// Neither variant is verification evidence or publication authority.
 pub enum Admission {
-    Whole(Plan, Vec<property::Report>),
+    Whole(Plan, Vec<property::Report>, Stage),
     Diagnostic {
         snapshot: Snapshot,
         units: Vec<Unit>,
@@ -34,13 +34,15 @@ impl Admission {
     pub fn skip_policies(&self) -> anyhow::Result<loom_gate::runner::policy::Policies> {
         self.require_current()?;
         let snapshot = match self {
-            Self::Whole(plan, _) => plan.snapshot(),
+            Self::Whole(plan, _, _) => plan.snapshot(),
             Self::Diagnostic { snapshot, .. } => snapshot,
         };
         captured_skip_policies(snapshot)
     }
 
-    pub fn load(workspace: &Path, scope: &Resolved) -> anyhow::Result<Self> {
+    pub fn load(workspace: &Path, scope: &Resolved, tiers: &[Tier]) -> anyhow::Result<Self> {
+        let publication = std::env::var_os("LOOM_GATE_PUBLICATION_RANGE");
+        let stage = verification_stage(scope, publication.as_deref())?;
         let specs = workspace.join("specs");
         let declarations = if specs.try_exists()? {
             loom_gate::annotation::parse(&specs)?.annotations
@@ -78,25 +80,69 @@ impl Admission {
             Snapshot::discover(workspace).context("capture current verification inputs")?;
         require_explicit_inputs(&snapshot, scope)?;
         captured_skip_policies(&snapshot)?;
-        let inventory = match scope.target() {
-            Some(target)
-                if target.starts_with("nix build ") || target.starts_with("nix report ") =>
+        let feedback = stage == Stage::Feedback
+            && tiers.contains(&Tier::Test)
+            && scope.files().is_some()
+            && scope.platform() == loom_gate::scope::Platform::Native;
+        let mut annotations = Vec::new();
+        let policy = feedback
+            .then(|| FeedbackPolicy::capture(&snapshot))
+            .transpose()?;
+        let mut later = BTreeSet::new();
+        for annotation in declarations.into_iter().filter(|a| a.tier != Tier::Judge) {
+            if let Some(policy) = &policy
+                && !policy.applies(snapshot.root(), &annotation)?
             {
-                Inventory::for_nix_target(&snapshot, scope.platform(), target)
-                    .with_context(|| format!("resolve exact checked definition `{target}`"))?
+                later.insert(annotation.target);
+                continue;
             }
-            _ => Inventory::discover_for(&snapshot, scope.platform())
-                .context("discover independent native verification obligations")?,
+            annotations.push(annotation);
+        }
+        let inventory = if feedback {
+            let paths = scope
+                .files()
+                .unwrap_or_default()
+                .iter()
+                .map(|path| {
+                    let relative = path
+                        .strip_prefix(snapshot.root())
+                        .context("feedback scope outside captured workspace")?;
+                    Ok(ResourcePath::try_from(relative.to_path_buf())?)
+                })
+                .collect::<anyhow::Result<BTreeSet<_>>>()?;
+            let native: BTreeSet<_> = annotations
+                .iter()
+                .filter(|annotation| {
+                    annotation.target.starts_with("nix build ")
+                        || annotation.target.starts_with("nix report ")
+                })
+                .map(|annotation| annotation.target.clone())
+                .collect();
+            if annotations.iter().any(|annotation| {
+                annotation.tier == Tier::Test && !native.contains(&annotation.target)
+            }) {
+                // An explicitly early Rust case requires the checked compiler catalogue.
+                Inventory::discover_for(&snapshot, scope.platform())?
+                    .with_feedback_owners(&snapshot, &paths)?
+            } else {
+                Inventory::discover_feedback(&snapshot, scope.platform(), &paths, &native, &later)?
+            }
+        } else if let Some(target) = scope
+            .target()
+            .filter(|target| target.starts_with("nix build ") || target.starts_with("nix report "))
+        {
+            Inventory::for_nix_target(&snapshot, scope.platform(), target)
+                .with_context(|| format!("resolve exact checked definition `{target}`"))?
+        } else {
+            Inventory::discover_for(&snapshot, scope.platform())
+                .context("discover independent native verification obligations")?
         };
-        let annotations: Vec<_> = declarations
-            .into_iter()
-            .filter(|annotation| annotation.tier != Tier::Judge)
-            .collect();
         let (definitions, properties) = definitions(
             &snapshot,
             &inventory,
             &annotations,
             scope.target().is_none(),
+            feedback,
         )?;
         let registered: BTreeSet<_> = definitions
             .iter()
@@ -104,10 +150,12 @@ impl Admission {
             .collect();
         let registry = Registry::new(&snapshot, definitions)?;
         if scope.target().is_none() {
-            return Ok(Self::Whole(
-                registry.admit(&snapshot, &inventory)?,
-                properties,
-            ));
+            let plan = if feedback {
+                registry.admit_feedback(&snapshot, &inventory, scope)?
+            } else {
+                registry.admit(&snapshot, &inventory)?
+            };
+            return Ok(Self::Whole(plan, properties, stage));
         }
         let mut owned_contracts = BTreeMap::new();
         let targets: BTreeSet<_> = annotations
@@ -152,7 +200,7 @@ impl Admission {
     /// Recheck every admitted sibling, including unselected later lanes, before any effect.
     pub fn require_current(&self) -> anyhow::Result<()> {
         match self {
-            Self::Whole(plan, _) => plan.require_current()?,
+            Self::Whole(plan, _, _) => plan.require_current()?,
             Self::Diagnostic { snapshot, .. } => snapshot.require_current()?,
         }
         Ok(())
@@ -166,7 +214,7 @@ impl Admission {
         self.require_current()?;
         let mut failures = Vec::new();
         match self {
-            Self::Whole(plan, _) => {
+            Self::Whole(plan, _, _) => {
                 let selection = plan.select(scope)?;
                 for invocation in selection.observations()? {
                     let invocation = invocation?;
@@ -193,7 +241,7 @@ impl Admission {
         selection: Option<&loom_gate::provider::plan::selection::Selection<'_>>,
     ) -> anyhow::Result<Option<String>> {
         match self {
-            Self::Whole(_, properties) => {
+            Self::Whole(_, properties, _) => {
                 #[derive(serde::Serialize)]
                 struct Explained<'a, T> {
                     #[serde(flatten)]
@@ -262,8 +310,8 @@ impl Admission {
                     None,
                 ))
             }
-            Self::Whole(plan, _) => {
-                let selection = plan.select_tiers(scope, tiers)?;
+            Self::Whole(plan, _, stage) => {
+                let selection = plan.select_at(scope, tiers, *stage)?;
                 let selected = selection
                     .decisions()
                     .iter()
@@ -278,6 +326,24 @@ impl Admission {
             }
         }
     }
+}
+
+fn verification_stage(
+    scope: &Resolved,
+    publication: Option<&std::ffi::OsStr>,
+) -> anyhow::Result<Stage> {
+    if let Some(publication) = publication {
+        anyhow::ensure!(
+            scope.diff().is_some_and(|range| publication == range),
+            "publication verification context requires the exact pushed range"
+        );
+        return Ok(Stage::Publication);
+    }
+    Ok(if scope.target().is_some() {
+        Stage::Diagnostic
+    } else {
+        Stage::Feedback
+    })
 }
 
 fn require_explicit_inputs(snapshot: &Snapshot, scope: &Resolved) -> anyhow::Result<()> {
@@ -409,6 +475,7 @@ fn definitions(
     inventory: &Inventory,
     annotations: &[Annotation],
     include_baseline: bool,
+    feedback: bool,
 ) -> anyhow::Result<(Vec<Definition>, Vec<property::Report>)> {
     // Native checks and compiler-enumerated Rust cases have fixed executions.
     // Shell wrappers, build arguments and runner templates are not bridges.
@@ -497,7 +564,25 @@ fn definitions(
     }
     let requested_native = native_targets.clone();
     if include_baseline {
-        native_targets.extend(native.keys().cloned());
+        native_targets.extend(
+            native
+                .iter()
+                .filter(|(_, subject)| {
+                    !feedback
+                        || inventory
+                            .subjects()
+                            .get(*subject)
+                            .and_then(|entry| entry.nix_target())
+                            .is_some_and(|binding| {
+                                use loom_gate::inventory::nix::{Kind, Usage};
+                                binding.kind() == Kind::Feedback
+                                    || (!inventory.has_cargo()
+                                        && (inventory.native_graph(subject).is_some()
+                                            || binding.usage() == Usage::Inapplicable))
+                            })
+                })
+                .map(|(target, _)| target.clone()),
+        );
     }
     let mut reported = BTreeSet::new();
     let mut requests = Vec::new();
@@ -576,12 +661,13 @@ fn definitions(
         }
     }
     if include_baseline
+        && !feedback
         && (!rust_targets.is_empty() || !property::declarations(snapshot)?.is_empty())
     {
         Registry::new(snapshot, definitions.clone())?
             .require_inventory_coverage(snapshot, inventory)?;
     }
-    if !include_baseline && rust_targets.is_empty() {
+    if (!include_baseline || feedback) && rust_targets.is_empty() {
         return Ok((definitions, Vec::new()));
     }
     let (rust, properties) = rust_definitions(snapshot, inventory, annotations, &rust_targets)?;
@@ -696,7 +782,21 @@ fn unsupported(annotation: &Annotation) -> anyhow::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::logical_walk;
+    use super::{Stage, logical_walk, verification_stage};
+    use loom_gate::scope::Request;
+    use std::ffi::OsStr;
+
+    #[tokio::test]
+    async fn publication_context_cannot_be_applied_to_an_explicit_file_scope() {
+        let root = tempfile::tempdir().unwrap();
+        let scope = Request::Files(Vec::new())
+            .resolve(root.path())
+            .await
+            .unwrap();
+        assert_eq!(verification_stage(&scope, None).unwrap(), Stage::Feedback);
+        let error = verification_stage(&scope, Some(OsStr::new("HEAD..HEAD"))).unwrap_err();
+        assert!(error.to_string().contains("exact pushed range"));
+    }
 
     #[test]
     fn registered_walk_aliases_accept_markdown_whitespace_not_extra_arguments() {

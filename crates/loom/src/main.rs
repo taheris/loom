@@ -1608,7 +1608,7 @@ fn run_gate_verify(workspace: &Path, args: &GateScope) -> anyhow::Result<()> {
     let tiers = verify_tiers_for_args(workspace, args)?;
     // Definition admission is whole-request and precedes even unrelated hook effects.
     // A nested-hook hint suppresses duplicate execution, never definition validation.
-    let before_hooks = checked_gate::Admission::load(workspace, args)?;
+    let before_hooks = checked_gate::Admission::load(workspace, args, &tiers)?;
     if nested_diff_gate_skip(args) {
         eprintln!("loom gate verify --files: admitted; execution skipped under parent --diff gate");
         return Ok(());
@@ -1800,6 +1800,7 @@ fn run_project_hook_lane(workspace: &Path, args: &GateScope) -> anyhow::Result<i
     let status = match command
         .current_dir(workspace)
         .env_remove("PREK_QUIET")
+        .env_remove("LOOM_GATE_PUBLICATION_RANGE")
         .env("LOOM_PARENT_DIFF_GATE", "1")
         .args([
             "run",
@@ -2128,7 +2129,7 @@ fn run_gate_single_tier(workspace: &Path, args: &GateScope, tier: Tier) -> anyho
             "no annotation target exactly matched `{target}` in {tier}; run `loom spec <label> --targets` to list exact targets"
         );
     }
-    let admission = checked_gate::Admission::load(workspace, args)?;
+    let admission = checked_gate::Admission::load(workspace, args, &[tier])?;
     let code = dispatch_checked(workspace, args, &[tier], &admission)?;
     if code != 0 {
         drop(admission);
@@ -2824,7 +2825,7 @@ fn run_gate_mint(
         }
         ResolvedMintScope::Tree => {
             let mint_scope = resolve_gate_scope(workspace, GateScopeRequest::Tree)?;
-            let admission = checked_gate::Admission::load(workspace, &mint_scope)?;
+            let admission = checked_gate::Admission::load(workspace, &mint_scope, &[])?;
             admission.require_current()?;
             let launcher_env = prepare_wrix_git_policy(workspace, host_key)?.launcher_env();
             let manifest = Arc::new(configured_profiles(workspace, host_key)?);

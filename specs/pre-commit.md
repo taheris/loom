@@ -24,17 +24,20 @@ Acceptance: [criteria and verifier bindings](#success-criteria).
 
 The pre-commit stage provides fast feedback on the staged files: native
 whitespace/conflict sanitation, formatting drift, explicit-interpreter safety
-for shell self re-exec, and affected deterministic annotation checks. The
-pre-push stage composes the fast Nix tier, Rust linting when Rust files changed,
-exact pushed-range verification, and required agent-runnable suites plus
-affected host-only coverage. The hook chain stops at the first failure rather
-than launching later verification tiers. Existing feedback-only capability skips
-remain available, while non-Nix checks continue. For host publication, a missing
-required tool blocks whenever the obligation lacks currently admissible
-coverage. A wrapper's successful absent-tool no-op is not execution evidence and
-cannot satisfy hook coverage, a receipt, or a marker. Apply this rule to driver
-publication, marker-free operator pushes, and host pre-push rehearsals. Actual
-worker executions may supply admitted equivalent coverage under
+for shell self re-exec, changed-owner tests, and eligible affected annotations.
+Resolve the stage before constructing its executable graph. Do not prepare
+release assembly solely because it is exported. Launcher acquisition and
+rebuilds count toward feedback time. The pre-push stage composes the fast Nix
+tier, Rust linting when Rust files changed, exact pushed-range verification, and
+required agent-runnable suites plus affected host-only coverage. The hook chain
+stops at the first failure rather than launching later verification tiers.
+Existing feedback-only capability skips remain available, while non-Nix checks
+continue. For host publication, a missing required tool blocks whenever the
+obligation lacks currently admissible coverage. A wrapper's successful
+absent-tool no-op is not execution evidence and cannot satisfy hook coverage, a
+receipt, or a marker. Apply this rule to driver publication, marker-free
+operator pushes, and host pre-push rehearsals. Actual worker executions may
+supply admitted equivalent coverage under
 [Evidence](evidence.md#agent-executed-results); worker acceptance with skips or
 a claimed pass cannot substitute for an executed obligation. Publication
 authority remains driver-owned.
@@ -105,8 +108,8 @@ an added always-on benchmarking suite. This does not replace existing scoped
 pilot cost evidence with a cache-hit-only demonstration.
 
 Low latency is not permission to finish with required work outstanding.
-Spec-owned publication deferrals can postpone expensive obligations; omitted
-exceptions instead retain conservative earlier checking. Full publication and
+Owner-local feedback is the default; other eligible checks retain their earlier
+coverage unless explicitly deferred in the owning spec. Full publication and
 full-tree coverage remain mandatory. Concrete finite routine/deep campaign
 bounds belong to shipped model execution definitions, not settings every user
 must tune; exhausting a campaign budget cannot be reported as success.

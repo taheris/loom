@@ -167,15 +167,30 @@ impl CargoOperation {
         }
     }
 
-    fn require_execution(self, root: &Node) -> Result<(), Error> {
+    fn require_execution(self, root: &Node, package: Option<&Name>) -> Result<(), Error> {
         let target = if self == Self::Catalogue {
             "$out"
         } else {
             "$PWD"
         };
+        let command = if let Some(package) = package {
+            if !valid_cargo_package(package.as_str()) {
+                return Err(Error::CargoExecution);
+            }
+            match self {
+                Self::Catalogue => std::borrow::Cow::Owned(self.command().replacen(
+                    " --workspace --all-targets ",
+                    &format!(" --package {} --all-targets ", package.as_str()),
+                    1,
+                )),
+                Self::Test => std::borrow::Cow::Borrowed(self.command()),
+                _ => return Err(Error::CargoExecution),
+            }
+        } else {
+            std::borrow::Cow::Borrowed(self.command())
+        };
         let expected = format!(
-            "runHook preBuild\ncargo --version\nexport HOME=$(mktemp -d)\nexport GIT_CONFIG_SYSTEM=/dev/null\nexport CARGO_TARGET_DIR=\"{target}/target\"\n{}\n\nrunHook postBuild\n",
-            self.command()
+            "runHook preBuild\ncargo --version\nexport HOME=$(mktemp -d)\nexport GIT_CONFIG_SYSTEM=/dev/null\nexport CARGO_TARGET_DIR=\"{target}/target\"\n{command}\n\nrunHook postBuild\n",
         );
         require_cargo_builder(root)?;
         if self == Self::Test {
@@ -235,7 +250,18 @@ impl CargoOperation {
     }
 }
 
+fn valid_cargo_package(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    bytes
+        .next()
+        .is_some_and(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
 fn require_catalogue(definition: &Native, nodes: &Nodes) -> Result<(), Error> {
+    if definition.cargo_package.is_some() && definition.cargo != Some(CargoOperation::Test) {
+        return Err(Error::CargoExecution);
+    }
     let Some(catalogue) = &definition.catalogue else {
         return if definition.cargo == Some(CargoOperation::Test) {
             Err(Error::CargoExecution)
@@ -248,7 +274,7 @@ fn require_catalogue(definition: &Native, nodes: &Nodes) -> Result<(), Error> {
     }
     let root = nodes.get(&definition.root).ok_or(Error::Root)?;
     let prepared = nodes.get(catalogue).ok_or(Error::CargoExecution)?;
-    CargoOperation::Catalogue.require_execution(prepared)?;
+    CargoOperation::Catalogue.require_execution(prepared, definition.cargo_package.as_ref())?;
     let (out, output) = prepared
         .outputs
         .iter()
@@ -502,7 +528,8 @@ impl Definition {
         for responsibility in &responsibilities {
             if inventory.subject(responsibility.responsible())?.role()
                 == crate::inventory::Role::RustSource
-                && graph.cargo.and_then(CargoOperation::duty) != Some(responsibility.duty())
+                && (graph.cargo.and_then(CargoOperation::duty) != Some(responsibility.duty())
+                    || !graph.includes_cargo_owner(inventory, responsibility.responsible()))
             {
                 return Err(Error::CargoExecution.into());
             }
@@ -626,6 +653,7 @@ fn baseline(
                             | Role::RuntimeResource
                             | Role::TestFixture
                     ) || (subject.role() == Role::RustSource
+                        && graph.includes_cargo_owner(inventory, subject.name())
                         && graph.cargo.is_some_and(|operation| {
                             operation != CargoOperation::Lint
                                 || inventory.is_production(subject.name())
@@ -677,6 +705,7 @@ pub struct Graph {
     identity: Digest,
     evaluation: BTreeSet<StorePath>,
     cargo: Option<CargoOperation>,
+    cargo_package: Option<Name>,
     catalogue: Option<StorePath>,
     report: Option<report::Contract>,
     reporter: Option<StorePath>,
@@ -816,6 +845,8 @@ struct Native {
     evaluation: Vec<Source>,
     #[serde(default)]
     cargo: Option<CargoOperation>,
+    #[serde(default, rename = "cargoPackage")]
+    cargo_package: Option<Name>,
     #[serde(default)]
     catalogue: Option<StorePath>,
     #[serde(default)]
@@ -1258,6 +1289,12 @@ impl Graph {
         {
             return Err(Error::Sources);
         }
+        if native.kind() == crate::inventory::nix::Kind::Feedback
+            && (definition.cargo_package.as_ref() != Some(native.attribute())
+                || definition.cargo != Some(CargoOperation::Test))
+        {
+            return Err(Error::CargoExecution);
+        }
         if definition.purpose == Purpose::Artifact
             && (native.kind() != crate::inventory::nix::Kind::Package
                 || definition.cargo.is_some()
@@ -1288,7 +1325,10 @@ impl Graph {
             } else {
                 &root
             };
-            operation.require_execution(nodes.get(executable).ok_or(Error::Root)?)?;
+            operation.require_execution(
+                nodes.get(executable).ok_or(Error::Root)?,
+                definition.cargo_package.as_ref(),
+            )?;
         }
         require_catalogue(&definition, &nodes)?;
         if definition.runtime == Runtime::NativeStore
@@ -1586,6 +1626,7 @@ impl Graph {
             identity,
             evaluation,
             cargo: definition.cargo,
+            cargo_package: definition.cargo_package,
             catalogue: definition.catalogue,
             report: definition.report,
             reporter: definition.reporter,
@@ -1594,6 +1635,16 @@ impl Graph {
             managed,
             process,
         })
+    }
+
+    fn includes_cargo_owner(&self, inventory: &Inventory, subject: &Name) -> bool {
+        self.cargo_package
+            .as_ref()
+            .is_none_or(|package| inventory.cargo_package(subject) == Some(package))
+    }
+
+    pub const fn cargo_package(&self) -> Option<&Name> {
+        self.cargo_package.as_ref()
     }
 
     /// Exact file resources in the validated execution closure, not directory
@@ -1642,6 +1693,7 @@ impl Graph {
             resources,
             evaluation,
             cargo,
+            cargo_package,
             catalogue,
             report,
             reporter,
@@ -1666,6 +1718,7 @@ impl Graph {
             && resources == &other.resources
             && evaluation == &other.evaluation
             && cargo == &other.cargo
+            && cargo_package == &other.cargo_package
             && catalogue == &other.catalogue
             && report == &other.report
             && reporter == &other.reporter
@@ -2027,7 +2080,8 @@ fn evaluate_projects(
     let expression = format!(
         r#"let
           select = flake: entry: let
-            original = flake.${{entry.namespace}}.${{entry.system}}.${{entry.attribute}};
+            outputs = flake.${{entry.namespace}}.${{entry.system}};
+            original = if entry.namespace == "loomFeedback" then outputs entry.attribute else outputs.${{entry.attribute}};
             value = if entry.namespace == "apps" then (assert original.type == "app"; original.meta.loom.definition) else original;
           in if !builtins.isAttrs value || (value.type or null) != "derivation" then
             throw "native check is not a derivation"
@@ -2042,6 +2096,7 @@ fn evaluate_projects(
                 path = builtins.path {{ path = flake.outPath + "/${{origin}}"; name = origin; }};
               }}) ([ "flake.nix" ] ++ (if builtins.pathExists (flake.outPath + "/flake.lock") then [ "flake.lock" ] else []))) else []);
             cargo = value.loom.cargo or null;
+            cargoPackage = value.loom.cargoPackage or null;
             catalogue = value.loom.catalogue or null;
             report = value.loom.report or null;
             reporter = value.loom.reporter.drvPath or null;

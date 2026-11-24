@@ -99,7 +99,15 @@ impl Graph {
         .map_err(|error| Error::Catalogue {
             detail: error.to_string(),
         })?;
-        let tests = serde_json::from_slice(&tests_bytes)?;
+        let tests: TestListSummary = serde_json::from_slice(&tests_bytes)?;
+        if let Some(package) = &self.cargo_package
+            && tests
+                .rust_suites
+                .values()
+                .any(|suite| suite.package_name != package.as_str())
+        {
+            return Err(Error::CargoExecution);
+        }
         crate::provider::plan::property::Context::require_native_catalogue(&packages, &tests)
             .map_err(|error| Error::Catalogue {
                 detail: error.to_string(),
@@ -297,6 +305,7 @@ impl Definition {
             let mut definitions = Vec::new();
             for (subject, graph) in captured {
                 if graph.cargo == Some(CargoOperation::Test)
+                    && graph.cargo_package.is_none()
                     && !definitions.iter().any(|definition: &Self| {
                         definition
                             .nix_graph()
@@ -340,7 +349,7 @@ impl Definition {
             let locked = serde_json::to_string(&metadata.url)?.replace("${", "\\${");
             let system = serde_json::to_string(platform.system.value.as_str())?;
             let expression = format!(
-                "let flake = builtins.getFlake {locked}; select = namespace: let values = flake.${{namespace}}.{system} or {{}}; in map (attribute: {{ inherit namespace attribute; }}) (builtins.filter (name: builtins.isAttrs values.${{name}} && (values.${{name}}.loom.cargo or null) == \"test\") (builtins.attrNames values)); in select \"checks\" ++ select \"packages\""
+                "let flake = builtins.getFlake {locked}; select = namespace: let values = flake.${{namespace}}.{system} or {{}}; in map (attribute: {{ inherit namespace attribute; }}) (builtins.filter (name: builtins.isAttrs values.${{name}} && (values.${{name}}.loom.cargo or null) == \"test\" && (values.${{name}}.loom.cargoPackage or null) == null) (builtins.attrNames values)); in select \"checks\" ++ select \"packages\""
             );
             let producers: Vec<Producer> = serde_json::from_slice(&super::query(
                 &tool,

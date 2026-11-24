@@ -29,7 +29,7 @@ pub enum Declaration {
     Criterion {
         source: Source,
         line: u32,
-        defer_until: Deferral,
+        applicability: Applicability,
     },
 }
 
@@ -88,11 +88,23 @@ impl RoleRef {
     }
 }
 
-/// The only supported criterion-local stage exception.
+/// The closed set of criterion-local stage exceptions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Applicability {
+    DeferUntilPublication,
+    RequireFromFeedback,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum Deferral {
+enum Deferral {
     Publication,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Earlier {
+    Feedback,
 }
 
 #[derive(Debug, Display, Error)]
@@ -106,12 +118,14 @@ pub enum Error {
     },
     /// `{field}` must be nonblank; subject and role references cannot contain control characters
     EmptyReference { field: &'static str },
-    /// a strategy fence must declare package policy or a criterion deferral
+    /// a strategy fence must declare package policy or criterion applicability
     Empty,
-    /// criterion deferral must be contained in its owning acceptance bullet directly after its sole annotation
+    /// criterion applicability must be contained in its owning acceptance bullet directly after its sole annotation
     Attachment,
-    /// package policy and criterion-local deferral must be in separate fences
+    /// package policy and criterion applicability must be in separate fences
     Mixed,
+    /// `require_from = "feedback"` belongs to a `[test]` criterion
+    RequireTest,
     /// conflicting or repeated `{field}` declaration
     Conflict { field: &'static str },
 }
@@ -122,6 +136,7 @@ struct Raw {
     rust: Option<RawRust>,
     role_exception: Option<Vec<RawRole>>,
     defer_until: Option<Deferral>,
+    require_from: Option<Earlier>,
 }
 
 #[derive(Deserialize)]
@@ -178,7 +193,7 @@ pub(super) fn parse(
                     Declaration::Criterion { line, .. } => {
                         if !criteria.insert(*line) {
                             return Err(Error::Conflict {
-                                field: "defer_until",
+                                field: "criterion applicability",
                             });
                         }
                     }
@@ -205,7 +220,17 @@ fn parse_fence(
     let raw: Raw = toml::from_str(&fence.body)?;
     let has_package_policy = raw.rust.is_some() || raw.role_exception.is_some();
     let owner = structure.innermost_item_containing(fence.range.start);
-    if let Some(defer_until) = raw.defer_until {
+    let applicability = match (raw.defer_until, raw.require_from) {
+        (None, None) => None,
+        (Some(Deferral::Publication), None) => Some(Applicability::DeferUntilPublication),
+        (None, Some(Earlier::Feedback)) => Some(Applicability::RequireFromFeedback),
+        (Some(_), Some(_)) => {
+            return Err(Error::Conflict {
+                field: "criterion applicability",
+            });
+        }
+    };
+    if let Some(applicability) = applicability {
         if has_package_policy {
             return Err(Error::Mixed);
         }
@@ -238,10 +263,14 @@ fn parse_fence(
         {
             return Err(Error::Attachment);
         }
+        if applicability == Applicability::RequireFromFeedback && binding.tier != super::Tier::Test
+        {
+            return Err(Error::RequireTest);
+        }
         return Ok(Declaration::Criterion {
             source,
             line,
-            defer_until,
+            applicability,
         });
     }
     if !has_package_policy {

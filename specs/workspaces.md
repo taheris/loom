@@ -1179,6 +1179,10 @@ for worker feedback.
   selection or granting coverage. Missing/corrupt authority is neither
   reconstructed nor bypassed. [system](nix build .#verification-system-profile-bootstrap)
 
+  ```loom-verify
+  defer_until = "publication"
+  ```
+
 - Provisioned profile inputs retain the selected immutable configuration.
   [test](provisioned_profile_inputs_retain_the_selected_configuration)
 
