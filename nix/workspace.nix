@@ -413,7 +413,10 @@ let
     }:
     checked.artifact {
       runtime = "native-process";
-      inherit evaluation;
+      # Crane discovers targets before producing dependency-only sources. Retain
+      # that discovery input when the native source audit reconstructs this
+      # recipe, even though its executable uses the narrower release source.
+      evaluation = evaluation ++ optional projection workspaceSource;
       resources = [ source ];
       build =
         _:
