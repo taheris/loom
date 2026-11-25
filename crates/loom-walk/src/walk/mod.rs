@@ -222,7 +222,7 @@ pub fn checked_definitions(
     purity::require(snapshot)?;
     constructors
         .into_iter()
-        .map(|register| register(snapshot, inventory))
+        .map(|register| register(snapshot, inventory)?.with_snapshot_only_batching())
         .collect()
 }
 

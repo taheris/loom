@@ -420,12 +420,12 @@ impl<'a> Selection<'a> {
         self.invocations()?.collect()
     }
 
-    /// Capture all equivalent projections together, retaining decision order.
+    /// Capture equivalent projections and adjacent audited snapshot-only checks in order.
     ///
-    /// Whole-context checks surround each fresh execution and its pure projections,
-    /// not each later delivery of an already captured historical fact. Consumers
-    /// must revalidate the plan before reporting current-scope success. No context
-    /// check is skipped before a subsequent effect; dropping this stream is lazy.
+    /// Whole-context checks surround each effect or bounded snapshot-only batch, not
+    /// each later delivery of an already captured historical fact. Consumers must
+    /// revalidate the plan before reporting current-scope success. Dropping this
+    /// stream never launches another effect or another batch.
     /// Use `invocations` when a caller needs revalidation between alias deliveries.
     ///
     /// # Errors
@@ -514,14 +514,97 @@ impl std::iter::FusedIterator for Invocations<'_, '_> {}
 
 /// Invocation-local facts, never cached verdicts or current-context authority.
 ///
-/// Alias projections are captured atomically around one actual execution; later
-/// deliveries do not launch callbacks or reinterpret them under a new context.
-/// The first error permanently stops execution, including after source repair.
+/// Projections and bounded snapshot-only batches are captured inside live plan
+/// barriers. Later deliveries do not launch callbacks or reinterpret captured
+/// facts under a new context. The first error permanently stops execution,
+/// including after source repair.
 pub struct Observations<'selection, 'plan> {
     selection: &'selection Selection<'plan>,
     decisions: std::slice::Iter<'selection, Decision<'plan>>,
-    captured: BTreeMap<Name, Invocation>,
+    captured: BTreeMap<Name, Result<Invocation, Error>>,
     failed: bool,
+}
+
+const SNAPSHOT_ONLY_BATCH: usize = 32;
+
+type Captured = BTreeMap<Name, Result<Invocation, Error>>;
+
+fn snapshot_only_check(decision: &Decision<'_>) -> bool {
+    matches!(
+        decision.unit.definition.execution,
+        Execution::Tracked {
+            snapshot_only: true,
+            ..
+        }
+    ) && decision.baseline.is_none_or(|tier| tier == Tier::Check)
+        && decision
+            .owners
+            .iter()
+            .all(|owner| owner.tier == Tier::Check)
+}
+
+impl Observations<'_, '_> {
+    fn capture(
+        &self,
+        decision: &Decision<'_>,
+        captured: &mut Captured,
+    ) -> Result<Invocation, Error> {
+        use loom_driver::clock::{Clock as _, SystemClock};
+        let clock = SystemClock::new();
+        let start = clock.now();
+        let observed = decision.unit.observe()?;
+        let duration = clock.now().saturating_duration_since(start);
+        let mut aliases = BTreeMap::new();
+        for alias in self.selection.decisions.iter().filter(|alias| {
+            alias.reason.selected()
+                && alias.unit.target() != decision.unit.target()
+                && same_execution(alias.unit, decision.unit)
+        }) {
+            aliases.insert(
+                alias.unit.target().clone(),
+                Ok(Invocation {
+                    observed: alias.unit.project_observed(&observed)?,
+                    duration,
+                    owners: alias.owners.clone(),
+                    baseline: alias.baseline,
+                    shared_with: Some(decision.unit.target().clone()),
+                }),
+            );
+        }
+        captured.extend(aliases);
+        Ok(Invocation {
+            observed,
+            duration,
+            owners: decision.owners.clone(),
+            baseline: decision.baseline,
+            shared_with: None,
+        })
+    }
+
+    fn capture_adjacent_snapshot_only(&self, captured: &mut Captured) {
+        let mut remaining = SNAPSHOT_ONLY_BATCH - 1;
+        for decision in self.decisions.clone().filter(|d| d.reason.selected()) {
+            if self.captured.contains_key(decision.unit.target())
+                || captured.contains_key(decision.unit.target())
+            {
+                continue;
+            }
+            if remaining == 0 || !snapshot_only_check(decision) {
+                break;
+            }
+            remaining -= 1;
+            let result = self.capture(decision, captured);
+            let failed = result.is_err();
+            captured.insert(decision.unit.target().clone(), result);
+            if failed {
+                break;
+            }
+        }
+        tracing::debug!(
+            snapshot_only_checks = SNAPSHOT_ONLY_BATCH - remaining,
+            "captured adjacent snapshot-only check batch"
+        );
+    }
 }
 
 impl Iterator for Observations<'_, '_> {
@@ -533,41 +616,20 @@ impl Iterator for Observations<'_, '_> {
         }
         let decision = self.decisions.find(|decision| decision.reason.selected())?;
         if let Some(captured) = self.captured.remove(decision.unit.target()) {
-            return Some(Ok(captured));
+            self.failed = captured.is_err();
+            return Some(captured);
         }
         let result = (|| {
             self.selection.plan.require_current()?;
-            let clock = loom_driver::clock::SystemClock::new();
-            let start = loom_driver::clock::Clock::now(&clock);
-            let observed = decision.unit.observe()?;
-            let duration = loom_driver::clock::Clock::now(&clock).saturating_duration_since(start);
             let mut captured = BTreeMap::new();
-            for alias in self.selection.decisions.iter().filter(|alias| {
-                alias.reason.selected()
-                    && alias.unit.target() != decision.unit.target()
-                    && same_execution(alias.unit, decision.unit)
-            }) {
-                captured.insert(
-                    alias.unit.target().clone(),
-                    Invocation {
-                        observed: alias.unit.project_observed(&observed)?,
-                        duration,
-                        owners: alias.owners.clone(),
-                        baseline: alias.baseline,
-                        shared_with: Some(decision.unit.target().clone()),
-                    },
-                );
+            let first = self.capture(decision, &mut captured)?;
+            if snapshot_only_check(decision) {
+                self.capture_adjacent_snapshot_only(&mut captured);
             }
-            // No projection escapes if the callback invalidated even an excluded sibling.
+            // No projection escapes if a callback invalidated even an excluded sibling.
             self.selection.plan.require_current()?;
             self.captured.extend(captured);
-            Ok(Invocation {
-                observed,
-                duration,
-                owners: decision.owners.clone(),
-                baseline: decision.baseline,
-                shared_with: None,
-            })
+            Ok(first)
         })();
         if result.is_err() {
             self.failed = true;

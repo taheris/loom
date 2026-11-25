@@ -84,6 +84,7 @@ impl Definition {
             },
             execution: Execution::Tracked {
                 check: Arc::new(check),
+                snapshot_only: false,
                 members,
                 executable,
                 artifact,

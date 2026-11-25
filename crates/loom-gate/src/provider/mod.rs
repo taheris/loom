@@ -122,6 +122,7 @@ pub struct Definition {
 enum Execution {
     Tracked {
         check: Arc<Check>,
+        snapshot_only: bool,
         members: BTreeMap<Name, BTreeSet<ResourcePath>>,
         executable: PathBuf,
         artifact: Digest,
@@ -268,11 +269,30 @@ impl Definition {
             },
             execution: Execution::Tracked {
                 check: Arc::new(check),
+                snapshot_only: false,
                 members,
                 executable,
                 artifact,
             },
         })
+    }
+
+    /// Permit consecutive snapshot-only computations to share one live plan boundary.
+    ///
+    /// Only a trusted, audited host registration may opt in. The callback must read
+    /// exclusively through its captured `Context` and must have no external effects.
+    /// A manifest, annotation or effect backend cannot request this execution mode.
+    ///
+    /// # Errors
+    /// Rejects anything other than a tracked analysis definition.
+    pub fn with_snapshot_only_batching(mut self) -> Result<Self, Error> {
+        let Execution::Tracked { snapshot_only, .. } = &mut self.execution else {
+            return Err(Error::SnapshotOnly {
+                target: self.candidate.target().clone(),
+            });
+        };
+        *snapshot_only = true;
+        Ok(self)
     }
 
     pub const fn description(&self) -> &Candidate {
@@ -1007,6 +1027,8 @@ pub enum Error {
     },
     /// provider `{target:?}` erased or ambiguous Rust callable identity; register a named function item, not a closure/function pointer, and retry `loom gate verify`
     Callable { target: Name },
+    /// provider `{target:?}` is not a tracked snapshot-only analysis
+    SnapshotOnly { target: Name },
     /// failed to locate the running checker artifact
     Executable(#[source] std::io::Error),
     /// failed to read checker artifact `{path}`; rebuild the provider and retry `loom gate verify`
