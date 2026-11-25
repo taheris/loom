@@ -1,6 +1,7 @@
 //! Project subjects and baseline obligations discovered independently of providers.
 
 pub mod nix;
+pub mod publication;
 mod rust;
 pub mod snapshot;
 #[cfg(test)]

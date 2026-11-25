@@ -1507,6 +1507,15 @@ impl GitClient {
             .collect())
     }
 
+    /// Capture the source at an exact commit without reading the index or working tree.
+    ///
+    /// # Errors
+    /// Rejects missing, replaced or damaged objects, non-commit identities, and
+    /// entries that cannot provide regular source bytes (for example gitlinks).
+    pub fn source_at(&self, commit: &GitOid) -> Result<super::CommitSource, GitError> {
+        super::source::capture(&self.repo.to_thread_local(), commit)
+    }
+
     /// `git diff HEAD -- <spec_path>` — working-tree diff for one spec file.
     /// Empty string when the file matches `HEAD`.
     ///

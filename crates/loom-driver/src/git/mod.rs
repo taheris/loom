@@ -16,6 +16,7 @@ mod error;
 mod hooks;
 mod replay;
 mod signing;
+mod source;
 
 pub use replay::initialize_snapshot;
 
@@ -33,6 +34,7 @@ pub use hooks::{
     WRIX_PREK_HOOKS_ENV, resolve_prek_hooks_path, resolve_prek_hooks_path_for_workspace,
     validate_hooks_config, write_hooks_config,
 };
+pub use source::{CommitFile, CommitSource};
 // `GitOid` lives in the public-contract leaf `loom-protocol::oid` so the
 // typed retry-context surface in `loom-templates`
 // (`PreviousFailure::IntegrationConflict { new_base_sha: GitOid }`) can

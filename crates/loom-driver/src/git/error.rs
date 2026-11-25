@@ -5,7 +5,7 @@ use std::time::SystemTimeError;
 use displaydoc::Display;
 use thiserror::Error;
 
-use loom_protocol::oid::ParseGitOidError;
+use loom_protocol::oid::{GitOid, ParseGitOidError};
 
 #[expect(
     clippy::doc_markdown,
@@ -22,6 +22,12 @@ pub enum GitError {
 
     /// gix operation failed: {0}
     Gix(String),
+
+    /// Git source object {oid} is inconsistent with its object identity: {detail}
+    SourceObject { oid: GitOid, detail: String },
+
+    /// Git source entry at {path} is not a supported regular source path
+    SourceEntry { path: PathBuf },
 
     /// git CLI exited with status {status}: {stderr}
     GitCli { status: i32, stderr: String },

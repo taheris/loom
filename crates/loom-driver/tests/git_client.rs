@@ -48,6 +48,92 @@ fn repository_files_preserve_exact_tracked_and_new_names() -> Result<()> {
 }
 
 #[test]
+fn commit_source_binds_literal_paths_bytes_and_executable_mode_not_live_index() -> Result<()> {
+    use loom_driver::git::{commit_all_in, sync_head_commit_sha};
+    let dir = init_repo()?;
+    let root = dir.path();
+    let literal = "notes/space\t名前.txt";
+    std::fs::create_dir_all(root.join("notes"))?;
+    std::fs::write(root.join(literal), "committed\n")?;
+    commit_all_in(root, "Capture literal committed path")?;
+    let normal = sync_head_commit_sha(root)?;
+    git(root, &["update-index", "--chmod=+x", "--", literal])?;
+    git(
+        root,
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "Change only the mode",
+        ],
+    )?;
+    let executable = sync_head_commit_sha(root)?;
+    std::fs::write(root.join(literal), "staged\n")?;
+    git(root, &["add", "--", literal])?;
+    std::fs::write(root.join(literal), "unstaged\n")?;
+    std::fs::write(root.join("untracked"), "untracked\n")?;
+    let client = GitClient::open(root)?;
+    let before = client.source_at(&normal)?;
+    let after = client.source_at(&executable)?;
+    assert_eq!(before.commit(), &normal);
+    assert_eq!(after.commit(), &executable);
+    assert_ne!(before.tree(), after.tree());
+    let original = &before.files()[Path::new(literal)];
+    let changed = &after.files()[Path::new(literal)];
+    assert_eq!(original.blob(), changed.blob());
+    assert_eq!(original.bytes(), b"committed\n");
+    assert_eq!(original.bytes(), changed.bytes());
+    assert!(!original.is_executable());
+    assert!(changed.is_executable());
+    assert!(!after.files().contains_key(Path::new("untracked")));
+    Ok(())
+}
+
+#[test]
+fn commit_source_detects_checksum_drift_even_at_the_correct_loose_object_path() -> Result<()> {
+    use loom_driver::git::{GitOid, commit_all_in, sync_head_commit_sha};
+    let dir = init_repo()?;
+    let root = dir.path();
+    std::fs::write(root.join("expected"), "known good bytes\n")?;
+    std::fs::write(root.join("replacement"), "different bytes\n")?;
+    commit_all_in(root, "Fixture object data")?;
+    let original = git_capture(root, &["rev-parse", "HEAD:expected"])?;
+    let replacement = git_capture(root, &["rev-parse", "HEAD:replacement"])?;
+    let object = |oid: &str| root.join(".git/objects").join(&oid[..2]).join(&oid[2..]);
+    let valid = sync_head_commit_sha(root)?;
+    let client = GitClient::open(root)?;
+    assert!(client.source_at(&valid).is_ok());
+    assert!(
+        client.source_at(&GitOid::new(&original)?).is_err(),
+        "a blob is not a commit"
+    );
+    let staged_object = object(&original).with_extension("test-replacement");
+    std::fs::copy(object(&replacement), &staged_object)?;
+    std::fs::rename(staged_object, object(&original))?;
+    assert!(
+        matches!(GitClient::open(root)?.source_at(&valid), Err(GitError::SourceObject { oid, .. }) if oid.as_str() == original)
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn commit_source_does_not_follow_committed_symlinks() -> Result<()> {
+    use loom_driver::git::{commit_all_in, sync_head_commit_sha};
+    let dir = init_repo()?;
+    let root = dir.path();
+    std::fs::write(root.join("target.txt"), "valid regular file\n")?;
+    std::os::unix::fs::symlink("target.txt", root.join("alias.txt"))?;
+    commit_all_in(root, "Fixture checked symlink")?;
+    let commit = sync_head_commit_sha(root)?;
+    assert!(
+        matches!(GitClient::open(root)?.source_at(&commit), Err(GitError::SourceEntry { path }) if path == Path::new("alias.txt"))
+    );
+    Ok(())
+}
+
+#[test]
 fn repository_files_exclude_only_nontracked_ignored_paths() -> Result<()> {
     let dir = init_repo()?;
     std::fs::write(dir.path().join(".gitignore"), "ignored/\n")?;
