@@ -27,7 +27,7 @@ scrub_git_local_env
 
 if [[ -z "${LOOM_INSIDE+x}" ]]; then
   scrub_host_cargo_env
-  exec nix run --no-update-lock-file --no-write-lock-file "$top_level#loom" -- "$@"
+  exec nix run --no-update-lock-file --no-write-lock-file "$top_level#loom-launcher" -- "$@"
 fi
 
 if sccache_bin="$(command -v sccache)"; then

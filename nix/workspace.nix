@@ -371,34 +371,101 @@ let
     )
   );
 
-  bin = checked.artifact {
-    runtime = "native-process";
-    inherit evaluation;
-    resources = [ binarySource ];
-    build =
-      _:
-      craneLib.buildPackage (
-        commonArgs
-        // {
-          src = binarySource.path;
-          LOOM_PREK_BIN = "${hookRunner}/bin/prek";
-          LOOM_BUILTIN_SOURCE_ROOT = "${binarySource.path}/crates/loom-skill";
-          inherit cargoArtifacts;
-          doCheck = false;
-        }
-        // optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
-          # LLVM's private ThinLTO symbol suffixes can vary between identical
-          # builds. Remove only these compiler-internal symbol records, keeping
-          # loaded sections, dynamic exports and ordinary Rust symbols intact.
-          # Gate still rebuilds and compares the complete installed output.
-          postFixup = ''
-            for program in "$out"/bin/*; do
-              ${pkgs.binutils-unwrapped}/bin/strip --wildcard '--strip-symbol=*.llvm.*' "$program"
-            done
-          '';
-        }
+  verificationMember = "crates/loom-verification";
+  verificationManifest = builtins.fromTOML (
+    builtins.readFile (manifestPath "${verificationMember}/Cargo.toml")
+  );
+  # Keep the real workspace manifests and lock. The excluded package must be
+  # a standalone executable, not a library, build script, or new target with
+  # unresolved use by another member. When in doubt retain the full bundle.
+  canProjectRuntime =
+    verificationManifest.package.name == "loom-verification"
+    && !(verificationManifest ? lib)
+    && !(verificationManifest ? bin)
+    && !(verificationManifest.package ? build)
+    && !builtins.any
+      (relative: builtins.pathExists "${toString manifestSource}/${verificationMember}/${relative}")
+      [
+        "src/lib.rs"
+        "src/bin"
+        "build.rs"
+      ];
+  runtimeSource = checked.resource {
+    root = src;
+    name = "loom-runtime-source";
+    filter =
+      path: type:
+      let
+        relative = removePrefix "${toString manifestSource}/" path;
+      in
+      binarySource.includes path type
+      && (
+        type == "directory"
+        || !(hasPrefix "${verificationMember}/" relative)
+        || relative == "${verificationMember}/Cargo.toml"
       );
   };
+
+  release =
+    {
+      source,
+      projection ? false,
+    }:
+    checked.artifact {
+      runtime = "native-process";
+      inherit evaluation;
+      resources = [ source ];
+      build =
+        _:
+        craneLib.buildPackage (
+          commonArgs
+          // {
+            src = source.path;
+            LOOM_PREK_BIN = "${hookRunner}/bin/prek";
+            LOOM_BUILTIN_SOURCE_ROOT = "${source.path}/crates/loom-skill";
+            inherit cargoArtifacts;
+            doCheck = false;
+          }
+          // optionalAttrs projection {
+            pname = "loom-runtime";
+            cargoBuildExtraArgs = "--workspace";
+            postPatch = ''
+              # Keep the workspace's feature activation (including rustix/thread)
+              # without carrying the standalone verifier's implementation. This
+              # compiler-only target is deliberately never installed in the product.
+              mkdir -p ${verificationMember}/src
+              printf '%s\n' 'fn main() -> std::process::ExitCode { std::process::ExitCode::FAILURE }' \
+                > ${verificationMember}/src/main.rs
+            '';
+            postInstall = ''
+              rm -- "$out/bin/loom-verification"
+              test -x "$out/bin/loom"
+              test -x "$out/bin/loom-direct-runner"
+              test ! -e "$out/bin/loom-verification"
+            '';
+          }
+          // optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+            # LLVM's private ThinLTO symbol suffixes can vary between identical
+            # builds. Remove only these compiler-internal symbol records, keeping
+            # loaded sections, dynamic exports and ordinary Rust symbols intact.
+            # Gate still rebuilds and compares the complete installed output.
+            postFixup = ''
+              for program in "$out"/bin/*; do
+                ${pkgs.binutils-unwrapped}/bin/strip --wildcard '--strip-symbol=*.llvm.*' "$program"
+              done
+            '';
+          }
+        );
+    };
+  bin = release { source = binarySource; };
+  runtimeBin =
+    if canProjectRuntime then
+      release {
+        source = runtimeSource;
+        projection = true;
+      }
+    else
+      bin;
 
   verificationBuild = checked.cargo {
     inherit craneLib evaluation;
@@ -661,6 +728,7 @@ in
 {
   inherit
     bin
+    runtimeBin
     verificationBuild
     clippy
     clippyAllTargets

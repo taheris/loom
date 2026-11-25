@@ -109,11 +109,14 @@ extension, and top-level fields cannot override session state.
 
 Remove the three Loom compatibility patches and the local manifest-builder
 replacement. Keep unrelated host CLI pruning if desired. Direct profiles must
-still receive the Linux `loom-direct-runner` binary: use the unpruned Linux
-`workspace.bin` as `directAgentPkg`, or provide that runner separately. Replace
-custom staged-source Nextest construction with `workspace.mkCheck` (or its
-explicit `checkArgs`). If constructing launcher environments manually, pin a raw
-Wrix executable in caller context and export the native capability output
+still receive the Linux `loom-direct-runner` binary: use Linux
+`workspace.runtimeBin` (or the full `workspace.bin`) as `directAgentPkg`, or
+provide that runner separately. Loom’s host hook wrapper and built-in worker
+images use the runtime bundle. Rust worker profiles add `loom-verification`
+explicitly. The full workspace bundle remains available as `packages.loom`.
+Replace custom staged-source Nextest construction with `workspace.mkCheck` (or
+its explicit `checkArgs`). If constructing launcher environments manually, pin a
+raw Wrix executable in caller context and export the native capability output
 separately. Do not restore manifest executable fields or a legacy
 session-decoder fallback.
 

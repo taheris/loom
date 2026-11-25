@@ -27,6 +27,7 @@ rec {
       extraPackages ? [ ],
       nativeCargo ? null,
       verificationSdk ? null,
+      imageRustTools ? [ ],
       profiles ? { inherit (wrixLib.profiles) base rust python; },
       # Back-compat for callers that previously selected the single runtime via
       # `agent` and optionally overrode its package via `agentPkg`. The manifest
@@ -124,6 +125,7 @@ rec {
                   packages =
                     (imagePkgs.lib.optional (nativeCargo != null) nativeCargo)
                     ++ (imagePkgs.lib.optional (verificationSdk != null) verificationSdk)
+                    ++ imageRustTools
                     ++ profile.packages;
                 }
               );

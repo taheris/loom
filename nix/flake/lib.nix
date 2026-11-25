@@ -210,6 +210,7 @@ in
           ../../Cargo.lock
         ];
       };
+      imageRustTools = [ (import ../verification-tool.nix { pkgs = wrixLinuxPkgs; }) ];
       workerRustProfile = workerProfile (
         rustProfile
         // {
@@ -217,6 +218,7 @@ in
             nativeCargo
             imageVerificationSdk
           ]
+          ++ imageRustTools
           ++ rustProfile.packages;
         }
       );
@@ -271,7 +273,7 @@ in
         profile = workerRustProfile;
         agent = "pi";
         agentPkg = imagePiCodingAgent;
-        packages = [ imageLoom.bin ];
+        packages = [ imageLoom.runtimeBin ];
       };
 
       debugSandbox = wrixLib.mkSandbox {
@@ -279,7 +281,7 @@ in
         agent = "pi";
         agentPkg = imagePiCodingAgent;
         packages = [
-          imageLoom.bin
+          imageLoom.runtimeBin
           wrixLinuxPkgs.podman
         ];
       };
@@ -297,31 +299,41 @@ in
         profile = workerProfile smokeWrixLib.profiles.base;
         agent = "pi";
         agentPkg = smokeMockPi;
-        packages = [ imageLoom.bin ];
+        packages = [ imageLoom.runtimeBin ];
       };
 
       smokeProfileManifest = wrixLib.mkProfileImages { base = smokeSandbox.image; };
 
       profileManifest = loomLib.mkProfileManifest {
-        inherit pkgs wrixLib nativeCargo;
+        inherit
+          pkgs
+          wrixLib
+          nativeCargo
+          imageRustTools
+          ;
         verificationSdk = imageVerificationSdk;
         imagePkgs = wrixLinuxPkgs;
         profiles = {
           inherit (wrixLib.profiles) base python;
           rust = rustProfile;
         };
-        loomBin = imageLoom.bin;
+        loomBin = imageLoom.runtimeBin;
         agentPkg = imagePiCodingAgent;
       };
 
       profileCatalogue = loomLib.mkProfileCatalogue {
-        inherit pkgs wrixLib nativeCargo;
+        inherit
+          pkgs
+          wrixLib
+          nativeCargo
+          imageRustTools
+          ;
         imagePkgs = wrixLinuxPkgs;
         profiles = {
           inherit (wrixLib.profiles) base python;
           rust = rustProfile;
         };
-        loomBin = imageLoom.bin;
+        loomBin = imageLoom.runtimeBin;
         agentPkg = imagePiCodingAgent;
       };
 

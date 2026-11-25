@@ -136,7 +136,7 @@ exit "${BOOTSTRAP_NIX_STATUS:-0}"
                 "--no-update-lock-file".to_owned(),
                 "--no-write-lock-file".to_owned(),
                 format!(
-                    "{}#loom",
+                    "{}#loom-launcher",
                     fixture.source.canonicalize().expect("source").display()
                 ),
                 "--".to_owned(),

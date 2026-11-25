@@ -94,6 +94,7 @@ _:
         cargo-patches = nativePackage loom.cargoConfig;
         default = loom.bin;
         loom = loom.bin;
+        loom-launcher = loom.runtimeBin;
         verification-tool = import ../verification-tool.nix { inherit pkgs; };
         verification-build = loom.verificationBuild;
         verification-agent-landing = config.checks.agent-landing;
