@@ -117,6 +117,7 @@ esac"#,
         assert_eq!(report["store_NAR_GiB"], 3.0);
         assert_eq!(report["largest_store_paths"][0]["path"], LIVE);
         assert_eq!(report["largest_store_paths"][0]["NAR_GiB"], 2.0);
+        assert_eq!(report["largest_store_paths"][1]["path"], DEAD);
         assert!(report.get("dead_paths").is_none());
         assert!(report["sizes"].as_str().unwrap().contains("NOT physical"));
         let calls = fixture.calls();
