@@ -1936,7 +1936,22 @@ fn dispatch_checked(
             "deterministic verification cannot execute a judge target; use `loom gate judge --target <target>` for diagnostic inspection"
         );
     }
-    let (selected, whole_selection) = admission.select(args, tiers)?;
+    let (mut selected, mut whole_selection) = admission.select(args, tiers)?;
+    if root_flake_checks && let Some(selection) = &mut whole_selection {
+        selection.admit_cli_partition()?;
+        let unchanged = selection
+            .decisions()
+            .iter()
+            .filter(|decision| {
+                matches!(
+                    decision.reason(),
+                    loom_gate::provider::plan::selection::Reason::UnchangedPublicationTestPartition
+                )
+            })
+            .map(|decision| decision.unit().target())
+            .collect::<std::collections::BTreeSet<_>>();
+        selected.retain(|selection| !unchanged.contains(selection.unit.target()));
+    }
     let mut flake_checks = if root_flake_checks {
         Some(
             whole_selection
@@ -2162,6 +2177,9 @@ fn dispatch_checked(
     }
     // Historical alias facts cannot authorize success after reporting changes the context.
     admission.require_current()?;
+    if let Some(selection) = &whole_selection {
+        selection.require_partition_current()?;
+    }
     if combined == 0
         && let Some(checks) = flake_checks
     {

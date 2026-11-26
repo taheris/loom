@@ -60,6 +60,36 @@ pub struct Report {
 }
 
 impl Report {
+    pub(crate) fn union(&self, other: &Self) -> Result<Self, Error> {
+        let mut results = self.results.clone();
+        for (name, verdict) in &other.results {
+            if results.insert(name.clone(), verdict.clone()).is_some() {
+                return Err(Error::Report {
+                    detail: format!("test partitions overlap on {name}"),
+                });
+            }
+        }
+        let outcome = match (self.aggregate.outcome(), other.aggregate.outcome()) {
+            (Verdict::Fail, _) | (_, Verdict::Fail) => Verdict::Fail,
+            (Verdict::Pass, Verdict::Pass) => Verdict::Pass,
+            _ => Verdict::Skipped,
+        };
+        let mut aggregate = VerifierVerdict::from_outcome(
+            outcome,
+            format!("{}\n{}", self.aggregate.evidence, other.aggregate.evidence),
+        );
+        aggregate.producer_error = self
+            .aggregate
+            .producer_error
+            .clone()
+            .or_else(|| other.aggregate.producer_error.clone());
+        Ok(Self {
+            aggregate,
+            results,
+            producer_code: self.producer_code.max(other.producer_code),
+        })
+    }
+
     pub(crate) const fn members(&self) -> &BTreeMap<String, VerifierVerdict> {
         &self.results
     }

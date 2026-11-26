@@ -54,7 +54,7 @@ let
 
   # Keep template assets, built-in skills, embedded shell scripts, and snapshots
   # alongside the Cargo workspace — crane's default filter would exclude them.
-  srcFilter =
+  workspaceFilter =
     path: type:
     (craneLib.filterCargoSources path type)
     || (hasInfix "/loom-templates/templates/" path)
@@ -65,11 +65,14 @@ let
     || (hasSuffix ".jsonl" path)
     || (hasSuffix ".snap" path);
 
+  srcFilter =
+    path: type:
+    workspaceFilter path type && toString path != "${toString manifestSource}/${cliTestInput}";
   checked = import ./verification.nix;
   workspaceSource = checked.resource {
     root = src;
     name = "loom-cargo-source";
-    filter = srcFilter;
+    filter = workspaceFilter;
   };
   cleanedSrc = workspaceSource.path;
   # The release binary embeds these external scripts, not the repository's
@@ -99,40 +102,47 @@ let
         ]
       );
   };
-  compilerSource = checked.resource {
-    root = src;
-    name = "loom-test-compiler-source";
-    filter =
-      path: type:
-      let
-        original = if src._isLibCleanSourceWith or false then src.origSrc else src;
-        relative = removePrefix "${toString original}/" path;
-      in
-      type == "directory"
-      || hasPrefix "crates/" relative
-      || builtins.elem relative [
-        "Cargo.toml"
-        "Cargo.lock"
-        "clippy.toml"
-        "rust-toolchain.toml"
-        ".cargo/config.toml"
-        ".config/nextest.toml"
-        ".pre-commit-config.yaml"
-        "nix/verification.nix"
-        "nix/report-supervisor.sh"
-        "nix/private-fixture-tests.sh"
-        "nix/retain-fixture-inputs.sh"
-        "nix/test-scheduling.sh"
-        "bin/pre-push-checks"
-        "scripts/worker-native-preflight.sh"
-        "tests/fixtures/planning_prompt_interview_modes.md"
-        "tests/fixtures/verifier/sandbox-results.sh"
-        "tests/fixtures/quint/campaign.json"
-        "tests/fixtures/quint/campaign-inputs.json"
-        "tests/smoke/spec.md"
-        "tests/mock-pi/pi.sh"
-      ];
-  };
+  compilerSource = compilerSourceFor true;
+  cliTestInput = "crates/loom-verification/tests/cli.rs";
+  compilerSourceFor =
+    includeCli:
+    checked.resource {
+      root = src;
+      name = "loom-test-compiler-source";
+      filter =
+        path: type:
+        let
+          original = if src._isLibCleanSourceWith or false then src.origSrc else src;
+          relative = removePrefix "${toString original}/" path;
+        in
+        (includeCli || relative != cliTestInput)
+        && (
+          type == "directory"
+          || hasPrefix "crates/" relative
+          || builtins.elem relative [
+            "Cargo.toml"
+            "Cargo.lock"
+            "clippy.toml"
+            "rust-toolchain.toml"
+            ".cargo/config.toml"
+            ".config/nextest.toml"
+            ".pre-commit-config.yaml"
+            "nix/verification.nix"
+            "nix/report-supervisor.sh"
+            "nix/private-fixture-tests.sh"
+            "nix/retain-fixture-inputs.sh"
+            "nix/test-scheduling.sh"
+            "bin/pre-push-checks"
+            "scripts/worker-native-preflight.sh"
+            "tests/fixtures/planning_prompt_interview_modes.md"
+            "tests/fixtures/verifier/sandbox-results.sh"
+            "tests/fixtures/quint/campaign.json"
+            "tests/fixtures/quint/campaign-inputs.json"
+            "tests/smoke/spec.md"
+            "tests/mock-pi/pi.sh"
+          ]
+        );
+    };
   evaluation = [
     (checked.resource {
       root = src;
@@ -357,19 +367,27 @@ let
   testResources = [ workspaceSource ] ++ extraResources;
   compilerResources = [ compilerSource ] ++ extraResources;
 
-  stagedSrc = pkgs.runCommand "loom-src-with-extras" { } (
-    ''
-      cp -r ${cleanedSrc} $out
-      chmod -R u+w $out
-    ''
-    + concatStringsSep "\n" (
-      mapAttrsToList (rel: path: ''
-        mkdir -p "$(dirname "$out/${rel}")"
-        rm -rf "$out/${rel}"
-        cp -r ${path} "$out/${rel}"
-      '') extraSrcs
-    )
-  );
+  stagedSrc = stageSource cleanedSrc;
+  runtimeWithoutCli = checked.resource {
+    root = src;
+    name = "loom-cargo-source";
+    filter = srcFilter;
+  };
+  stageSource =
+    base:
+    pkgs.runCommand "loom-src-with-extras" { } (
+      ''
+        cp -r ${base} $out
+        chmod -R u+w $out
+      ''
+      + concatStringsSep "\n" (
+        mapAttrsToList (rel: path: ''
+          mkdir -p "$(dirname "$out/${rel}")"
+          rm -rf "$out/${rel}"
+          cp -r ${path} "$out/${rel}"
+        '') extraSrcs
+      )
+    );
 
   verificationMember = "crates/loom-verification";
   verificationManifest = builtins.fromTOML (
@@ -416,7 +434,7 @@ let
       # Crane discovers targets before producing dependency-only sources. Retain
       # that discovery input when the native source audit reconstructs this
       # recipe, even though its executable uses the narrower release source.
-      evaluation = evaluation ++ optional projection workspaceSource;
+      evaluation = evaluation ++ [ runtimeWithoutCli ];
       resources = [ source ];
       build =
         _:
@@ -491,8 +509,9 @@ let
     inherit craneLib evaluation;
     operation = "lint";
     runtime = "native-process";
-    resources = [ workspaceSource ];
+    resources = [ runtimeWithoutCli ];
     args = commonArgs // {
+      src = runtimeWithoutCli.path;
       LOOM_PREK_BIN = "${hookRunner}/bin/prek";
       LOOM_ISSUES_BD_BIN = "${pkgs.beads}/bin/bd";
       inherit cargoArtifacts;
@@ -520,7 +539,7 @@ let
   queryPackage = (craneLib.overrideToolchain queryCompiler).buildPackage {
     pname = "native-probe";
     version = "0.1.0";
-    src = cleanedSrc;
+    src = runtimeWithoutCli.path;
     cargoArtifacts = null;
     cargoVendorDir = commonArgs.cargoVendorDir;
   };
@@ -536,7 +555,10 @@ let
       pkgs.openssh
       pkgs.sccache
       (getBin pkgs.nix)
-      (import ./verification-tool.nix { inherit pkgs; })
+      (import ./verification-tool.nix {
+        inherit pkgs;
+        buildTestBinaries = false;
+      })
       (getBin pkgs.bash)
       hookRunner
       # Integration tests consume the catalogue's actual Cargo-built CLI, not
@@ -645,6 +667,31 @@ let
       build = _: craneLib.cargoNextest (checkArgs // overrides);
     };
 
+  testBuildInputs =
+    commonArgs.nativeBuildInputs
+    ++ [
+      pkgs.cargo-nextest
+      pkgs.jq
+    ]
+    ++ testCompilerHooks;
+  testArgsFor =
+    includeCli:
+    let
+      runtimeSource = if includeCli then stagedSrc else stageSource runtimeWithoutCli.path;
+    in
+    checkArgs
+    // {
+      LOOM_TEST_SOURCE_ROOT = runtimeSource;
+      nativeBuildInputs = testBuildInputs;
+      LOOM_TEST_RUNTIME_PATH = lib.makeBinPath testInputs;
+      LOOM_TEST_NIX_REGISTRATION =
+        if pkgs.stdenv.hostPlatform.isDarwin then "" else "${testRegistration}/registration";
+      LOOM_TEST_NIX_INPUTS = if pkgs.stdenv.hostPlatform.isDarwin then [ ] else nativeTestSources;
+      LOOM_NATIVE_RUST_FIXTURE = nativeRustFixture;
+      LOOM_NATIVE_SMOKE_FIXTURE = nativeSmokeFixture;
+      GIT_CONFIG_GLOBAL = "${runtimeSource}/tests/fixtures/git/test-gitconfig";
+      SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+    };
   nextestFor =
     package:
     checked.cargo {
@@ -652,47 +699,38 @@ let
       operation = "test";
       runtime = if pkgs.stdenv.hostPlatform.isDarwin then "native-store" else "native-process";
       resources = compilerResources;
-      compilationInputs =
-        commonArgs.nativeBuildInputs
-        ++ [
-          pkgs.cargo-nextest
-          pkgs.jq
-        ]
-        ++ testCompilerHooks;
-      args = checkArgs // {
+      compilationInputs = testBuildInputs;
+      args = testArgsFor true // {
         src = compilerSource.path;
-        LOOM_TEST_SOURCE_ROOT = stagedSrc;
         CARGO_PROFILE = "dev";
         cargoArtifacts = testCargoArtifacts;
-        nativeBuildInputs =
-          commonArgs.nativeBuildInputs
-          ++ [
-            pkgs.cargo-nextest
-            pkgs.jq
-          ]
-          ++ testCompilerHooks;
-        LOOM_TEST_RUNTIME_PATH = lib.makeBinPath testInputs;
-        LOOM_TEST_NIX_REGISTRATION =
-          if pkgs.stdenv.hostPlatform.isDarwin then "" else "${testRegistration}/registration";
-        LOOM_TEST_NIX_INPUTS = if pkgs.stdenv.hostPlatform.isDarwin then [ ] else nativeTestSources;
-        LOOM_NATIVE_RUST_FIXTURE = nativeRustFixture;
-        LOOM_NATIVE_SMOKE_FIXTURE = nativeSmokeFixture;
-        GIT_CONFIG_GLOBAL = "${stagedSrc}/tests/fixtures/git/test-gitconfig";
-        SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
       };
     };
   # The checked walk integration binary constructs canonical Nix graphs; the
   # complete native-store producer owns it, not this confined companion.
+  useCliComplement = pkgs.stdenv.hostPlatform.isDarwin;
+  confinedCompiler = if useCliComplement then cliComplement.compilation else testCompilation;
+  confinedSource = if useCliComplement then stageSource runtimeWithoutCli.path else stagedSrc;
   confinedTests = checked.check {
     inherit evaluation;
     runtime = "native-process";
-    resources = testResources;
+    resources =
+      if useCliComplement then
+        [
+          runtimeWithoutCli
+          (compilerSourceFor false)
+        ]
+        ++ extraResources
+      else
+        testResources;
     build =
       _:
       craneLib.mkCargoDerivation (
         checkArgs
         // {
           pname = "loom-confined-runtime";
+          src = confinedSource;
+          GIT_CONFIG_GLOBAL = "${confinedSource}/tests/fixtures/git/test-gitconfig";
           cargoArtifacts = null;
           nativeBuildInputs = checkArgs.nativeBuildInputs ++ testCompilerHooks;
           LOOM_TEST_RUNTIME_PATH = lib.makeBinPath testInputs;
@@ -709,9 +747,9 @@ let
             git add --all
             git -c user.name='Loom native suite' -c user.email='native@example.invalid' -c commit.gpgsign=false commit -q -m 'Capture native suite source'
             bash ${./private-fixture-tests.sh} --build-campaign cargo-nextest nextest run \
-              --cargo-metadata ${testCompilation}/cargo.json \
-              --binaries-metadata ${testCompilation}/binaries.json \
-              --workspace-remap "$PWD" --target-dir-remap ${testCompilation}/target \
+              --cargo-metadata ${confinedCompiler}/cargo.json \
+              --binaries-metadata ${confinedCompiler}/binaries.json \
+              --workspace-remap "$PWD" --target-dir-remap ${confinedCompiler}/target \
               --ignore-default-filter --no-fail-fast --no-tests=fail --message-format libtest-json-plus \
               -E 'package(=loom-agent) | package(=loom-events) | package(=loom-issues) | package(=loom-protocol) | package(=loom-render) | package(=loom-shared) | package(=loom-skill) | package(=loom-templates) | package(=loom-tune) | (package(=loom-walk) & !binary(=checked)) | test(test_support::native::) | test(verifier_deadline_terminates_and_reaps_the_running_process)'
           '';
@@ -720,6 +758,29 @@ let
   };
   nextest = nextestFor null;
   scopedNextest = nextestFor;
+  # This closed complement excludes the verifier CLI integration input from
+  # both compilation and staged runtime. The full suite remains the fallback.
+  cliComplement =
+    let
+      source = compilerSourceFor false;
+    in
+    assert pkgs.stdenv.hostPlatform.isDarwin;
+    checked.cargo {
+      inherit craneLib evaluation;
+      operation = "test";
+      runtime = "native-store";
+      resources = [
+        source
+        runtimeWithoutCli
+      ]
+      ++ extraResources;
+      compilationInputs = testBuildInputs;
+      args = testArgsFor false // {
+        src = source.path;
+        CARGO_PROFILE = "dev";
+        cargoArtifacts = testCargoArtifacts;
+      };
+    };
   testCompilation = nextest.compilation;
   nativeRustFixture = import ./tests/native-rust-fixture.nix {
     inherit pkgs crane;
@@ -738,6 +799,7 @@ in
     confinedTests
     nextest
     scopedNextest
+    cliComplement
     cargoArtifacts
     testCargoArtifacts
     testCompilerHooks
@@ -749,6 +811,7 @@ in
     craneLib
     stagedSrc
     workspaceSource
+    runtimeWithoutCli
     compilerSource
     compilerResources
     testResources

@@ -1,4 +1,7 @@
-{ pkgs }:
+{
+  pkgs,
+  buildTestBinaries ? true,
+}:
 let
   inherit (pkgs.lib) hasPrefix removePrefix;
   checked = import ./verification.nix;
@@ -28,7 +31,10 @@ let
           "Cargo.lock"
           "clippy.toml"
         ]
-        || hasPrefix "crates/loom-verification/" relative;
+        || (
+          hasPrefix "crates/loom-verification/" relative
+          && (buildTestBinaries || relative != "crates/loom-verification/tests/cli.rs")
+        );
   };
 in
 assert pkgs.lib.all (
@@ -68,12 +74,14 @@ checked.artifact {
         export CARGO_HOME
         CARGO_HOME=$(mktemp -d)
       '';
-      postBuild = ''
+      postBuild = pkgs.lib.optionalString buildTestBinaries ''
         cargo test --offline --locked --release --no-run -p loom-verification \
           --target ${pkgs.stdenv.hostPlatform.rust.rustcTarget} --message-format=json > verification-test-artifacts.json
       '';
       postInstall = ''
         wrapProgram "$out/bin/loom-verification" --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.coreutils ]}
+      ''
+      + pkgs.lib.optionalString buildTestBinaries ''
         mkdir -p "$out/libexec"
         jq -er 'select(.reason == "compiler-artifact" and .profile.test and .target.name == "loom-verification") | .executable | select(. != null)' \
           verification-test-artifacts.json > verification-test-binaries

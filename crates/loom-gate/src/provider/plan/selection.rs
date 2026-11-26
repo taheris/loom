@@ -30,6 +30,7 @@ pub enum Reason {
     ExactTarget,
     OwnerLocal,
     RequiredPublicationSuite,
+    UnchangedPublicationTestPartition,
     Affected {
         inputs: Vec<Input>,
     },
@@ -89,6 +90,7 @@ pub struct Selection<'a> {
     scope: Resolved,
     stage: Stage,
     decisions: Vec<Decision<'a>>,
+    cli_partition: Option<(&'a Unit, super::super::nix::cli_partition::Partition)>,
 }
 
 /// A single observed invocation may discharge multiple canonical acceptance owners.
@@ -286,6 +288,7 @@ impl Plan {
             scope: scope.clone(),
             stage,
             decisions,
+            cli_partition: None,
         })
     }
 }
@@ -392,6 +395,56 @@ impl<'a> Selection<'a> {
         Ok(())
     }
 
+    /// Restrict only the canonical test execution on a closed verifier CLI edit.
+    /// A missing proof retains the ordinary full suite and all other checks.
+    ///
+    /// # Errors
+    /// Rejects stale plan context before or after the admission attempt.
+    pub fn admit_cli_partition(&mut self) -> Result<(), Error> {
+        if self.stage != Stage::Publication || self.scope.diff().is_none() {
+            return Ok(());
+        }
+        self.require_current()?;
+        let canonical = format!(
+            "nix build .#packages.{}.loom-tests",
+            crate::runner::result::current_platform()
+        );
+        let Some(root) = self.decisions.iter().find_map(|decision| {
+            (decision.reason == Reason::RequiredPublicationSuite
+                && decision.unit.target().as_str() == canonical)
+                .then_some(decision.unit)
+        }) else {
+            return Ok(());
+        };
+        let Some(graph) = root.nix_graph() else {
+            return Ok(());
+        };
+        let partition = super::super::nix::cli_partition::Partition::admit(
+            self.plan.snapshot(),
+            &self.scope,
+            graph,
+        );
+        self.require_current()?;
+        let partition = match partition {
+            Ok(partition) => partition,
+            Err(error) => {
+                tracing::debug!(%error, "no closed CLI test partition; keep the complete native suite");
+                return Ok(());
+            }
+        };
+        for decision in &mut self.decisions {
+            if decision.reason.selected()
+                && same_execution(root, decision.unit)
+                && let Execution::Report { target, .. } = &decision.unit.definition.execution
+                && !partition.contains(target)
+            {
+                decision.reason = Reason::UnchangedPublicationTestPartition;
+            }
+        }
+        self.cli_partition = Some((root, partition));
+        Ok(())
+    }
+
     /// Assign every native root-flake build on this exact publication plan.
     /// The independently required first hook still checks flake structure.
     ///
@@ -414,6 +467,17 @@ impl<'a> Selection<'a> {
 
     pub fn decisions(&self) -> &[Decision<'a>] {
         &self.decisions
+    }
+
+    /// Revalidate a narrowed suite's exact endpoints before success.
+    ///
+    /// # Errors
+    /// A stale checkout cannot discharge the narrowed suite.
+    pub fn require_partition_current(&self) -> Result<(), Error> {
+        if let Some((_, partition)) = &self.cli_partition {
+            partition.require_current()?;
+        }
+        Ok(())
     }
 
     /// Selection never narrows the resources a selected cross-file check can inspect.
@@ -564,7 +628,16 @@ impl Observations<'_, '_> {
         use loom_driver::clock::{Clock as _, SystemClock};
         let clock = SystemClock::new();
         let start = clock.now();
-        let observed = decision.unit.observe()?;
+        let observed = if let Some((root, partition)) = &self.selection.cli_partition
+            && same_execution(root, decision.unit)
+            && let Some(graph) = decision.unit.nix_graph()
+        {
+            decision
+                .unit
+                .project_observed(&partition.run(graph, decision.unit.target().clone())?)?
+        } else {
+            decision.unit.observe()?
+        };
         let duration = clock.now().saturating_duration_since(start);
         let mut aliases = BTreeMap::new();
         for alias in self.selection.decisions.iter().filter(|alias| {

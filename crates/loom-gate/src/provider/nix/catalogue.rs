@@ -152,6 +152,10 @@ impl Catalogue<'_> {
         })
     }
 
+    pub(super) fn compiled_directory(&self) -> Result<&std::path::Path, Error> {
+        self.tests_path.parent().ok_or(Error::Result)
+    }
+
     pub const fn packages(&self) -> &PackageGraph {
         &self.packages
     }

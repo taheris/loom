@@ -25,6 +25,7 @@ native-container-tests = []
 # depends on this crate; further consumers should not be added without
 # a spec change.
 [dependencies]
+anyhow = { workspace = true }
 base64 = { workspace = true }
 blake3 = { workspace = true }
 displaydoc = { workspace = true }
@@ -55,7 +56,6 @@ walkdir = { workspace = true }
 rustix = { workspace = true }
 
 [dev-dependencies]
-anyhow = { workspace = true }
 itf = { workspace = true }
 quint-connect = { workspace = true }
 loom-driver = { workspace = true, features = ["test-support"] }

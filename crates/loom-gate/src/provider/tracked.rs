@@ -114,6 +114,14 @@ impl Observed {
         Self::from_report(target, verdict, std::sync::Arc::new(report), observations)
     }
 
+    pub(super) fn union_reports(mut self, other: &Self) -> Result<Self, Error> {
+        let left = self.report.as_ref().ok_or(super::nix::Error::Result)?;
+        let right = other.report.as_ref().ok_or(super::nix::Error::Result)?;
+        let report = left.union(right)?;
+        self.observations.extend(other.observations.iter().cloned());
+        Ok(Self::reported(self.target, report, self.observations))
+    }
+
     fn from_report(
         target: Name,
         verdict: crate::dispatch::VerifierVerdict,

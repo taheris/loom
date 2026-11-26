@@ -26,11 +26,15 @@
         };
       evaluation = import ../native-context.nix;
       verificationTool = import ../verification-tool.nix { inherit pkgs; };
-      toolCheck =
-        name: resources: inputs: script:
-        scriptCheck name (resources ++ verificationTool.loom.sources) (
-          inputs ++ [ verificationTool ]
-        ) script;
+      verificationProgram = import ../verification-tool.nix {
+        inherit pkgs;
+        buildTestBinaries = false;
+      };
+      toolCheckWith =
+        tool: name: resources: inputs: script:
+        scriptCheck name (resources ++ tool.loom.sources) (inputs ++ [ tool ]) script;
+      toolCheck = toolCheckWith verificationProgram;
+      verifierTests = toolCheckWith verificationTool;
       check =
         resources: build:
         checked.check {
@@ -457,7 +461,7 @@
                 pkgs.writeText "prek-pre-unpack.sh" (import ../prek.nix { inherit pkgs; }).preUnpack
               }
             '');
-        acceptance-storage-report = toolCheck "acceptance-storage-report" [ ] [ pkgs.coreutils ] (_: ''
+        acceptance-storage-report = verifierTests "acceptance-storage-report" [ ] [ pkgs.coreutils ] (_: ''
           ${verificationTool}/libexec/loom-verification-tests storage::tests
           LOOM_VERIFICATION_BIN=${verificationTool}/bin/loom-verification \
             ${verificationTool}/libexec/loom-verification-cli-tests cli::storage_
@@ -495,7 +499,7 @@
               ''}
             '');
         verification-preparation =
-          toolCheck "verification-preparation"
+          verifierTests "verification-preparation"
             [
               (resource "nix/private-fixture-tests.sh")
               (resource "nix/retain-fixture-inputs.sh")

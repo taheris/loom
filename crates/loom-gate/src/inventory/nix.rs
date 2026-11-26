@@ -16,6 +16,7 @@ pub enum Kind {
     Package,
     App,
     Feedback,
+    Legacy,
 }
 
 impl Kind {
@@ -25,6 +26,7 @@ impl Kind {
             Self::Package => "packages",
             Self::App => "apps",
             Self::Feedback => "loomFeedback",
+            Self::Legacy => "legacyPackages",
         }
     }
 
@@ -34,6 +36,7 @@ impl Kind {
             Self::Package => "package",
             Self::App => "app",
             Self::Feedback => "feedback",
+            Self::Legacy => "legacy",
         }
     }
 }
@@ -94,6 +97,8 @@ struct Outputs {
     constructed_apps: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     feedback: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    legacy: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -330,7 +335,7 @@ fn discover_targets(
                 r#"namespace:
                   let
                     selector = {selector};
-                    qualified = builtins.match "(checks|packages|loomFeedback)[.]([^.]+)[.](.+)" selector;
+                    qualified = builtins.match "(checks|packages|loomFeedback|legacyPackages)[.]([^.]+)[.](.+)" selector;
                     candidate = system: attribute:
                       let outputs = (flake.${{namespace}} or {{}}).${{system}} or {{}};
                       in if (if namespace == "loomFeedback" then builtins.isFunction outputs else builtins.hasAttr attribute outputs)
@@ -383,12 +388,17 @@ fn discover_targets(
             checked_probe.to_owned()
         };
         let expression = format!(
-            "let flake = builtins.getFlake {locked}; names = {select}; constructed = namespace: builtins.mapAttrs (system: names: if builtins.elem system (builtins.fromJSON {platform_names}) then builtins.filter (name: {probe}) names else []) (names namespace); in {{ checks = names \"checks\"; packages = names \"packages\"; apps = names \"apps\"; system = {system}; constructed_checks = constructed \"checks\"; constructed_packages = constructed \"packages\"; constructed_apps = constructed \"apps\"; feedback = {} ; }}",
+            "let flake = builtins.getFlake {locked}; names = {select}; constructed = namespace: builtins.mapAttrs (system: names: if builtins.elem system (builtins.fromJSON {platform_names}) then builtins.filter (name: {probe}) names else []) (names namespace); in {{ checks = names \"checks\"; packages = names \"packages\"; apps = names \"apps\"; system = {system}; constructed_checks = constructed \"checks\"; constructed_packages = constructed \"packages\"; constructed_apps = constructed \"apps\"; feedback = {}; legacy = {}; }}",
             if exact.is_some() {
                 "names \"loomFeedback\""
             } else {
                 "{}"
-            }
+            },
+            if exact.is_some() {
+                "names \"legacyPackages\""
+            } else {
+                "{}"
+            },
         );
         let outputs: Outputs = serde_json::from_slice(&command(
             &project,
@@ -415,6 +425,7 @@ fn discover_targets(
             (Kind::Package, outputs.packages),
             (Kind::App, outputs.apps),
             (Kind::Feedback, outputs.feedback.clone()),
+            (Kind::Legacy, outputs.legacy.clone()),
         ] {
             for (system, entries) in systems {
                 for attribute in entries {
@@ -428,6 +439,7 @@ fn discover_targets(
                         Kind::Package => outputs.constructed_packages.get(&system),
                         Kind::App => outputs.constructed_apps.get(&system),
                         Kind::Feedback => outputs.feedback.get(&system),
+                        Kind::Legacy => outputs.legacy.get(&system),
                     };
                     let current = outputs
                         .system

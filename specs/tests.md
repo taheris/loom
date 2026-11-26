@@ -556,19 +556,34 @@ tiers without repetition: standard flake structure validation and both Clippy
 hooks are followed by native input preparation, then the exact pushed-range Gate
 plan. Gate owns the native root-flake builds, retaining any raw build that its
 fresh checked executions do not discharge. The plan runs the complete ordinary
-native Cargo reporter as a publication baseline, regardless of affected Rust
-criterion selection. Named cases share only the current checked report; the
-standalone `nix run .#test-required` still runs the suite when invoked on its
-own. Keep independent confined checks and affected host-only obligations,
-executing them only when admissible evidence cannot discharge them. Explicit
-full-tree verification remains complete, including host obligations; it is not
-the unconditional routine test-app policy. Grep-tier `[check]` annotations
-across specs use paths relative to the staged-source root (which mirrors the
-`loom/` workspace flattened to `$out/` plus host files like
-`lib/sandbox/linux/entrypoint.sh` mirrored under their host paths), so the
-explicit tier commands run at tree scope with no `--spec` filter. `loom-smoke`
-is exposed separately by `nix run .#smoke-container` on Linux; ordinary
-`nix run .#smoke` exercises portable consumer seams.
+native Cargo suite as a publication baseline, regardless of affected Rust
+criterion selection, except for the closed CLI test partition below. Named cases
+share only the current checked report; the standalone `nix run .#test-required`
+still runs the suite when invoked on its own. Keep independent confined checks
+and affected host-only obligations, executing them only when admissible evidence
+cannot discharge them. Explicit full-tree verification remains complete,
+including host obligations; it is not the unconditional routine test-app policy.
+Grep-tier `[check]` annotations across specs use paths relative to the
+staged-source root (which mirrors the `loom/` workspace flattened to `$out/`
+plus host files like `lib/sandbox/linux/entrypoint.sh` mirrored under their host
+paths), so the explicit tier commands run at tree scope with no `--spec` filter.
+`loom-smoke` is exposed separately by `nix run .#smoke-container` on Linux;
+ordinary `nix run .#smoke` exercises portable consumer seams.
+
+For exact host publication using the Darwin canonical store, the verifier CLI
+partition owns the `loom-verification` CLI integration binary and the real
+canonical-store system case that builds that binary indirectly. The complement
+compiles and runs from a checked source without the CLI test file. A complete
+partitioned suite runs both sets fresh and reconciles their disjoint union to
+the full compiler-produced case inventory, including ignored and filtered
+members. Only a byte edit to the existing CLI test file, with identical
+complement compiler and runtime recipes at both literal pushed endpoints and
+unchanged case membership, may omit the complement as unaffected. No previous
+verdict, package name, or caller-provided filter supplies that proof. Changes to
+configuration, shared verifier code, paths or modes, or missing proof retain
+complete testing. The outside system case, confined checks, live host checks and
+release obligations retain independent coverage. Standalone and full-tree
+diagnostics retain the unfiltered canonical suite.
 
 ## Success Criteria
 

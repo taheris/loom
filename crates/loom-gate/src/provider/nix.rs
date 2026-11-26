@@ -17,6 +17,7 @@ use crate::inventory::{Duty, Inventory, Name};
 
 pub mod applicability;
 pub mod catalogue;
+pub(crate) mod cli_partition;
 mod current;
 pub mod flake_checks;
 mod frontier;
@@ -132,7 +133,14 @@ impl CargoOperation {
                     "git init -q\n",
                     "git add --all\n",
                     "git -c user.name='Loom native suite' -c user.email='native@example.invalid' -c commit.gpgsign=false commit -q -m 'Capture native suite source'\n",
-                    "bash \"$LOOM_PRIVATE_FIXTURE_RUNNER\" --build-campaign bash \"$LOOM_REPORT_SUPERVISOR\" cargo nextest run --cargo-metadata \"$cargoArtifacts/cargo.json\" --binaries-metadata \"$cargoArtifacts/binaries.json\" --workspace-remap \"$runtime\" --target-dir-remap \"$cargoArtifacts/target\" --ignore-default-filter --no-fail-fast --message-format libtest-json-plus\n",
+                    "selection=()\n",
+                    "slice='(package(=loom-verification) & binary(=cli)) | (package(=loom) & binary(=integration) & test(=native_system::native_system_scenarios_execute_actual_programs_in_canonical_store))'\n",
+                    "case \"${LOOM_PUBLICATION_CLI_SLICE:-}\" in\n",
+                    "  selected) selection=(--no-tests=fail -E \"$slice\");;\n",
+                    "  complement) selection=(--no-tests=fail -E \"!($slice)\");;\n",
+                    "esac\n",
+                    "unset LOOM_PUBLICATION_CLI_SLICE\n",
+                    "bash \"$LOOM_PRIVATE_FIXTURE_RUNNER\" --build-campaign bash \"$LOOM_REPORT_SUPERVISOR\" cargo nextest run --cargo-metadata \"$cargoArtifacts/cargo.json\" --binaries-metadata \"$cargoArtifacts/binaries.json\" --workspace-remap \"$runtime\" --target-dir-remap \"$cargoArtifacts/target\" --ignore-default-filter --no-fail-fast --message-format libtest-json-plus \"${selection[@]}\"\n",
                 )
             }
             Self::Catalogue => concat!(
@@ -1925,7 +1933,7 @@ impl Graph {
             return self.run_managed(target, contract.ok_or(Error::Result)?);
         }
         if self.runtime == Runtime::NativeStore && requested == &self.root {
-            return self.run_store(target, contract.ok_or(Error::Result)?);
+            return self.run_store(target, contract.ok_or(Error::Result)?, None);
         }
         let fresh = if requested == &self.root && contract.is_some() {
             Some(self.fresh_report()?)

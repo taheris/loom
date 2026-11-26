@@ -24,13 +24,17 @@ _:
           manifest = profileManifest;
         }
       );
+      verificationProgram = import ../verification-tool.nix {
+        inherit pkgs;
+        buildTestBinaries = false;
+      };
       checkedPreparation =
         build:
         (import ../verification.nix).artifact {
           runtime = "native-process";
-          resources = [ ];
+          resources = verificationProgram.loom.sources;
           # Cargo source selection determines SDK identity, not shipped runtime code.
-          evaluation = (import ../native-context.nix) ++ [ loom.workspaceSource ];
+          evaluation = (import ../native-context.nix) ++ [ loom.runtimeWithoutCli ];
           inherit build;
         };
       verificationSdk = pkgs.closureInfo {
@@ -47,10 +51,10 @@ _:
       };
       verificationPreparation = (import ../verification.nix).artifact {
         runtime = "native-process";
-        resources = [ ];
+        resources = verificationProgram.loom.sources;
         # The SDK identity is computed from Cargo sources during evaluation;
         # building this launcher must not acquire or stage the SDK itself.
-        evaluation = (import ../native-context.nix) ++ [ loom.workspaceSource ];
+        evaluation = (import ../native-context.nix) ++ [ loom.runtimeWithoutCli ];
         build =
           _:
           import ../verification-preparation.nix {
@@ -85,6 +89,12 @@ _:
       # value has no executable recipe, so it is not a packages derivation.
       legacyPackages.profile-catalogue = profileCatalogue.outPath;
       legacyPackages.loomFeedback = loom.scopedNextest;
+      legacyPackages.loomCliComplement = loom.cliComplement;
+      legacyPackages.loomCliProof = {
+        reporter = loom.cliComplement.drvPath;
+        catalogue = loom.cliComplement.loom.catalogue;
+        previous_catalogue_output = loom.testCompilation.outPath;
+      };
       packages = {
         profileManifest = ownedProfileManifest;
         profile-images = ownedProfileManifest;

@@ -62,7 +62,10 @@ _: {
         };
       };
       tools = import ../quint/tools.nix { inherit pkgs; };
-      verificationTool = import ../verification-tool.nix { inherit pkgs; };
+      verificationTool = import ../verification-tool.nix {
+        inherit pkgs;
+        buildTestBinaries = false;
+      };
       harness = nativePackage (
         loom.craneLib.buildPackage {
           pname = "loom-quint-compiler";

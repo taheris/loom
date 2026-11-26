@@ -19,6 +19,7 @@ impl Graph {
         &self,
         target: Name,
         contract: &report::Contract,
+        cli_slice: Option<super::cli_partition::Slice>,
     ) -> Result<Observed, Error> {
         let store: Store =
             serde_json::from_slice(&super::query(&self.tool, &["store", "info", "--json"])?)?;
@@ -73,6 +74,9 @@ impl Graph {
             .stderr(std::fs::File::create(
                 directory.path().join("launcher-stderr"),
             )?);
+        if let Some(slice) = cli_slice {
+            command.env("LOOM_PUBLICATION_CLI_SLICE", slice.argument());
+        }
         for key in [
             "NIX_CONFIG",
             "NIX_CONF_DIR",

@@ -3,7 +3,10 @@ pkgs.writeShellApplication {
   name = "prepare-verification";
   runtimeInputs = [
     pkgs.nix
-    (import ./verification-tool.nix { inherit pkgs; })
+    (import ./verification-tool.nix {
+      inherit pkgs;
+      buildTestBinaries = false;
+    })
     pkgs.coreutils
   ];
   text = ''

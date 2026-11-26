@@ -155,11 +155,13 @@ Alongside the Nix check hook, pre-push runs both Clippy configurations,
 makes an older launcher reject this configuration rather than silently omit root
 builds. Preparation keeps the complete source audit, native fixture inputs, and
 workspace build; it neither runs tests nor proves test coverage. Publication
-Gate runs the complete ordinary native test reporter once even when the range
-affects no named test. Affected named tests sharing that execution use its
-checked per-case observations. Do not launch the standalone test suite again.
-Independently required confined and live host checks remain. Prek exports the
-pushed endpoints as `PRE_COMMIT_FROM_REF` / `PRE_COMMIT_TO_REF`;
+Gate owns one ordinary native test suite even when the range affects no named
+test. Where the checked verifier CLI partition is available, the complete suite
+is the disjoint union of its two fresh reporters; a proved CLI-only publication
+runs only the required slice. Affected named tests sharing either execution use
+its checked per-case observations. Do not launch the standalone test suite
+again. Independently required confined and live host checks remain. Prek exports
+the pushed endpoints as `PRE_COMMIT_FROM_REF` / `PRE_COMMIT_TO_REF`;
 `pre-push-checks` appends that exact range to the gate hook instead of deriving
 it from the branch upstream. `loom gate verify --diff` uses
 [Gate's deterministic verify contract](gate.md#deterministic-verify-lanes) for

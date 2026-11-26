@@ -25,7 +25,10 @@
           inherit origin;
         };
       evaluation = import ../native-context.nix;
-      verificationTool = import ../verification-tool.nix { inherit pkgs; };
+      verificationTool = import ../verification-tool.nix {
+        inherit pkgs;
+        buildTestBinaries = false;
+      };
       testsDeriv = import ../../tests/default.nix {
         inherit
           pkgs
@@ -396,10 +399,12 @@
       };
       checks.test-app-hook-runner = checked.check {
         runtime = "native-process";
-        resources = map source [
-          "tests/agent/test-app-hook-runner.sh"
-          "nix/private-fixture-tests.sh"
-        ];
+        resources =
+          map source [
+            "tests/agent/test-app-hook-runner.sh"
+            "nix/private-fixture-tests.sh"
+          ]
+          ++ verificationTool.loom.sources;
         evaluation =
           evaluation
           ++ [

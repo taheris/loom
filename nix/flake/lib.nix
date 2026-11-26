@@ -210,7 +210,12 @@ in
           ../../Cargo.lock
         ];
       };
-      imageRustTools = [ (import ../verification-tool.nix { pkgs = wrixLinuxPkgs; }) ];
+      imageRustTools = [
+        (import ../verification-tool.nix {
+          pkgs = wrixLinuxPkgs;
+          buildTestBinaries = false;
+        })
+      ];
       workerRustProfile = workerProfile (
         rustProfile
         // {

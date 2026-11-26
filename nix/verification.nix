@@ -201,7 +201,14 @@ let
           git init -q
           git add --all
           git -c user.name='Loom native suite' -c user.email='native@example.invalid' -c commit.gpgsign=false commit -q -m 'Capture native suite source'
-          bash "$LOOM_PRIVATE_FIXTURE_RUNNER" --build-campaign bash "$LOOM_REPORT_SUPERVISOR" cargo nextest run --cargo-metadata "$cargoArtifacts/cargo.json" --binaries-metadata "$cargoArtifacts/binaries.json" --workspace-remap "$runtime" --target-dir-remap "$cargoArtifacts/target" --ignore-default-filter --no-fail-fast --message-format libtest-json-plus
+          selection=()
+          slice='(package(=loom-verification) & binary(=cli)) | (package(=loom) & binary(=integration) & test(=native_system::native_system_scenarios_execute_actual_programs_in_canonical_store))'
+          case "''${LOOM_PUBLICATION_CLI_SLICE:-}" in
+            selected) selection=(--no-tests=fail -E "$slice");;
+            complement) selection=(--no-tests=fail -E "!($slice)");;
+          esac
+          unset LOOM_PUBLICATION_CLI_SLICE
+          bash "$LOOM_PRIVATE_FIXTURE_RUNNER" --build-campaign bash "$LOOM_REPORT_SUPERVISOR" cargo nextest run --cargo-metadata "$cargoArtifacts/cargo.json" --binaries-metadata "$cargoArtifacts/binaries.json" --workspace-remap "$runtime" --target-dir-remap "$cargoArtifacts/target" --ignore-default-filter --no-fail-fast --message-format libtest-json-plus "''${selection[@]}"
         '';
         catalogue = ''
           mkdir -p "$out"
@@ -274,12 +281,16 @@ let
               }
             );
         };
+      # A reporter can stage a distinct runtime projection. Read compiler
+      # settings from its exact compilation source, not the runtime projection.
       rootOrigins = builtins.filter (source: source.origin == ".") resources;
       roots =
-        if rootOrigins != [ ] then
+        if builtins.length rootOrigins == 1 then
           rootOrigins
         else
-          builtins.filter (source: source.path == args.src) resources;
+          builtins.filter (source: source.path == args.src) (
+            if rootOrigins == [ ] then resources else rootOrigins
+          );
       configuration =
         assert builtins.length roots == 1;
         (builtins.head roots)._nextest;
