@@ -39,6 +39,7 @@ let
   fixtureRunner = construct { src = without "nix/private-fixture-tests.sh"; };
   inputLoader = construct { src = without "nix/retain-fixture-inputs.sh"; };
   rust = construct { src = without "crates/loom-gate/src/provider/tracked.rs"; };
+  cliTest = construct { src = without "crates/loom-verification/tests/cli.rs"; };
   manifest = construct { src = without "crates/loom-events/Cargo.toml"; };
   toolchain = construct {
     toolchain = loom.toolchain.overrideAttrs (old: {
@@ -111,6 +112,10 @@ assert
   !(builtins.elem (toString runtimeTool) (map toString runtime.testCompilation.nativeBuildInputs));
 assert baseline.nextest.drvPath != docs.nextest.drvPath;
 assert baseline.testCompilation.drvPath != rust.testCompilation.drvPath;
+assert baseline.compilerSourceWithoutCli.path == cliTest.compilerSourceWithoutCli.path;
+assert baseline.compilerSourceWithoutCli.path != rust.compilerSourceWithoutCli.path;
+assert baseline.testCompilation.drvPath != cliTest.testCompilation.drvPath;
+assert baseline.stagedSrc.drvPath != cliTest.stagedSrc.drvPath;
 assert baseline.testCompilation.drvPath != toolchain.testCompilation.drvPath;
 assert baseline.testCompilation.drvPath != patch.testCompilation.drvPath;
 assert baseline.cargoArtifacts.drvPath != manifest.cargoArtifacts.drvPath;

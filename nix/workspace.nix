@@ -103,6 +103,7 @@ let
       );
   };
   compilerSource = compilerSourceFor true;
+  compilerSourceWithoutCli = compilerSourceFor false;
   cliTestInput = "crates/loom-verification/tests/cli.rs";
   compilerSourceFor =
     includeCli:
@@ -718,7 +719,7 @@ let
       if useCliComplement then
         [
           runtimeWithoutCli
-          (compilerSourceFor false)
+          compilerSourceWithoutCli
         ]
         ++ extraResources
       else
@@ -761,22 +762,19 @@ let
   # This closed complement excludes the verifier CLI integration input from
   # both compilation and staged runtime. The full suite remains the fallback.
   cliComplement =
-    let
-      source = compilerSourceFor false;
-    in
     assert pkgs.stdenv.hostPlatform.isDarwin;
     checked.cargo {
       inherit craneLib evaluation;
       operation = "test";
       runtime = "native-store";
       resources = [
-        source
+        compilerSourceWithoutCli
         runtimeWithoutCli
       ]
       ++ extraResources;
       compilationInputs = testBuildInputs;
       args = testArgsFor false // {
-        src = source.path;
+        src = compilerSourceWithoutCli.path;
         CARGO_PROFILE = "dev";
         cargoArtifacts = testCargoArtifacts;
       };
@@ -813,6 +811,7 @@ in
     workspaceSource
     runtimeWithoutCli
     compilerSource
+    compilerSourceWithoutCli
     compilerResources
     testResources
     testRegistration

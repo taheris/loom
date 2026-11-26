@@ -189,7 +189,9 @@
         version = "0.1.0";
         doInstallCargoArtifacts = false;
         LOOM_PREK_BIN = "${loom.hookRunner}/bin/prek";
-        src = loom.compilerSource.path;
+        # These examples compile production targets, not the CLI integration
+        # binary. The app still stages its complete runtime source below.
+        src = loom.compilerSourceWithoutCli.path;
         inherit (loom) cargoArtifacts cargoVendorDir;
         nativeBuildInputs = [ pkgs.git ];
         preBuild = "export HOME=$(mktemp -d)";
@@ -213,6 +215,7 @@
       nativeSmokeFixture = import ../tests/native-smoke-fixture.nix { inherit pkgs; };
       nativeUnitsApp = mkTestApp {
         name = "test-native-units";
+        resources = [ loom.compilerSourceWithoutCli ];
         runtimeInputs = [
           pkgs.coreutils
           pkgs.git
@@ -306,14 +309,14 @@
       '';
       profileProbe = checked.check {
         inherit evaluation;
-        resources = [ loom.compilerSource ];
+        resources = [ loom.compilerSourceWithoutCli ];
         build =
           _:
           loom.craneLib.buildPackage (
             loom.checkArgs
             // {
               pname = "loom-profile-catalogue-probe";
-              src = loom.compilerSource.path;
+              src = loom.compilerSourceWithoutCli.path;
               GIT_CONFIG_GLOBAL = "/dev/null";
               cargoExtraArgs = "--package loom-driver --example profile-catalogue-probe";
               doCheck = false;
@@ -329,7 +332,7 @@
       bootstrapScript = source "tests/sandbox/profile-bootstrap.sh";
       profileBootstrapApp = checked.check {
         runtime = "native-process";
-        resources = [ bootstrapScript ];
+        resources = [ bootstrapScript ] ++ profileProbe.loom.sources;
         inherit evaluation;
         build =
           paths:
