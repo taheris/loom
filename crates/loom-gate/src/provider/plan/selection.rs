@@ -420,9 +420,9 @@ impl<'a> Selection<'a> {
         self.invocations()?.collect()
     }
 
-    /// Capture equivalent projections and adjacent audited snapshot-only checks in order.
+    /// Capture equivalent projections and adjacent isolated checks in order.
     ///
-    /// Whole-context checks surround each effect or bounded snapshot-only batch, not
+    /// Whole-context checks surround each effect or bounded batch, not
     /// each later delivery of an already captured historical fact. Consumers must
     /// revalidate the plan before reporting current-scope success. Dropping this
     /// stream never launches another effect or another batch.
@@ -514,8 +514,8 @@ impl std::iter::FusedIterator for Invocations<'_, '_> {}
 
 /// Invocation-local facts, never cached verdicts or current-context authority.
 ///
-/// Projections and bounded snapshot-only batches are captured inside live plan
-/// barriers. Later deliveries do not launch callbacks or reinterpret captured
+/// Projections and bounded batches of isolated checks are captured inside live
+/// plan barriers. Later deliveries do not launch callbacks or reinterpret captured
 /// facts under a new context. The first error permanently stops execution,
 /// including after source repair.
 pub struct Observations<'selection, 'plan> {
@@ -525,22 +525,21 @@ pub struct Observations<'selection, 'plan> {
     failed: bool,
 }
 
-const SNAPSHOT_ONLY_BATCH: usize = 32;
+const ISOLATED_CHECK_BATCH: usize = 32;
 
 type Captured = BTreeMap<Name, Result<Invocation, Error>>;
 
-fn snapshot_only_check(decision: &Decision<'_>) -> bool {
-    matches!(
-        decision.unit.definition.execution,
-        Execution::Tracked {
-            snapshot_only: true,
-            ..
-        }
-    ) && decision.baseline.is_none_or(|tier| tier == Tier::Check)
+fn isolated_check(decision: &Decision<'_>) -> bool {
+    decision.baseline.is_none_or(|tier| tier == Tier::Check)
         && decision
             .owners
             .iter()
             .all(|owner| owner.tier == Tier::Check)
+        && match &decision.unit.definition.execution {
+            Execution::Tracked { snapshot_only, .. } => *snapshot_only,
+            Execution::Nix(graph) => graph.is_confined_realization(),
+            _ => false,
+        }
 }
 
 impl Observations<'_, '_> {
@@ -581,15 +580,15 @@ impl Observations<'_, '_> {
         })
     }
 
-    fn capture_adjacent_snapshot_only(&self, captured: &mut Captured) {
-        let mut remaining = SNAPSHOT_ONLY_BATCH - 1;
+    fn capture_adjacent_isolated_checks(&self, captured: &mut Captured) {
+        let mut remaining = ISOLATED_CHECK_BATCH - 1;
         for decision in self.decisions.clone().filter(|d| d.reason.selected()) {
             if self.captured.contains_key(decision.unit.target())
                 || captured.contains_key(decision.unit.target())
             {
                 continue;
             }
-            if remaining == 0 || !snapshot_only_check(decision) {
+            if remaining == 0 || !isolated_check(decision) {
                 break;
             }
             remaining -= 1;
@@ -601,8 +600,8 @@ impl Observations<'_, '_> {
             }
         }
         tracing::debug!(
-            snapshot_only_checks = SNAPSHOT_ONLY_BATCH - remaining,
-            "captured adjacent snapshot-only check batch"
+            isolated_checks = ISOLATED_CHECK_BATCH - remaining,
+            "captured adjacent isolated check batch"
         );
     }
 }
@@ -623,8 +622,8 @@ impl Iterator for Observations<'_, '_> {
             self.selection.plan.require_current()?;
             let mut captured = BTreeMap::new();
             let first = self.capture(decision, &mut captured)?;
-            if snapshot_only_check(decision) {
-                self.capture_adjacent_snapshot_only(&mut captured);
+            if isolated_check(decision) {
+                self.capture_adjacent_isolated_checks(&mut captured);
             }
             // No projection escapes if a callback invalidated even an excluded sibling.
             self.selection.plan.require_current()?;

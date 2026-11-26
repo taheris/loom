@@ -1809,6 +1809,24 @@ impl Graph {
         Self::require_current_many(&[self])
     }
 
+    /// A confined realization may share a serial plan barrier, never a verdict.
+    /// Checks still execute fresh; artifacts only realize admitted outputs.
+    /// Cargo compilation/lints stay in the sandbox. Test catalogues, reporting
+    /// processes and host/managed execution are not part of this batch.
+    pub(in crate::provider) const fn is_confined_realization(&self) -> bool {
+        matches!(self.runtime, Runtime::Nix | Runtime::NativeProcess)
+            && matches!(self.process, None | Some(process::Context::Sandboxed))
+            && self.managed.is_none()
+            && matches!(
+                self.cargo,
+                None | Some(
+                    CargoOperation::Build | CargoOperation::Lint | CargoOperation::LintAllTargets
+                )
+            )
+            && self.report.is_none()
+            && self.reporter.is_none()
+    }
+
     fn presence(&self, outputs: &BTreeMap<Name, StorePath>) -> Result<Presence, Error> {
         let paths = outputs.values().cloned().collect();
         Ok(if present_paths(&self.tool, &paths)? == paths {

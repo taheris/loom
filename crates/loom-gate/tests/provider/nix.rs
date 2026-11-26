@@ -1,5 +1,7 @@
 #[path = "nix/aliases.rs"]
 mod aliases;
+#[path = "nix/batch.rs"]
+mod batch;
 #[path = "nix/preflight.rs"]
 mod preflight;
 #[path = "nix/process.rs"]
