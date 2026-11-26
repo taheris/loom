@@ -205,7 +205,7 @@ let
           slice='(package(=loom-verification) & binary(=cli)) | (package(=loom) & binary(=integration) & test(=native_system::native_system_scenarios_execute_actual_programs_in_canonical_store))'
           case "''${LOOM_PUBLICATION_CLI_SLICE:-}" in
             selected) selection=(--no-tests=fail -E "$slice");;
-            complement) selection=(--no-tests=fail -E "!($slice)");;
+            complement) selection=(--no-tests=fail -E '!(package(=loom) & binary(=integration) & test(=native_system::native_system_scenarios_execute_actual_programs_in_canonical_store))');;
           esac
           unset LOOM_PUBLICATION_CLI_SLICE
           bash "$LOOM_PRIVATE_FIXTURE_RUNNER" --build-campaign bash "$LOOM_REPORT_SUPERVISOR" cargo nextest run --cargo-metadata "$cargoArtifacts/cargo.json" --binaries-metadata "$cargoArtifacts/binaries.json" --workspace-remap "$runtime" --target-dir-remap "$cargoArtifacts/target" --ignore-default-filter --no-fail-fast --message-format libtest-json-plus "''${selection[@]}"
