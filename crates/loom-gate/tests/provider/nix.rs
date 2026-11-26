@@ -2,6 +2,8 @@
 mod aliases;
 #[path = "nix/batch.rs"]
 mod batch;
+#[path = "nix/flake_checks.rs"]
+mod flake_checks;
 #[path = "nix/preflight.rs"]
 mod preflight;
 #[path = "nix/process.rs"]

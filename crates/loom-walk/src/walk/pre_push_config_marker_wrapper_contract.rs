@@ -3,7 +3,7 @@ use std::path::Path;
 use super::util::{rel, verdict_from, workspace_root};
 use super::{Verdict, WalkInput};
 
-const RULE: &str = "pre_push_config_marker_wrapper_contract — pre-commit policy bindings must be complete, the first pre-push hook must be nix flake check, every pre-push hook must use bin/pre-push-checks with matching metadata, and required nix commands must run directly";
+const RULE: &str = "pre_push_config_marker_wrapper_contract — pre-commit policy bindings must be complete, the first pre-push hook must validate flake structure, Gate must own root flake builds, every pre-push hook must use bin/pre-push-checks with matching metadata, and required nix commands must run directly";
 
 const CLIPPY_FILES: &str =
     r"(\.rs$|(^|/)Cargo\.(toml|lock)$|^rust-toolchain\.toml$|^clippy\.toml$)";
@@ -234,7 +234,7 @@ fn validate_pre_push(path: &str, hooks: &[Hook], violations: &mut Vec<String>) {
 fn validate_pre_push_policy_fields(path: &str, hooks: &[Hook], violations: &mut Vec<String>) {
     if let Some(hook) = unique_hook(hooks, "nix-flake-check") {
         validate_always_run(path, hook, violations);
-        validate_wrapped_command(path, hook, "nix flake check", violations);
+        validate_wrapped_command(path, hook, "nix flake check --no-build", violations);
     }
     for (id, command) in [
         (
@@ -258,7 +258,12 @@ fn validate_pre_push_policy_fields(path: &str, hooks: &[Hook], violations: &mut 
     }
     if let Some(hook) = unique_hook(hooks, "loom-gate-verify-diff") {
         validate_always_run(path, hook, violations);
-        validate_wrapped_command(path, hook, "loom gate verify --diff", violations);
+        validate_wrapped_command(
+            path,
+            hook,
+            "loom gate verify --root-flake-checks --diff",
+            violations,
+        );
         let entry = hook.entry.as_deref().unwrap_or_default();
         if !shlex::split(entry)
             .is_some_and(|words| words.iter().any(|word| word == "--append-push-range"))
@@ -407,11 +412,11 @@ fn first_pre_push_hook_violation(hook: &Hook) -> Option<String> {
     let entry = hook.entry.as_deref()?.trim();
     let words = shlex::split(entry)?;
     let command = wrapped_command_words(&words).unwrap_or(words.as_slice());
-    if command_runs_nix_flake_check(command) {
+    if command == ["nix", "flake", "check", "--no-build"] {
         None
     } else {
         Some(format!(
-            "first pre-push hook `nix-flake-check` does not run `nix flake check`: {}",
+            "first pre-push hook `nix-flake-check` does not run `nix flake check --no-build`: {}",
             command.join(" ")
         ))
     }
@@ -503,18 +508,6 @@ fn wrapper_separator_index(words: &[String]) -> Option<usize> {
 fn command_after_separator(words: &[String], separator: usize) -> Option<&[String]> {
     let command = words.get((separator + 1)..)?;
     (!command.is_empty()).then_some(command)
-}
-
-fn command_runs_nix_flake_check(words: &[String]) -> bool {
-    command_starts_with(words, &["nix", "flake", "check"])
-}
-
-fn command_starts_with(words: &[String], prefix: &[&str]) -> bool {
-    words.len() >= prefix.len()
-        && words
-            .iter()
-            .zip(prefix.iter())
-            .all(|(word, expected)| word.as_str() == *expected)
 }
 
 fn parse_hooks(source: &str) -> Vec<Hook> {
@@ -807,6 +800,17 @@ mod tests {
             got.iter()
                 .any(|line| line.contains("must append prek's pushed range")),
             "got: {got:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_a_shape_only_push_without_a_root_build_owner() {
+        let config = valid_config().replace(" --root-flake-checks", "");
+        let got = violations(".pre-commit-config.yaml", &config);
+        assert!(
+            got.iter()
+                .any(|line| line.contains("loom gate verify --root-flake-checks --diff")),
+            "{got:?}"
         );
     }
 

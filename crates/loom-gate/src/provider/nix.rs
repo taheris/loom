@@ -18,6 +18,7 @@ use crate::inventory::{Duty, Inventory, Name};
 pub mod applicability;
 pub mod catalogue;
 mod current;
+pub mod flake_checks;
 mod frontier;
 mod managed;
 mod pin;

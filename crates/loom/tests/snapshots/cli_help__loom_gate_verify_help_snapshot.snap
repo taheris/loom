@@ -15,4 +15,5 @@ Options:
       --target <TARGET>        Run annotations whose target exactly matches this string
       --diff <RANGE>           Scope to a git diff range
       --tree                   Scope to every file in the workspace
+      --root-flake-checks      Cover native root flake builds in the exact host pre-push invocation
   -h, --help                   Print help

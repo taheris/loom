@@ -115,7 +115,7 @@ enum GateSubcommand {
     #[command(about = "Run deterministic verification followed by LLM review.")]
     Audit(GateScopeArgs),
     #[command(about = "Run scope-derived deterministic verifier lanes.")]
-    Verify(GateScopeArgs),
+    Verify(GateVerifyArgs),
     #[command(about = "Run only `[check]`-tier annotations.")]
     Check(GateScopeArgs),
     #[command(about = "Run only `[test]`-tier annotations.")]
@@ -153,6 +153,15 @@ struct GateMintArgs {
     /// Preview proposed mint writes without changing bd state.
     #[arg(long)]
     dry_run: bool,
+}
+
+#[derive(Debug, clap::Args)]
+struct GateVerifyArgs {
+    #[command(flatten)]
+    scope: GateScopeArgs,
+    /// Cover native root flake builds in the exact host pre-push invocation.
+    #[arg(long, requires = "diff")]
+    root_flake_checks: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -1234,7 +1243,7 @@ fn run_note(workspace: &std::path::Path, action: NoteAction) -> anyhow::Result<(
 
 enum GateOperation {
     Status,
-    Verify,
+    Verify { root_flake_checks: bool },
     Tier(Tier),
     Audit,
     Review(Option<BeadId>),
@@ -1245,7 +1254,7 @@ impl GateOperation {
     const fn name(&self) -> &'static str {
         match self {
             Self::Status => "status",
-            Self::Verify => "verify",
+            Self::Verify { .. } => "verify",
             Self::Audit => "audit",
             Self::Review(_) => "review",
             Self::Rubric => "rubric",
@@ -1314,7 +1323,12 @@ fn run_gate(
         }
         Some(GateSubcommand::VerifyMarker(args)) => return run_gate_verify_marker(workspace, args),
         Some(GateSubcommand::Status(args)) => (GateOperation::Status, args.into()),
-        Some(GateSubcommand::Verify(args)) => (GateOperation::Verify, args),
+        Some(GateSubcommand::Verify(args)) => (
+            GateOperation::Verify {
+                root_flake_checks: args.root_flake_checks,
+            },
+            args.scope,
+        ),
         Some(GateSubcommand::Check(args)) => (GateOperation::Tier(Tier::Check), args),
         Some(GateSubcommand::Test(args)) => (GateOperation::Tier(Tier::Test), args),
         Some(GateSubcommand::System(args)) => (GateOperation::Tier(Tier::System), args),
@@ -1334,7 +1348,9 @@ fn run_gate(
     }
     match operation {
         GateOperation::Status => run_gate_status(workspace),
-        GateOperation::Verify => run_gate_verify(workspace, &scope),
+        GateOperation::Verify { root_flake_checks } => {
+            run_gate_verify(workspace, &scope, root_flake_checks)
+        }
         GateOperation::Tier(Tier::Judge) => run_gate_review(
             workspace,
             scope,
@@ -1604,7 +1620,19 @@ fn print_gate_status(report: &loom_gate::Report) {
     clippy::print_stderr,
     reason = "gate progress and verifier failures are CLI diagnostics"
 )]
-fn run_gate_verify(workspace: &Path, args: &GateScope) -> anyhow::Result<()> {
+fn run_gate_verify(
+    workspace: &Path,
+    args: &GateScope,
+    root_flake_checks: bool,
+) -> anyhow::Result<()> {
+    if root_flake_checks {
+        anyhow::ensure!(
+            std::env::var_os("LOOM_GATE_PUBLICATION_RANGE")
+                .is_some_and(|range| args.diff().is_some_and(|diff| range == diff))
+                && std::env::var_os("LOOM_INSIDE").is_none(),
+            "root flake checks require the exact host publication range"
+        );
+    }
     let tiers = verify_tiers_for_args(workspace, args)?;
     // Definition admission is whole-request and precedes even unrelated hook effects.
     // A nested-hook hint suppresses duplicate execution, never definition validation.
@@ -1623,7 +1651,7 @@ fn run_gate_verify(workspace: &Path, args: &GateScope) -> anyhow::Result<()> {
     let admission = before_hooks;
     combined = combine_verifier_codes(
         combined,
-        dispatch_checked(workspace, args, &tiers, &admission)?,
+        dispatch_checked(workspace, args, &tiers, &admission, root_flake_checks)?,
     );
     if combined == loom_gate::dispatch::SKIP_EXIT_CODE
         && std::env::var("LOOM_INSIDE").as_deref() == Ok("1")
@@ -1899,6 +1927,7 @@ fn dispatch_checked(
     args: &GateScope,
     tiers: &[Tier],
     admission: &checked_gate::Admission,
+    root_flake_checks: bool,
 ) -> anyhow::Result<i32> {
     use loom_gate::provider::tracked::Outcome;
 
@@ -1908,6 +1937,16 @@ fn dispatch_checked(
         );
     }
     let (selected, whole_selection) = admission.select(args, tiers)?;
+    let mut flake_checks = if root_flake_checks {
+        Some(
+            whole_selection
+                .as_ref()
+                .context("root flake duties require the complete plan")?
+                .start_root_flake_checks()?,
+        )
+    } else {
+        None
+    };
     let skip_policies = admission.skip_policies()?;
     let mut invocations = whole_selection
         .as_ref()
@@ -2030,6 +2069,11 @@ fn dispatch_checked(
         if selected_unit.baseline || policy_tiers.is_empty() {
             policy_tiers.push(unit.baseline_tier());
         }
+        if let Some(checks) = &mut flake_checks
+            && matches!(observed.outcome(), Outcome::Pass)
+        {
+            checks.observe(&observed)?;
+        }
         let interpreted = checked_result_policy(
             unit,
             &observed,
@@ -2118,6 +2162,11 @@ fn dispatch_checked(
     }
     // Historical alias facts cannot authorize success after reporting changes the context.
     admission.require_current()?;
+    if combined == 0
+        && let Some(checks) = flake_checks
+    {
+        checks.finish()?;
+    }
     Ok(combined)
 }
 
@@ -2130,7 +2179,7 @@ fn run_gate_single_tier(workspace: &Path, args: &GateScope, tier: Tier) -> anyho
         );
     }
     let admission = checked_gate::Admission::load(workspace, args, &[tier])?;
-    let code = dispatch_checked(workspace, args, &[tier], &admission)?;
+    let code = dispatch_checked(workspace, args, &[tier], &admission, false)?;
     if code != 0 {
         drop(admission);
         std::process::exit(code);
@@ -3254,7 +3303,7 @@ fn run_gate_audit(
     agent_override: Option<AgentKind>,
     host_key: bool,
 ) -> anyhow::Result<()> {
-    run_gate_verify(workspace, &args)?;
+    run_gate_verify(workspace, &args, false)?;
     run_gate_review(
         workspace,
         args,

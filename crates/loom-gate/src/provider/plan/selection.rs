@@ -392,6 +392,19 @@ impl<'a> Selection<'a> {
         Ok(())
     }
 
+    /// Assign every native root-flake build on this exact publication plan.
+    /// The independently required first hook still checks flake structure.
+    ///
+    /// # Errors
+    /// Fail closed on stale admission or a failed raw flake obligation.
+    pub fn start_root_flake_checks(
+        &self,
+    ) -> Result<crate::provider::nix::flake_checks::Checks, crate::provider::nix::flake_checks::Error>
+    {
+        self.require_current()?;
+        crate::provider::nix::flake_checks::Checks::start(self, self.plan.snapshot())
+    }
+
     pub const fn stage(&self) -> Stage {
         self.stage
     }

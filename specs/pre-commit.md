@@ -124,14 +124,18 @@ including its tree/config/range, evidence, freshness, and publication-attempt
 context; otherwise the wrapper falls through and executes the hook. Coverage,
 not a fast/slow label, controls the shortcut.
 
-`nix flake check` is budgeted as the first pre-push hook. Its test-tier
-composition relative to the full-suite app is owned by [Tests](tests.md). On
-pre-push it is routed through repo-local `bin/pre-push-checks`, so a
-driver-minted marker may skip it only if the marker's `GateSuccess` proves the
-hook ran and passed. Its derivation chain includes treefmt and `loom gate check`
-with `[check]`-tier verifiers, integrity, and surface conformance. The tier is
-not guaranteed compile-free: an applicable verifier may compile the workspace,
-and readiness checks follow
+Standard `nix flake check --no-build` validates flake structure as the first
+pre-push hook. Its exact wrapper entry covers structure only. Publication Gate
+accounts for **all** native root-flake builds, even when the finite range
+selects none of them. A selected strict whole check can discharge an identical
+raw recipe with its fresh output in the same attempt. Gate builds all remaining
+raw recipes and runs the complete stock flake check when the exact namespace or
+clean pushed source cannot be determined. Neither cached verdicts nor fresh
+report wrappers replace raw build duties. The derivation chain includes treefmt
+and `loom gate check` with `[check]`-tier verifiers, integrity, and surface
+conformance. Composition relative to the full-suite app is owned by
+[Tests](tests.md). The tier is not guaranteed compile-free: an applicable
+verifier may compile the workspace, and readiness checks follow
 [Verify's admitted planning policy](verify.md#pending-modifier). Reusing the
 Loom binary or build artifacts does not prove that all selected checks avoid
 compilation. Measure this composition under
@@ -147,15 +151,17 @@ Missing or invalid input contracts cannot suppress host work.
 
 Alongside the Nix check hook, pre-push runs both Clippy configurations,
 `nix run .#test-required -- --prepare-only`, and
-`loom gate verify --diff <push-range>`. Preparation keeps the complete source
-audit, native fixture inputs, and workspace build; it neither runs tests nor
-proves test coverage. Publication Gate runs the complete ordinary native test
-reporter once even when the range affects no named test. Affected named tests
-sharing that execution use its checked per-case observations. Do not launch the
-standalone test suite again. Independently required confined and live host
-checks remain. Prek exports the pushed endpoints as `PRE_COMMIT_FROM_REF` /
-`PRE_COMMIT_TO_REF`; `pre-push-checks` appends that exact range to the gate hook
-instead of deriving it from the branch upstream. `loom gate verify --diff` uses
+`loom gate verify --root-flake-checks --diff <push-range>`. The explicit flag
+makes an older launcher reject this configuration rather than silently omit root
+builds. Preparation keeps the complete source audit, native fixture inputs, and
+workspace build; it neither runs tests nor proves test coverage. Publication
+Gate runs the complete ordinary native test reporter once even when the range
+affects no named test. Affected named tests sharing that execution use its
+checked per-case observations. Do not launch the standalone test suite again.
+Independently required confined and live host checks remain. Prek exports the
+pushed endpoints as `PRE_COMMIT_FROM_REF` / `PRE_COMMIT_TO_REF`;
+`pre-push-checks` appends that exact range to the gate hook instead of deriving
+it from the branch upstream. `loom gate verify --diff` uses
 [Gate's deterministic verify contract](gate.md#deterministic-verify-lanes) for
 its scope and stage; no `LOOM_VERIFY_TIERS` environment override exists. Each
 hook runs as an independent prek entry with its own `files:` regex where

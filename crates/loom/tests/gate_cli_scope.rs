@@ -131,6 +131,31 @@ fn gate_verify_rejects_positional_selector() {
 }
 
 #[test]
+fn root_flake_checks_require_bound_host_publication() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("README.md"), "# Fixture\n").unwrap();
+    init_git(dir.path());
+    let output = Command::new(loom_bin())
+        .arg("--workspace")
+        .arg(dir.path())
+        .args([
+            "gate",
+            "verify",
+            "--root-flake-checks",
+            "--diff",
+            "HEAD..HEAD",
+        ])
+        .env_remove("LOOM_GATE_PUBLICATION_RANGE")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("require the exact host publication range")
+    );
+}
+
+#[test]
 fn gate_target_exact_match_and_ambiguity_rules() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();

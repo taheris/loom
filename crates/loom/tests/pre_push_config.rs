@@ -354,7 +354,7 @@ fn automatic_push_prepares_then_enters_the_gate_owning_the_suite() {
         .expect("preparation-only hook");
     let verified = lines
         .iter()
-        .position(|line| line.starts_with("loom\tgate\tverify\t--diff"))
+        .position(|line| line.starts_with("loom\tgate\tverify\t--root-flake-checks\t--diff"))
         .expect("publication Gate hook");
     assert!(prepared < verified, "{lines:?}");
 }
@@ -424,7 +424,7 @@ fn pre_push_config_runs_clippy_and_verify_diff_without_loom_verify_tiers() {
     assert_eq!(
         text_lines,
         vec![format!(
-            "loom\tgate\tverify\t--diff\t{text_base}..{text_head}\ttiers=<unset>"
+            "loom\tgate\tverify\t--root-flake-checks\t--diff\t{text_base}..{text_head}\ttiers=<unset>"
         )],
         "a non-Rust push must skip clippy while the always-run gate hook stays active",
     );
@@ -455,7 +455,9 @@ fn pre_push_config_runs_clippy_and_verify_diff_without_loom_verify_tiers() {
     );
     assert_eq!(
         rust_lines[2],
-        format!("loom\tgate\tverify\t--diff\t{rust_base}..{rust_head}\ttiers=<unset>"),
+        format!(
+            "loom\tgate\tverify\t--root-flake-checks\t--diff\t{rust_base}..{rust_head}\ttiers=<unset>"
+        ),
     );
 }
 
@@ -571,7 +573,7 @@ fi
         assert_eq!(
             lines
                 .iter()
-                .filter(|line| line.starts_with("nix\tflake\tcheck"))
+                .filter(|line| line.as_str() == "nix\tflake\tcheck\t--no-build\ttiers=<unset>")
                 .count(),
             1
         );
@@ -605,7 +607,7 @@ fi
             0
         );
         assert!(lines.contains(&format!(
-            "loom\tgate\tverify\t--diff\t{base}..{head}\ttiers=<unset>"
+            "loom\tgate\tverify\t--root-flake-checks\t--diff\t{base}..{head}\ttiers=<unset>"
         )));
         assert!(
             lines.contains(
@@ -646,7 +648,7 @@ fn pre_push_stage_stops_after_failed_flake_check() {
     );
     assert_eq!(
         std::fs::read_to_string(&fixture.log).expect("invocation log"),
-        "nix\tflake check\n",
+        "nix\tflake check --no-build\n",
         "a failed fast tier must not launch Clippy, Gate, or the required suite",
     );
 }
@@ -895,7 +897,7 @@ fn pre_push_config_runs_verify_diff_for_pushed_range() {
     assert_eq!(
         lines,
         vec![format!(
-            "loom\tgate\tverify\t--diff\t{pushed_base}..{pushed_head}\ttiers=<unset>"
+            "loom\tgate\tverify\t--root-flake-checks\t--diff\t{pushed_base}..{pushed_head}\ttiers=<unset>"
         )],
         "the gate hook must use prek's pushed endpoints, not the branch upstream",
     );
@@ -908,7 +910,7 @@ fn pre_push_binds_publication_context_to_the_appended_range() {
     let head = fixture.commit("pushed.txt", "pushed\n", "Add pushed fixture");
     loom_test_support::write_executable_bash_script(
         fixture.tools.join("loom"),
-        "set -euo pipefail\n[[ \"$#\" == 4 && \"$1\" == gate && \"$2\" == verify && \"$3\" == --diff ]]\n[[ \"$LOOM_GATE_PUBLICATION_RANGE\" == \"$4\" ]]\nprintf '%s\\n' \"$4\" >> \"$PRE_PUSH_TEST_LOG\"\n",
+        "set -euo pipefail\n[[ \"$#\" == 5 && \"$1\" == gate && \"$2\" == verify && \"$3\" == --root-flake-checks && \"$4\" == --diff ]]\n[[ \"$LOOM_GATE_PUBLICATION_RANGE\" == \"$5\" ]]\nprintf '%s\\n' \"$5\" >> \"$PRE_PUSH_TEST_LOG\"\n",
     )
     .expect("write publication context recorder");
     assert_eq!(

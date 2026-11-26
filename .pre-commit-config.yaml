@@ -48,8 +48,8 @@ repos:
       # hook and short-circuits on driver-loop integration pushes.
 
       - id: nix-flake-check
-        name: nix flake check
-        entry: bin/pre-push-checks --hook-id nix-flake-check --hook-entry 'nix flake check' -- nix flake check
+        name: Validate Nix flake structure (builds owned by publication Gate)
+        entry: bin/pre-push-checks --hook-id nix-flake-check --hook-entry 'nix flake check --no-build' -- nix flake check --no-build
         language: system
         stages: [pre-push]
         always_run: true
@@ -80,8 +80,8 @@ repos:
         pass_filenames: false
 
       - id: loom-gate-verify-diff
-        name: loom gate verify --diff (includes the required native suite)
-        entry: bin/pre-push-checks --hook-id loom-gate-verify-diff --hook-entry 'loom gate verify --diff' --append-push-range -- loom gate verify --diff
+        name: Verify pushed range, native root checks, and required native suite
+        entry: bin/pre-push-checks --hook-id loom-gate-verify-diff --hook-entry 'loom gate verify --root-flake-checks --diff' --append-push-range -- loom gate verify --root-flake-checks --diff
         language: system
         stages: [pre-push]
         always_run: true
