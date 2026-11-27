@@ -149,10 +149,10 @@ esac"#,
         assert_eq!(report["dead_NAR_GiB"], 1.0);
         assert_eq!(report["dead_paths_missing_from_metadata"], json!([]));
         assert_eq!(report["largest_dead_paths"][0]["path"], DEAD);
-        assert!(
-            Path::new(report["logs"].as_str().unwrap())
-                .join("gc-roots")
-                .is_file()
+        let roots = Path::new(report["logs"].as_str().unwrap()).join("gc-roots");
+        assert_eq!(
+            fs::read_to_string(roots).unwrap(),
+            format!("operator-root -> {LIVE}\n")
         );
         assert_eq!(
             &fixture.calls()[2..],
