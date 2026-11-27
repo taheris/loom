@@ -125,43 +125,15 @@ impl super::Graph {
         &self,
         reporter: &super::StorePath,
         node: &super::Node,
-    ) -> Result<super::pin::Inputs, Error> {
+    ) -> Result<super::products::Products, Error> {
         let inputs = super::frontier::require_pinned(&self.nodes, reporter, |paths| {
             super::present_paths(&self.tool, paths)
         })?;
-        let inputs = super::pin::Inputs::acquire(&self.tool, &inputs)?;
+        let _frontier = super::pin::Inputs::acquire(&self.tool, &inputs)?;
         self.require_current()?;
-        let installables: Vec<_> = node
-            .dependencies
-            .iter()
-            .map(|(path, outputs)| {
-                format!(
-                    "{}^{}",
-                    path.as_str(),
-                    outputs
-                        .iter()
-                        .map(super::Name::as_str)
-                        .collect::<Vec<_>>()
-                        .join(",")
-                )
-            })
-            .collect();
-        if !installables.is_empty() {
-            let mut arguments = vec!["build", "--no-link", "--offline", "--no-substitute"];
-            policy(None, &mut arguments);
-            arguments.extend(installables.iter().map(String::as_str));
-            let output = super::invoke(&self.tool, &arguments)?;
-            if !output.status.success() {
-                return Err(Error::Report {
-                    detail: format!(
-                        "native compiler/input preparation failed: {}",
-                        super::diagnostic(&output.stderr)
-                    ),
-                });
-            }
-        }
+        let products = super::products::Products::acquire(&self.tool, &self.nodes, node)?;
         self.require_current()?;
-        Ok(inputs)
+        Ok(products)
     }
 }
 

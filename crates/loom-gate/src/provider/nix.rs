@@ -26,6 +26,7 @@ mod pin;
 #[cfg(test)]
 mod private_store;
 pub mod process;
+mod products;
 pub(super) mod readiness;
 mod recipe;
 pub(crate) mod report;

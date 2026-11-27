@@ -1952,6 +1952,12 @@ fn dispatch_checked(
             .collect::<std::collections::BTreeSet<_>>();
         selected.retain(|selection| !unchanged.contains(selection.unit.target()));
     }
+    // Discover all cold selected inputs before the residual flake build. This
+    // stream is lazy: no selected behavioral check runs during preflight.
+    let mut invocations = whole_selection
+        .as_ref()
+        .map(loom_gate::provider::plan::selection::Selection::observations)
+        .transpose()?;
     let mut flake_checks = if root_flake_checks {
         Some(
             whole_selection
@@ -1963,10 +1969,6 @@ fn dispatch_checked(
         None
     };
     let skip_policies = admission.skip_policies()?;
-    let mut invocations = whole_selection
-        .as_ref()
-        .map(loom_gate::provider::plan::selection::Selection::observations)
-        .transpose()?;
     admission.require_current()?;
     if let Some(explanation) = admission.explain(whole_selection.as_ref())? {
         eprintln!("loom gate plan: {explanation}");

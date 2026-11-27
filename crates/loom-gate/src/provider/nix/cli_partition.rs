@@ -71,7 +71,12 @@ impl Partition {
         let (prior, head) = range.split_once("..").ok_or(Error::Result)?;
         let sources = Sources::capture(snapshot, &GitOid::new(prior)?, &GitOid::new(head)?)?;
         let input = ResourcePath::try_from(std::path::PathBuf::from(INPUT))?;
-        let cli_only = cli_only(&sources, &input);
+        // A broad change already owes the unfiltered suite. Do not acquire a
+        // second compiler and discover a second catalogue merely to run it.
+        anyhow::ensure!(
+            cli_only(&sources, &input),
+            "complete workspace suite is due"
+        );
         let system = crate::runner::result::current_platform();
         let selector = format!("nix build .#legacyPackages.{system}.loomCliComplement");
         let inventory = Inventory::for_nix_target(snapshot, Platform::Native, &selector)?;
@@ -101,15 +106,13 @@ impl Partition {
             .filter(|name| !selected.contains(*name))
             .cloned()
             .collect();
-        let prior = cli_only
-            .then(|| prove_unchanged(full, complement, &sources, &system, &canonical))
-            .and_then(|proof| match proof {
-                Ok(pin) => Some(pin),
-                Err(error) => {
-                    tracing::debug!(%error, "CLI complement is still due");
-                    None
-                }
-            });
+        let prior = match prove_unchanged(full, complement, &sources, &system, &canonical) {
+            Ok(pin) => Some(pin),
+            Err(error) => {
+                tracing::debug!(%error, "CLI complement is still due");
+                None
+            }
+        };
         full_catalogue.require_current()?;
         complement_catalogue.require_current()?;
         sources.require_current()?;
