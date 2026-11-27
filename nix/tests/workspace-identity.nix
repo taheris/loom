@@ -116,6 +116,15 @@ assert baseline.compilerSourceWithoutCli.path == cliTest.compilerSourceWithoutCl
 assert baseline.compilerSourceWithoutCli.path != rust.compilerSourceWithoutCli.path;
 assert baseline.testCompilation.drvPath != cliTest.testCompilation.drvPath;
 assert baseline.stagedSrc.drvPath != cliTest.stagedSrc.drvPath;
+assert
+  if pkgs.stdenv.hostPlatform.isDarwin then
+    baseline.nonCliTests.compilation.drvPath == cliTest.nonCliTests.compilation.drvPath
+    && baseline.nonCliTests.compilation.drvPath != rust.nonCliTests.compilation.drvPath
+    && baseline.nonCliTests.stagedSrc.drvPath == cliTest.nonCliTests.stagedSrc.drvPath
+    && baseline.nonCliTests.stagedSrc.drvPath != docs.nonCliTests.stagedSrc.drvPath
+  else
+    baseline.nonCliTests.compilation.drvPath == baseline.testCompilation.drvPath
+    && baseline.nonCliTests.stagedSrc.drvPath == baseline.stagedSrc.drvPath;
 assert baseline.testCompilation.drvPath != toolchain.testCompilation.drvPath;
 assert baseline.testCompilation.drvPath != patch.testCompilation.drvPath;
 assert baseline.cargoArtifacts.drvPath != manifest.cargoArtifacts.drvPath;

@@ -657,14 +657,14 @@
           targets = map (name: "loom-llm::loom_llm$" + name) llmCompatCases;
         };
         nextest-filtering-syntax =
-          scriptCheck "nextest-filtering-syntax" [ loom.compilerSource ] [ pkgs.cargo-nextest ]
+          scriptCheck "nextest-filtering-syntax" [ loom.nonCliTests.compilerSource ] [ pkgs.cargo-nextest ]
             (_: ''
               export HOME=$(mktemp -d)
               cargo-nextest nextest run \
-                --cargo-metadata ${loom.testCompilation}/cargo.json \
-                --binaries-metadata ${loom.testCompilation}/binaries.json \
-                --workspace-remap ${loom.compilerSource.path} \
-                --target-dir-remap ${loom.testCompilation}/target \
+                --cargo-metadata ${loom.nonCliTests.compilation}/cargo.json \
+                --binaries-metadata ${loom.nonCliTests.compilation}/binaries.json \
+                --workspace-remap ${loom.nonCliTests.compilerSource.path} \
+                --target-dir-remap ${loom.nonCliTests.compilation}/target \
                 --ignore-default-filter --no-fail-fast \
                 -E 'package(=loom-gate) & binary(=integration) & test(/^nextest_filtering::/)'
             '');
@@ -679,12 +679,12 @@
               bash tests/agent/native-cargo.sh ${bootstrapCargo}/bin/cargo \
                 ${bootstrapConfig} ${bootstrapConfig.nextestVersion} ${bootstrapConfig.nextestChecksum} ${loom.hookRunner}/bin/prek
             '');
-        native-cargo-patches = check loom.testResources (
+        native-cargo-patches = check loom.nonCliTests.resources (
           _:
           craneLib.mkCargoDerivation {
             pname = "native-cargo-patches";
             version = "0.0.0";
-            src = stagedSrc;
+            src = loom.nonCliTests.stagedSrc;
             cargoArtifacts = loom.testCargoArtifacts;
             CARGO_PROFILE = "dev";
             cargoVendorDir = (inputs.crane.mkLib pkgs).vendorCargoDeps {

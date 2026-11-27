@@ -87,11 +87,11 @@ _: {
         pkgs.runCommand name { } ''
           mkdir -p "$out/bin"
           binary=$(${pkgs.lib.getBin pkgs.jq}/bin/jq --exit-status --raw-output \
-            --arg target '${target}' --slurpfile cargo ${loom.testCompilation}/cargo.json '
+            --arg target '${target}' --slurpfile cargo ${loom.nonCliTests.compilation}/cargo.json '
             [$cargo[0].packages[] | select(.name == "loom-workflow") | .id] as $packages
             | [."rust-binaries"[] | select(."binary-name" == $target and (."package-id" as $id | $packages | index($id)))]
             | if length == 1 then .[0]."binary-path" else error("expected exactly one compiler-owned test binary") end
-          ' ${loom.testCompilation}/binaries.json)
+          ' ${loom.nonCliTests.compilation}/binaries.json)
           [[ -f "$binary" && -x "$binary" ]]
           ln -s "$binary" "$out/bin/${name}"
         '';
@@ -302,7 +302,7 @@ _: {
               }
               ''
                 set -euo pipefail
-                LOOM_TEST_SOURCE_ROOT=${loom.stagedSrc} bash ${(builtins.elemAt nativeSources 0).path} ${todoAcceptance}/bin/todo-acceptance-persistence acceptance::
+                LOOM_TEST_SOURCE_ROOT=${loom.nonCliTests.stagedSrc} bash ${(builtins.elemAt nativeSources 0).path} ${todoAcceptance}/bin/todo-acceptance-persistence acceptance::
                 touch "$out"
               '';
         };
@@ -323,7 +323,7 @@ _: {
               }
               ''
                 set -euo pipefail
-                LOOM_TEST_SOURCE_ROOT=${loom.stagedSrc} bash ${(builtins.elemAt nativeSources 0).path} ${remediationAcceptance}/bin/remediation-acceptance mint::tests::acceptance::
+                LOOM_TEST_SOURCE_ROOT=${loom.nonCliTests.stagedSrc} bash ${(builtins.elemAt nativeSources 0).path} ${remediationAcceptance}/bin/remediation-acceptance mint::tests::acceptance::
                 touch "$out"
               '';
         };
@@ -335,7 +335,7 @@ _: {
         checked.check {
           runtime = "native-process";
           resources = nativeSources;
-          # The compiler preparations evaluate the staged, full test fixture.
+          # Keep evaluation inputs even when a control only executes a workflow binary.
           evaluation = (import ../native-context.nix) ++ loom.compilerResources;
           build =
             _:
@@ -353,10 +353,11 @@ _: {
               }
               ''
                 set -euo pipefail
-                LOOM_TEST_SOURCE_ROOT=${loom.stagedSrc} bash ${(builtins.head nativeSources).path} ${remediationAcceptance}/bin/remediation-acceptance "phase_context_tests::"
-                LOOM_TEST_SOURCE_ROOT=${loom.stagedSrc} bash ${(builtins.head nativeSources).path} ${remediationAcceptance}/bin/remediation-acceptance "todo::dossier::tests::"
-                LOOM_TEST_SOURCE_ROOT=${loom.stagedSrc} bash ${(builtins.head nativeSources).path} ${remediationAcceptance}/bin/remediation-acceptance "mint::acceptance::dispatch_tests::"
-                LOOM_TEST_SOURCE_ROOT=${loom.stagedSrc} bash ${(builtins.head nativeSources).path} ${remediationAcceptance}/bin/remediation-acceptance "r#loop::worker::"
+                export LOOM_TEST_SOURCE_ROOT=${loom.nonCliTests.stagedSrc}
+                bash ${(builtins.head nativeSources).path} ${remediationAcceptance}/bin/remediation-acceptance "phase_context_tests::"
+                bash ${(builtins.head nativeSources).path} ${remediationAcceptance}/bin/remediation-acceptance "todo::dossier::tests::"
+                bash ${(builtins.head nativeSources).path} ${remediationAcceptance}/bin/remediation-acceptance "mint::acceptance::dispatch_tests::"
+                bash ${(builtins.head nativeSources).path} ${remediationAcceptance}/bin/remediation-acceptance "r#loop::worker::"
                 touch "$out"
               '';
         };

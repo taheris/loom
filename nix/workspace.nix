@@ -710,8 +710,15 @@ let
   # The checked walk integration binary constructs canonical Nix graphs; the
   # complete native-store producer owns it, not this confined companion.
   useCliComplement = pkgs.stdenv.hostPlatform.isDarwin;
-  confinedCompiler = if useCliComplement then cliComplement.compilation else testCompilation;
-  confinedSource = if useCliComplement then stageSource runtimeWithoutCli.path else stagedSrc;
+  # Inputs for controls that execute specified, non-CLI binaries. Linux keeps
+  # the canonical workspace, including its full fixture registration.
+  nonCliTests = {
+    compilation = if useCliComplement then cliComplement.compilation else testCompilation;
+    stagedSrc = if useCliComplement then stageSource runtimeWithoutCli.path else stagedSrc;
+    compilerSource = if useCliComplement then compilerSourceWithoutCli else compilerSource;
+    resources = if useCliComplement then [ runtimeWithoutCli ] ++ extraResources else testResources;
+  };
+  confinedSource = nonCliTests.stagedSrc;
   confinedTests = checked.check {
     inherit evaluation;
     runtime = "native-process";
@@ -748,9 +755,9 @@ let
             git add --all
             git -c user.name='Loom native suite' -c user.email='native@example.invalid' -c commit.gpgsign=false commit -q -m 'Capture native suite source'
             bash ${./private-fixture-tests.sh} --build-campaign cargo-nextest nextest run \
-              --cargo-metadata ${confinedCompiler}/cargo.json \
-              --binaries-metadata ${confinedCompiler}/binaries.json \
-              --workspace-remap "$PWD" --target-dir-remap ${confinedCompiler}/target \
+              --cargo-metadata ${nonCliTests.compilation}/cargo.json \
+              --binaries-metadata ${nonCliTests.compilation}/binaries.json \
+              --workspace-remap "$PWD" --target-dir-remap ${nonCliTests.compilation}/target \
               --ignore-default-filter --no-fail-fast --no-tests=fail --message-format libtest-json-plus \
               -E 'package(=loom-agent) | package(=loom-events) | package(=loom-issues) | package(=loom-protocol) | package(=loom-render) | package(=loom-shared) | package(=loom-skill) | package(=loom-templates) | package(=loom-tune) | (package(=loom-walk) & !binary(=checked)) | test(test_support::native::) | test(verifier_deadline_terminates_and_reaps_the_running_process)'
           '';
@@ -797,6 +804,7 @@ in
     confinedTests
     nextest
     scopedNextest
+    nonCliTests
     cliComplement
     cargoArtifacts
     testCargoArtifacts
